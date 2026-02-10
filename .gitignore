@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+__pycache__/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Scraper sessions (contains Instagram cookies – never commit!)
+.sessions/
+scraped_vendors.*
