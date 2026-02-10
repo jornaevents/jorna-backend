@@ -60,3 +60,23 @@ class Booking:
     status: str = BookingStatus.PENDING.value  # Store the raw string value?
     booking_id: str = field(default_factory=generate_uuid)
 
+@dataclass(kw_only=True)
+class Review:
+    user_id: str
+    description: str
+    rating: float
+    review_id: str = field(default_factory=generate_uuid)
+
+@dataclass(kw_only=True)
+class Message:
+    booking_id: str
+    sender_id: str
+    receiver_id: str
+    contents: str
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    message_id: str = field(default_factory=generate_uuid)
+
+@dataclass(kw_only=True)
+class Admin(User):
+    admin_id: str = field(default_factory=generate_uuid)
+
