@@ -1,2 +1,3 @@
 instaloader>=4.13
 facebook-scraper>=0.2
+TikTokApi>=7.0
