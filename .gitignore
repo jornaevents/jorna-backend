@@ -13,6 +13,11 @@ __pycache__/
 # OS
 .DS_Store
 
-# Scraper sessions (contains Instagram cookies – never commit!)
+# Scraper sessions & cookies (never commit!)
 .sessions/
-scraped_vendors.*
+cookies.txt
+scraped_vendors*
+test_output*
+
+# Virtual environment
+venv/

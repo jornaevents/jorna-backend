@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-DesiConnect Vendor Scraper – CLI entry point.
+DesiConnect Instagram Vendor Scraper – CLI entry point.
 
 Usage
 ─────
   # Anonymous (limited – Instagram will throttle quickly):
-  python -m app.scraper.run
+  python -m app.instagram_scraper.run
 
   # Authenticated (recommended):
-  python -m app.scraper.run --username YOUR_IG_USER --password YOUR_IG_PASS
+  python -m app.instagram_scraper.run --username YOUR_IG_USER --password YOUR_IG_PASS
 
   # Custom limits:
-  python -m app.scraper.run -u USER -p PASS --max-posts 50 --output vendors.json
+  python -m app.instagram_scraper.run -u USER -p PASS --max-posts 50 --output vendors.json
 
 Environment Variables (alternative to CLI flags)
 ────────────────────────────────────────────────
@@ -30,9 +30,9 @@ from pathlib import Path
 # Ensure the server package is importable when running from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.scraper.hashtags import HASHTAGS
-from app.scraper.instagram_scraper import InstagramScraper
-from app.scraper.export import to_json, to_csv
+from app.instagram_scraper.hashtags import HASHTAGS
+from app.instagram_scraper.scraper import InstagramScraper
+from app.scraper_common.export import to_json, to_csv
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "-o", "--output",
-        default="scraped_vendors.json",
+        default="scraped_vendors_ig.json",
         help="Output file path (supports .json or .csv)",
     )
     parser.add_argument(

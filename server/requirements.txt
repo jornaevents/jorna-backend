@@ -1,1 +1,2 @@
 instaloader>=4.13
+facebook-scraper>=0.2

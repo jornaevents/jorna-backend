@@ -19,7 +19,7 @@ Anti-blocking strategy
 
 Usage
 ─────
-    from scraper.instagram_scraper import InstagramScraper
+    from app.instagram_scraper.scraper import InstagramScraper
 
     scraper = InstagramScraper()            # anonymous (limited)
     scraper = InstagramScraper("user", "pass")  # logged-in (recommended)
@@ -36,7 +36,7 @@ from typing import Optional
 
 import instaloader  # pip install instaloader
 
-from .vendor_result import ScrapedVendor
+from app.scraper_common.vendor_result import ScrapedVendor
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +164,11 @@ class InstagramScraper:
         vendors: dict[str, ScrapedVendor],
     ) -> None:
         """Process up to `cap` recent posts for a single hashtag."""
-        hashtag_obj = instaloader.Hashtag.from_name(self._loader.context, tag)
-        posts = hashtag_obj.get_posts()
+        # Construct Hashtag directly — bypasses _obtain_metadata() which
+        # calls the blocked api/v1/tags/web_info/ endpoint.
+        # Then use get_posts_resumable() which queries via GraphQL instead.
+        hashtag_obj = instaloader.Hashtag(self._loader.context, {"name": tag.lower()})
+        posts = hashtag_obj.get_posts_resumable()
 
         for idx, post in enumerate(posts):
             if idx >= cap:
