@@ -26,6 +26,11 @@ class User(Base):
     language = Column(String(50), nullable=False)
     pfp_url = Column(String(512), nullable=True)
 
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    city = Column(String(100), nullable=True)
+    state = Column(String(50), nullable=True)
+
 
 class Vendor(Base):
     __tablename__ = "vendors"
@@ -35,6 +40,11 @@ class Vendor(Base):
     bio = Column(Text, nullable=False)
     rating = Column(Float, nullable=False)
     num_events = Column(Integer, nullable=False)
+
+    travel_radius_miles = Column(Integer, default=30)
+    google_access_token = Column(String(512), nullable=True)
+    google_refresh_token = Column(String(512), nullable=True)
+    calendar_id = Column(String(255), nullable=True)
 
 
 class Service(Base):
@@ -62,3 +72,18 @@ class Booking(Base):
     location = Column(String(255), nullable=False)
     date_iso = Column(String(50), nullable=False)
     status = Column(String(50), nullable=False, default="pending")
+
+    venue_latitude = Column(Float, nullable=True)
+    venue_longitude = Column(Float, nullable=True)
+    client_checked_in_at = Column(String(50), nullable=True)
+    vendor_checked_in_at = Column(String(50), nullable=True)
+
+
+class VendorAvailability(Base):
+    __tablename__ = "vendor_availability"
+
+    availability_id = Column(String(36), primary_key=True, default=uuid_str)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False)
+    day_of_week = Column(Integer, nullable=False)
+    start_time = Column(String(5), nullable=False)
+    end_time = Column(String(5), nullable=False)
