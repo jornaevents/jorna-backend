@@ -8,6 +8,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.db.models import User, Vendor, Service, Booking
 from app.utils.location import calculate_distance_miles
+from app.routers import calendar
 from datetime import datetime, timezone
 
 SECRET_KEY = "your-secret-key-change-in-production"
@@ -40,6 +41,7 @@ class CheckInRequest(BaseModel):
 
 
 app = FastAPI()
+app.include_router(calendar.router)
 
 
 @app.on_event("startup")
@@ -171,8 +173,8 @@ def booking_check_in(
         booking.venue_latitude, booking.venue_longitude
     )
     
-    # Allow a margin of error of 0.1 miles (approx 528 feet)
-    if distance > 0.1:
+    # Allow a margin of error of 0.2 miles (approx 1036 feet)
+    if distance > 0.2:
         raise HTTPException(
             status_code=400, 
             detail=f"You must be at the venue to check in. You are currently {round(distance, 2)} miles away."
