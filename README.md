@@ -59,16 +59,22 @@ Desiconnect/
 │   │   │   └── models.py            # SQLAlchemy models (User, Vendor, Service, Booking, etc.)
 │   │   ├── models/
 │   │   │   └── schemas.py           # Pydantic/dataclass schemas & BookingStatus enum
+│   │   ├── dependencies.py          # Shared FastAPI dependencies (JWT auth)
 │   │   ├── routers/                 # Thin HTTP layer (request parsing → service call → response)
 │   │   │   ├── bookings.py          # Booking endpoints
 │   │   │   ├── calendar.py          # Calendar & availability endpoints
-│   │   │   └── notifications.py     # FCM token management endpoints
+│   │   │   ├── notifications.py     # FCM token management endpoints
+│   │   │   ├── services.py          # Service (offering) endpoints
+│   │   │   ├── users.py             # User profile endpoints
+│   │   │   └── vendors.py           # Vendor profile endpoints
 │   │   ├── services/                # Business logic layer
 │   │   │   ├── auth_service.py      # Registration & login (hashing, JWT)
 │   │   │   ├── booking_service.py   # Booking CRUD, status rules, check-in, notifications
 │   │   │   ├── calendar_service.py  # Google OAuth, availability aggregation
 │   │   │   ├── notification_service.py  # FCM token registration & management
-│   │   │   └── vendor_service.py    # Vendor proximity search (Haversine)
+│   │   │   ├── service_service.py   # Service (offering) CRUD
+│   │   │   ├── user_service.py      # User profile read & update
+│   │   │   └── vendor_service.py    # Vendor CRUD & proximity search (Haversine)
 │   │   └── utils/                   # Low-level helpers & external API clients
 │   │       ├── calendar.py          # Google Calendar API helpers
 │   │       ├── location.py          # Haversine distance calculation
@@ -117,11 +123,16 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Make the start script executable (first time only)
+chmod +x run.sh
+
 # Start the development server
-uvicorn main:app --reload --port 8000
+./run.sh
 ```
 
 The API will be available at `http://localhost:8000`. Visit `http://localhost:8000/docs` for the interactive Swagger UI.
+
+> **Note:** Every time you open a new terminal to work on the server, activate the virtual environment first with `source venv/bin/activate` (from inside the `server/` folder).
 
 ### Database
 
@@ -163,6 +174,61 @@ rm desiconnect.db
   "location": "10001",
   "gender": "Female",
   "language": "English"
+}
+```
+
+### User Profile
+
+> Requires `Authorization: Bearer <token>` header.
+
+| Method | Endpoint | Description                        |
+| ------ | -------- | ---------------------------------- |
+| GET    | `/me`    | Get the current user's profile     |
+| PATCH  | `/me`    | Partially update the current user's profile |
+
+**PATCH /me body** (all fields optional):
+```json
+{
+  "f_name": "John",
+  "l_name": "Doe",
+  "phone": "5559876543",
+  "age": 26,
+  "location": "90210",
+  "gender": "Male",
+  "language": "English",
+  "pfp_url": "https://example.com/photo.jpg"
+}
+```
+
+### Vendors
+
+| Method | Endpoint    | Description                                      |
+| ------ | ----------- | ------------------------------------------------ |
+| POST   | `/vendors`  | Create a vendor profile for the current user (auth required) |
+| GET    | `/vendors`  | List all vendors with user info (no auth required) |
+
+**POST /vendors body:**
+```json
+{
+  "bio": "Professional Mehndi artist with 10 years of experience."
+}
+```
+
+### Services
+
+| Method | Endpoint     | Description                                         |
+| ------ | ------------ | --------------------------------------------------- |
+| POST   | `/services`  | Add a service offering (vendors only, auth required) |
+| GET    | `/services`  | List all services; filter by `?vendor_id=` (no auth required) |
+
+**POST /services body:**
+```json
+{
+  "name": "Bridal Mehndi",
+  "price": 250.00,
+  "duration_minutes": 180,
+  "experience": "Specializing in bridal and Arabic patterns.",
+  "media": ["https://example.com/img1.jpg"]
 }
 ```
 
