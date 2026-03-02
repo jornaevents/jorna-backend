@@ -8,7 +8,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.db.models import User, Vendor, Service, Booking
 from app.utils.location import calculate_distance_miles
-from app.routers import calendar
+from app.routers import calendar, bookings
 from datetime import datetime, timezone
 
 SECRET_KEY = "your-secret-key-change-in-production"
@@ -42,6 +42,7 @@ class CheckInRequest(BaseModel):
 
 app = FastAPI()
 app.include_router(calendar.router)
+app.include_router(bookings.router)
 
 
 @app.on_event("startup")
