@@ -3,6 +3,7 @@ uvicorn
 sqlalchemy
 bcrypt
 pyjwt
+firebase-admin
 
 google-api-python-client
 google-auth-oauthlib
