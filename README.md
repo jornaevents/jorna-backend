@@ -50,23 +50,29 @@ A full-stack event planning and vendor booking platform connecting South Asian e
 ```
 Desiconnect/
 ├── server/                          # FastAPI backend
-│   ├── main.py                      # App entry point, auth routes, vendor search
+│   ├── main.py                      # App entry point, route registration
 │   ├── requirements.txt             # Python dependencies
 │   ├── run.sh                       # Quick start script
 │   ├── app/
 │   │   ├── db/
 │   │   │   ├── database.py          # SQLite engine & session factory
-│   │   │   └── models.py            # SQLAlchemy models (User, Vendor, Service, Booking, VendorAvailability)
+│   │   │   └── models.py            # SQLAlchemy models (User, Vendor, Service, Booking, etc.)
 │   │   ├── models/
 │   │   │   └── schemas.py           # Pydantic/dataclass schemas & BookingStatus enum
-│   │   ├── routers/
-│   │   │   ├── bookings.py          # Booking CRUD, status updates, check-in
-│   │   │   ├── calendar.py          # Google Calendar OAuth & vendor availability
-│   │   │   └── notifications.py     # FCM token registration & management
-│   │   └── utils/
+│   │   ├── routers/                 # Thin HTTP layer (request parsing → service call → response)
+│   │   │   ├── bookings.py          # Booking endpoints
+│   │   │   ├── calendar.py          # Calendar & availability endpoints
+│   │   │   └── notifications.py     # FCM token management endpoints
+│   │   ├── services/                # Business logic layer
+│   │   │   ├── auth_service.py      # Registration & login (hashing, JWT)
+│   │   │   ├── booking_service.py   # Booking CRUD, status rules, check-in, notifications
+│   │   │   ├── calendar_service.py  # Google OAuth, availability aggregation
+│   │   │   ├── notification_service.py  # FCM token registration & management
+│   │   │   └── vendor_service.py    # Vendor proximity search (Haversine)
+│   │   └── utils/                   # Low-level helpers & external API clients
 │   │       ├── calendar.py          # Google Calendar API helpers
 │   │       ├── location.py          # Haversine distance calculation
-│   │       └── notifications.py     # Firebase push notification wrapper
+│   │       └── notifications.py     # Firebase push notification wrapper (FCM)
 │   ├── tests/
 │   │   ├── test_api.py              # Core API tests (auth, search, check-in)
 │   │   ├── test_bookings.py         # Booking lifecycle tests
@@ -78,6 +84,17 @@ Desiconnect/
 ├── vite.config.ts
 └── README.md
 ```
+
+### Architecture
+
+The backend follows a **Router → Service → Utils** layered architecture:
+
+| Layer        | Responsibility |
+| ------------ | -------------- |
+| **Routers**  | HTTP concerns only — parse requests, call services, map errors to HTTP responses |
+| **Services** | All business logic — validation, authorization, database operations, notifications |
+| **Utils**    | Low-level helpers — external API clients (Google Calendar, Firebase), math (Haversine) |
+
 
 ---
 

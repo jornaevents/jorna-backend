@@ -1,11 +1,16 @@
-"""Router for push-notification management (FCM token registration)."""
+"""Thin router for push-notification token management — delegates to notification_service."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import User
+from app.services.notification_service import (
+    NotificationServiceError,
+    register_fcm_token as svc_register_fcm_token,
+    remove_fcm_token as svc_remove_fcm_token,
+    get_token_status as svc_get_token_status,
+)
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -15,52 +20,30 @@ class FCMTokenRegister(BaseModel):
     fcm_token: str
 
 
-class FCMTokenResponse(BaseModel):
-    message: str
-    user_id: str
-
-
 @router.post("/register-token", summary="Register or update a user's FCM device token")
 def register_fcm_token(body: FCMTokenRegister, db: Session = Depends(get_db)):
-    """
-    Called by the mobile app on launch (or when the FCM token refreshes)
-    to associate a device token with a user.  This token is then used
-    to deliver push notifications for booking events.
-    """
-    user = db.query(User).filter(User.user_id == body.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user.fcm_token = body.fcm_token
-    db.commit()
-
-    return {"message": "FCM token registered successfully", "user_id": user.user_id}
+    """Called by the mobile app on launch to associate a device token with a user."""
+    try:
+        return svc_register_fcm_token(
+            user_id=body.user_id, fcm_token=body.fcm_token, db=db
+        )
+    except NotificationServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.delete("/remove-token/{user_id}", summary="Remove a user's FCM token (opt-out)")
 def remove_fcm_token(user_id: str, db: Session = Depends(get_db)):
-    """
-    Allows a user to opt out of push notifications by clearing their
-    stored FCM token.
-    """
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user.fcm_token = None
-    db.commit()
-
-    return {"message": "FCM token removed successfully", "user_id": user.user_id}
+    """Allows a user to opt out of push notifications."""
+    try:
+        return svc_remove_fcm_token(user_id=user_id, db=db)
+    except NotificationServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.get("/token-status/{user_id}", summary="Check if a user has a registered FCM token")
 def token_status(user_id: str, db: Session = Depends(get_db)):
     """Returns whether the user currently has an FCM token registered."""
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {
-        "user_id": user.user_id,
-        "has_token": user.fcm_token is not None,
-    }
+    try:
+        return svc_get_token_status(user_id=user_id, db=db)
+    except NotificationServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
