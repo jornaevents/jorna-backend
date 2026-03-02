@@ -75,7 +75,7 @@ def test_approve_booking(seeded_db):
     db.commit()
     db.refresh(booking)
 
-        response = client.put(
+    response = client.put(
         f"/bookings/{booking.booking_id}/status",
         json={
             "user_id": vendor.user_id,
@@ -106,7 +106,7 @@ def test_client_cannot_approve(seeded_db):
     db.commit()
     db.refresh(booking)
 
-        response = client.put(
+    response = client.put(
         f"/bookings/{booking.booking_id}/status",
         json={
             "user_id": user.user_id,

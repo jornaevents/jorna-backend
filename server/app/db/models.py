@@ -31,6 +31,9 @@ class User(Base):
     city = Column(String(100), nullable=True)
     state = Column(String(50), nullable=True)
 
+    # Firebase Cloud Messaging token for push notifications
+    fcm_token = Column(String(512), nullable=True)
+
 
 class Vendor(Base):
     __tablename__ = "vendors"
