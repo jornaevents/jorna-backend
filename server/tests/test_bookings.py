@@ -75,21 +75,20 @@ def test_approve_booking(seeded_db):
     db.commit()
     db.refresh(booking)
 
-    # Approve as vendor
-    response = client.put(
+        response = client.put(
         f"/bookings/{booking.booking_id}/status",
         json={
             "user_id": vendor.user_id,
             "is_vendor": True,
-            "status": "confirmed"
+            "status": "approved"
         }
     )
     assert response.status_code == 200
-    assert response.json()["message"] == "Booking successfully confirmed"
+    assert response.json()["message"] == "Booking successfully updated to approved"
     
     # Verify in DB
     db.refresh(booking)
-    assert booking.status == "confirmed"
+    assert booking.status == "approved"
 
 
 def test_client_cannot_approve(seeded_db):
@@ -107,13 +106,12 @@ def test_client_cannot_approve(seeded_db):
     db.commit()
     db.refresh(booking)
 
-    # Try to approve as client
-    response = client.put(
+        response = client.put(
         f"/bookings/{booking.booking_id}/status",
         json={
             "user_id": user.user_id,
             "is_vendor": False,
-            "status": "confirmed"
+            "status": "approved"
         }
     )
     assert response.status_code == 403

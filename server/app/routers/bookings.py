@@ -5,6 +5,7 @@ from app.db.models import Booking, User, Vendor, Service
 from pydantic import BaseModel
 from typing import List, Optional
 import uuid
+from app.models.schemas import BookingStatus
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -22,7 +23,7 @@ class BookingCreate(BaseModel):
 class BookingStatusUpdate(BaseModel):
     user_id: str
     is_vendor: bool
-    status: str # "confirmed", "rejected", "cancelled"
+    status: BookingStatus # Use the Enum from schemas.py
 
 @router.post("", summary="Create a new booking request")
 def create_booking(body: BookingCreate, db: Session = Depends(get_db)):
@@ -46,7 +47,7 @@ def create_booking(body: BookingCreate, db: Session = Depends(get_db)):
         date_iso=body.date_iso,
         venue_latitude=body.venue_latitude,
         venue_longitude=body.venue_longitude,
-        status="pending"
+        status=BookingStatus.PENDING.value
     )
     
     db.add(booking)
@@ -61,17 +62,14 @@ def create_booking(body: BookingCreate, db: Session = Depends(get_db)):
 @router.put("/{booking_id}/status", summary="Approve, Reject, or Cancel a booking")
 def update_booking_status(booking_id: str, body: BookingStatusUpdate, db: Session = Depends(get_db)):
     """
-    Update the status of a booking to 'confirmed', 'rejected', or 'cancelled'.
+    Update the status of a booking to an accepted schema status.
     Vendors can approve or reject pending requests.
-    Either client or vendor can cancel accepted requests.
     """
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
         
-    valid_statuses = ["confirmed", "rejected", "cancelled"]
-    if body.status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid_statuses}")
+    status_str = body.status.value
         
     if body.is_vendor:
         vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
@@ -82,19 +80,19 @@ def update_booking_status(booking_id: str, body: BookingStatusUpdate, db: Sessio
             raise HTTPException(status_code=403, detail="Unauthorized: Not the client who created this booking")
             
     # Business logic validation
-    if body.status in ["confirmed", "rejected"]:
+    if status_str in [BookingStatus.APPROVED.value, BookingStatus.REJECTED.value]:
         if not body.is_vendor:
-            raise HTTPException(status_code=403, detail="Only vendors can confirm or reject a booking")
-        if booking.status != "pending":
-            raise HTTPException(status_code=400, detail=f"Cannot change status from {booking.status} to {body.status}")
+            raise HTTPException(status_code=403, detail="Only vendors can approve or reject a booking")
+        if booking.status != BookingStatus.PENDING.value:
+            raise HTTPException(status_code=400, detail=f"Cannot change status from {booking.status} to {status_str}")
             
-    booking.status = body.status
+    booking.status = status_str
     db.commit()
     db.refresh(booking)
     
     # FUTURE: Dispatch Push Notification to the other party using Firebase.
     
-    return {"message": f"Booking successfully {body.status}", "booking_id": booking.booking_id}
+    return {"message": f"Booking successfully updated to {status_str}", "booking_id": booking.booking_id}
 
 
 @router.get("/user/{user_id}", summary="Get all bookings for a client")
