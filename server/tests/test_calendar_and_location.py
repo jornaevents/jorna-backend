@@ -23,7 +23,7 @@ def test_google_auth_callback_success(mocker):
     db.refresh(vendor)
 
     # Mock the Google OAuth Flow
-    mock_flow = mocker.patch("app.routers.calendar.get_google_auth_flow")
+    mock_flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
     mock_flow_instance = mocker.MagicMock()
     mock_flow.return_value = mock_flow_instance
     mock_flow_instance.credentials.token = "fake_access_token"
@@ -52,7 +52,7 @@ def test_google_auth_callback_flow_error(mocker):
     db = TestingSessionLocal()
     vendor = db.query(Vendor).first() # Grab any existing vendor from previous tests
 
-    mock_flow = mocker.patch("app.routers.calendar.get_google_auth_flow")
+    mock_flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
     mock_flow_instance = mocker.MagicMock()
     mock_flow_instance.fetch_token.side_effect = Exception("Invalid grant")
     mock_flow.return_value = mock_flow_instance
@@ -100,9 +100,9 @@ def test_calendar_availability_aggregation(mocker):
     db.commit()
 
     # 4. Mock the Google API Client call
-    mocker.patch("app.routers.calendar.create_google_calendar_service", return_value="mock_service")
+    mocker.patch("app.services.calendar_service.create_google_calendar_service", return_value="mock_service")
     
-    mock_google_api = mocker.patch("app.routers.calendar.get_freebusy_schedule")
+    mock_google_api = mocker.patch("app.services.calendar_service.get_freebusy_schedule")
     # Simulate Google Calendar returning one busy block (e.g. Doctor Appt from 1pm to 2pm)
     mock_google_api.return_value = [
         {"start": "2026-03-02T13:00:00Z", "end": "2026-03-02T14:00:00Z"}
