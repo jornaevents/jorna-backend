@@ -6,7 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
-from app.db.models import User
+from app.db.models import User, Vendor, Service, Booking
+from app.utils.location import calculate_distance_miles
+from app.routers import calendar, bookings
+from datetime import datetime, timezone
 
 SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
@@ -30,7 +33,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+
+
+
 app = FastAPI()
+app.include_router(calendar.router)
+app.include_router(bookings.router)
 
 
 @app.on_event("startup")
@@ -89,3 +97,55 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         algorithm=ALGORITHM,
     )
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.get("/vendors/search")
+def search_vendors(
+    service_name: str,
+    latitude: float,
+    longitude: float,
+    db: Session = Depends(get_db)
+):
+    """
+    Search for vendors offering a specific service within their travel radius.
+    """
+    # Join Service, Vendor, and User to get the matching vendors and their coordinates
+    results = db.query(Vendor, Service, User).join(
+        Service, Vendor.vendor_id == Service.vendor_id
+    ).join(
+        User, Vendor.user_id == User.user_id
+    ).filter(
+        Service.name.ilike(f"%{service_name}%")
+    ).all()
+    
+    nearby_vendors = []
+    
+    for vendor, service, user in results:
+        # Skip if the vendor's user profile hasn't set coordinates
+        if user.latitude is None or user.longitude is None:
+            continue
+            
+        distance_miles = calculate_distance_miles(
+            latitude, longitude, user.latitude, user.longitude
+        )
+        
+        # Only include if vendor is willing to travel that distance
+        if distance_miles <= vendor.travel_radius_miles:
+            nearby_vendors.append({
+                "vendor_id": vendor.vendor_id,
+                "user_id": user.user_id,
+                "first_name": user.f_name,
+                "last_name": user.l_name,
+                "service_name": service.name,
+                "service_price": service.price,
+                "distance_miles": round(distance_miles, 2),
+                "rating": vendor.rating,
+                "travel_radius_miles": vendor.travel_radius_miles
+            })
+            
+    # Sort the results so the closest vendors are at the top
+    nearby_vendors.sort(key=lambda x: x["distance_miles"])
+    
+    return {"vendors": nearby_vendors}
+
+
