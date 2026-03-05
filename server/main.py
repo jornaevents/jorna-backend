@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
+from app.dependencies import get_current_user
 from app.routers import calendar, bookings, notifications, users, vendors, services
-from app.services.auth_service import AuthError, register_user, login_user
+from app.services.auth_service import AuthError, register_user, login_user, change_password
 from app.services.vendor_service import search_vendors
 
 
@@ -35,6 +36,11 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 # ── App setup ─────────────────────────────────────────────────────────
@@ -102,6 +108,24 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     """Verify email/password and return a JWT."""
     try:
         return login_user(email=body.email, password=body.password, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/change-password")
+def change_password_route(
+    body: ChangePasswordRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change the authenticated user's password after verifying the current one."""
+    try:
+        return change_password(
+            user_id=current_user.user_id,
+            current_password=body.current_password,
+            new_password=body.new_password,
+            db=db,
+        )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

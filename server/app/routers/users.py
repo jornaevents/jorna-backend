@@ -17,6 +17,7 @@ router = APIRouter(tags=["users"])
 
 
 class UpdateMeRequest(BaseModel):
+    email: Optional[str] = None
     f_name: Optional[str] = None
     l_name: Optional[str] = None
     phone: Optional[str] = None

@@ -43,6 +43,13 @@ def update_user(*, user_id: str, update_data: dict, db: Session) -> dict:
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise UserError(404, "User not found")
+    if "email" in update_data:
+        conflict = db.query(User).filter(
+            User.email == update_data["email"],
+            User.user_id != user_id,
+        ).first()
+        if conflict:
+            raise UserError(400, "Email is already in use by another account")
     for field, value in update_data.items():
         setattr(user, field, value)
     db.commit()

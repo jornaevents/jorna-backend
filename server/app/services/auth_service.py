@@ -59,6 +59,18 @@ def register_user(
     return {"user_id": user.user_id, "email": user.email}
 
 
+def change_password(*, user_id: str, current_password: str, new_password: str, db: Session) -> dict:
+    """Verify the current password then store a new bcrypt hash."""
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise AuthError(404, "User not found")
+    if not bcrypt.checkpw(current_password.encode(), user.password.encode()):
+        raise AuthError(401, "Current password is incorrect")
+    user.password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    db.commit()
+    return {"message": "Password updated successfully"}
+
+
 def login_user(*, email: str, password: str, db: Session) -> dict:
     """Verify credentials and return a JWT.  Returns ``{access_token, token_type}``."""
     user = db.query(User).filter(User.email == email).first()
