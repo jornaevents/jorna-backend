@@ -6,4 +6,4 @@ if [ -f "venv/bin/activate" ]; then
   source venv/bin/activate
 fi
 
-python3 -m uvicorn main:app --reload --host 0.0.0.0
+python -m uvicorn main:app --reload --host 0.0.0.0
