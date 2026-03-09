@@ -14,6 +14,19 @@ class BookingStatus(str, Enum):
     REJECTED = "rejected"
     PAYMENT_CONFIRMED = "payment_confirmed"
 
+class VendorCategory(str, Enum):
+    DJ = "dj"
+    DHOL = "dhol"
+    VENUE = "venue"
+    CATERING = "catering"
+    PHOTOGRAPHY = "photography"
+    VIDEOGRAPHY = "videography"
+    DECORATION = "decoration"
+    MEHNDI = "mehndi"
+    PLANNING = "planning"
+    MUA = "mua"  # Makeup Artist
+    OTHER = "other"
+
 @dataclass(kw_only=True)
 class User:
     username: str
@@ -42,6 +55,7 @@ class Service:
 @dataclass(kw_only=True)
 class Vendor(User):
     bio: str
+    category: str  # Should be a VendorCategory value
     # tags: List[str] # In SQLite, this would be a separate JOIN table
     rating: float
     num_events: int

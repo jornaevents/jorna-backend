@@ -41,6 +41,7 @@ class Vendor(Base):
     vendor_id = Column(String(36), primary_key=True, default=uuid_str)
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
     bio = Column(Text, nullable=False)
+    category = Column(String(50), nullable=False, default="other")
     rating = Column(Float, nullable=False)
     num_events = Column(Integer, nullable=False)
 
