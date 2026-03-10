@@ -1,7 +1,6 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking."""
 import uuid
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON
 
 from .database import Base
 

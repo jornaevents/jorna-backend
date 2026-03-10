@@ -1,13 +1,11 @@
-"""SQLite connection: engine, session factory, and dependency for FastAPI."""
+"""PostgreSQL (Supabase) connection: engine, session factory, and dependency for FastAPI."""
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./desiconnect.db"
+SQLALCHEMY_DATABASE_URL = os.environ["DATABASE_URL"]
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
