@@ -56,10 +56,13 @@ class Service(Base):
     service_id = Column(String(36), primary_key=True, default=uuid_str)
     name = Column(String(255), nullable=False)
     price = Column(Float, nullable=False)
-    duration_minutes = Column(Integer, nullable=False)
+    duration_minutes = Column(Integer, nullable=True)
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False)
     experience = Column(Text, nullable=False)
     media = Column(JSON, nullable=True)
+    category = Column(String(50), nullable=True)
+    price_unit = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
 
 
 class Booking(Base):

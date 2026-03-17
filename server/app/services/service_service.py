@@ -24,6 +24,9 @@ def _service_dict(service: Service) -> dict:
         "duration_minutes": service.duration_minutes,
         "experience": service.experience,
         "media": service.media,
+        "category": service.category,
+        "price_unit": service.price_unit,
+        "description": service.description,
     }
 
 
@@ -32,9 +35,12 @@ def create_service(
     user_id: str,
     name: str,
     price: float,
-    duration_minutes: int,
+    duration_minutes: Optional[int],
     experience: str,
     media: Optional[list[str]],
+    category: Optional[str] = None,
+    price_unit: Optional[str] = None,
+    description: Optional[str] = None,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor."""
@@ -48,6 +54,9 @@ def create_service(
         duration_minutes=duration_minutes,
         experience=experience,
         media=media,
+        category=category,
+        price_unit=price_unit,
+        description=description,
     )
     db.add(service)
     db.commit()

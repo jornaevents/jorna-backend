@@ -19,9 +19,12 @@ router = APIRouter(prefix="/services", tags=["services"])
 class CreateServiceRequest(BaseModel):
     name: str
     price: float
-    duration_minutes: int
+    duration_minutes: Optional[int] = None
     experience: str
     media: Optional[list[str]] = None
+    category: Optional[str] = None
+    price_unit: Optional[str] = None
+    description: Optional[str] = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -42,6 +45,9 @@ def create_service_route(
             duration_minutes=body.duration_minutes,
             experience=body.experience,
             media=body.media,
+            category=body.category,
+            price_unit=body.price_unit,
+            description=body.description,
             db=db,
         )
     except ServiceError as e:
