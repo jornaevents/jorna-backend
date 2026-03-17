@@ -4,13 +4,19 @@ Registers routers and exposes auth / vendor-search routes that
 delegate to the service layer.
 """
 
-from fastapi import Depends, FastAPI, HTTPException
+from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before any module reads os.environ
+
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
+from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
 from app.routers import calendar, bookings, notifications, users, vendors, services
 from app.services.auth_service import AuthError, register_user, login_user, change_password
@@ -135,6 +141,7 @@ def vendor_search(
     service_name: str,
     latitude: float,
     longitude: float,
+    category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
     db: Session = Depends(get_db),
 ):
     """Search for vendors offering a specific service within their travel radius."""
@@ -142,6 +149,8 @@ def vendor_search(
         service_name=service_name,
         latitude=latitude,
         longitude=longitude,
+        category=category.value if category else None,
         db=db,
     )
     return {"vendors": vendors}
+
