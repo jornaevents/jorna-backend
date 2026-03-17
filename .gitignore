@@ -5,3 +5,4 @@ __pycache__/
 server/venv/
 plan.md
 server/desiconnect.db
+.env
