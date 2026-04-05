@@ -113,7 +113,7 @@ def get_vendor_availability(
     google_busy: list[tuple[datetime, datetime]] = []
     if vendor.google_access_token:
         try:
-            service = create_google_calendar_service(
+            service, creds = create_google_calendar_service(
                 vendor.google_access_token, vendor.google_refresh_token
             )
             g_busy = get_freebusy_schedule(service, start_date, end_date)
@@ -121,6 +121,12 @@ def get_vendor_availability(
                 gb_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
                 gb_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
                 google_busy.append((gb_start, gb_end))
+
+            # Persist refreshed access token back to DB if it changed
+            if creds.token and creds.token != vendor.google_access_token:
+                vendor.google_access_token = creds.token
+                db.commit()
+                logger.info("Persisted refreshed Google access token for vendor %s", vendor_id)
         except Exception:
             pass  # token may be expired; continue without Google data
 

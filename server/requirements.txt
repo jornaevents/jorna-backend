@@ -12,4 +12,4 @@ google-auth-httplib2
 pytest
 httpx
 pytest-mock
-
+python-dotenv

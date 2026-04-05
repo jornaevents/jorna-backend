@@ -100,7 +100,9 @@ def test_calendar_availability_aggregation(mocker):
     db.commit()
 
     # 4. Mock the Google API Client call
-    mocker.patch("app.services.calendar_service.create_google_calendar_service", return_value="mock_service")
+    mock_creds = mocker.MagicMock()
+    mock_creds.token = "test_token"  # same as vendor's stored token → no refresh write-back
+    mocker.patch("app.services.calendar_service.create_google_calendar_service", return_value=("mock_service", mock_creds))
     
     mock_google_api = mocker.patch("app.services.calendar_service.get_freebusy_schedule")
     # Simulate Google Calendar returning one busy block (e.g. Doctor Appt from 1pm to 2pm)

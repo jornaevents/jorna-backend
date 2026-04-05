@@ -61,8 +61,13 @@ def _ensure_firebase():
 
     try:
         cred = fb_credentials.Certificate(creds_path)
-        _firebase_app = firebase_admin.initialize_app(cred)
-        logger.info("Firebase Admin SDK initialised successfully.")
+        # Check if a default app already exists (e.g. from a previous init)
+        try:
+            _firebase_app = firebase_admin.get_app()
+            logger.info("Firebase Admin SDK already initialised — reusing.")
+        except ValueError:
+            _firebase_app = firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin SDK initialised successfully.")
         return True
     except Exception as exc:
         logger.error("Failed to initialise Firebase: %s", exc)
