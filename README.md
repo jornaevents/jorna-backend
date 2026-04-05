@@ -134,6 +134,17 @@ The API will be available at `http://localhost:8000`. Visit `http://localhost:80
 
 > **Note:** Every time you open a new terminal to work on the server, activate the virtual environment first with `source venv/bin/activate` (from inside the `server/` folder).
 
+### Credentials (Required)
+
+The following credential files are **required** for push notifications and Google Calendar integration to work. They are **not committed to the repo** (listed in `.gitignore`) and must be obtained separately.
+
+| File | Location | Purpose | Source |
+|------|----------|---------|--------|
+| `firebase_credentials.json` | `server/` | Firebase Admin SDK (push notifications) | [Firebase Console](https://console.firebase.google.com/) → Project Settings → Service Accounts → "Generate new private key" |
+| `client_secret.json` | `server/` | Google OAuth 2.0 (calendar integration) | [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → OAuth 2.0 Client ID → Download JSON |
+
+> **Without these files:** The server will still start and all other endpoints will work normally. Push notifications will return `"Firebase not configured"` and the Google Calendar OAuth flow will return a 500 error.
+
 ### Database
 
 SQLite is used with auto-creation — the database file `desiconnect.db` is created automatically on first startup. If you need to reset the schema after model changes:
@@ -335,6 +346,31 @@ Desiconnect uses **Firebase Cloud Messaging (FCM)** to send real-time push notif
 | `payment_confirmed` | 💰 Payment Received          | 💳 Payment Confirmed            |
 | Check-in (vendor)   | —                            | 📍 Vendor Checked In            |
 | Check-in (client)   | 📍 Client Checked In         | —                               |
+
+---
+
+## Google Calendar Integration (OAuth)
+
+Desiconnect allows vendors to connect their **Google Calendar** so that their availability is automatically computed by merging baseline working hours, internal Desiconnect bookings, and Google Calendar busy blocks.
+
+### How It Works
+
+1. **Vendor initiates OAuth** — The mobile app calls `GET /vendors/{id}/google-auth`, which returns a Google consent URL.
+2. **Vendor authorizes** — The vendor opens the URL in a browser and grants Desiconnect **read-only** access to their calendar (`calendar.readonly` scope).
+3. **Token exchange** — Google redirects to `GET /vendors/auth/callback` with an authorization code. The server exchanges it for an access token + refresh token and saves them to the Vendor record.
+4. **Availability queries** — When `GET /vendors/{id}/availability` is called, the server uses the saved tokens to query the Google Calendar FreeBusy API and merges the result with internal data.
+5. **Token auto-refresh** — The `client_id` and `client_secret` are automatically loaded from `client_secret.json`, allowing expired access tokens to refresh transparently.
+
+### Setup
+
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the **Google Calendar API** (APIs & Services → Library → search "Google Calendar API")
+3. Go to **APIs & Services → Credentials** → Create **OAuth 2.0 Client ID**
+   - Application type: **Web application**
+   - Authorized redirect URI: `http://localhost:8000/vendors/auth/callback`
+4. Download the client JSON and save it as `server/client_secret.json`
+   - Or set the environment variable: `GOOGLE_CLIENT_SECRETS_FILE=/path/to/client_secret.json`
+5. Set up an **OAuth consent screen** (APIs & Services → OAuth consent screen) and add test users while in development
 
 ---
 

@@ -6,3 +6,10 @@ server/venv/
 plan.md
 server/desiconnect.db
 .env
+
+# -- Credentials (NEVER commit these) --
+server/firebase_credentials.json
+server/client_secret.json
+
+# -- Local reports --
+server/notifications_and_calendar_report.md
