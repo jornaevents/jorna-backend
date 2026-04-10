@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.db
 server/venv/
+virtual/
 plan.md
 server/desiconnect.db
 .env
