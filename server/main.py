@@ -4,16 +4,22 @@ Registers routers and exposes auth / vendor-search routes that
 delegate to the service layer.
 """
 
+import re
 from typing import Optional
 
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before any module reads os.environ
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
+from app.config import ALLOWED_ORIGINS, SECRET_KEY
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
@@ -23,24 +29,61 @@ from app.services.auth_service import AuthError, register_user, login_user, chan
 from app.services.vendor_service import search_vendors
 
 
+# ── Rate limiter ──────────────────────────────────────────────────────
+
+limiter = Limiter(key_func=get_remote_address)
+
+
 # ── Request schemas ───────────────────────────────────────────────────
+
+def _validate_password(v: str) -> str:
+    """Enforce minimum password complexity."""
+    if len(v) < 8:
+        raise ValueError("Password must be at least 8 characters")
+    if not re.search(r"[A-Z]", v):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", v):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r"\d", v):
+        raise ValueError("Password must contain at least one digit")
+    return v
 
 
 class RegisterRequest(BaseModel):
-    email: str
-    password: str
-    username: str
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    username: str = Field(..., min_length=3, max_length=30)
     phone: str
-    f_name: str
-    l_name: str
-    age: int
-    location: str
-    gender: str
-    language: str
+    f_name: str = Field(..., min_length=1, max_length=50)
+    l_name: str = Field(..., min_length=1, max_length=50)
+    age: int = Field(..., ge=13, le=120)
+    location: str = Field(..., min_length=1, max_length=100)
+    gender: str = Field(..., min_length=1, max_length=20)
+    language: str = Field(..., min_length=1, max_length=50)
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password(v)
+
+    @field_validator("username")
+    @classmethod
+    def username_format(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z0-9_]+$", v):
+            raise ValueError("Username may only contain letters, digits, and underscores")
+        return v
+
+    @field_validator("phone")
+    @classmethod
+    def phone_format(cls, v: str) -> str:
+        digits = re.sub(r"\D", "", v)
+        if not 7 <= len(digits) <= 15:
+            raise ValueError("Phone number must have between 7 and 15 digits")
+        return v
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 
@@ -48,10 +91,22 @@ class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
+    @field_validator("new_password")
+    @classmethod
+    def new_password_strength(cls, v: str) -> str:
+        return _validate_password(v)
+
 
 # ── App setup ─────────────────────────────────────────────────────────
 
-app = FastAPI()
+app = FastAPI(
+    title="Desiconnect API",
+    description="Backend for Desiconnect — a marketplace for South Asian event vendors.",
+    version="1.0.0",
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.include_router(calendar.router)
 app.include_router(bookings.router)
 app.include_router(notifications.router)
@@ -61,7 +116,7 @@ app.include_router(services.router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,7 +125,12 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    """Create all SQLite tables if they do not exist."""
+    """Validate required config and create DB tables."""
+    if not SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY environment variable is not set. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
     Base.metadata.create_all(bind=engine)
 
 
@@ -79,17 +139,22 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"message": "Jorna API", "status": "ok"}
+    return {"message": "Desiconnect API", "status": "ok"}
 
 
-@app.get("/db-check")
-def db_check(db: Session = Depends(get_db)):
-    """Test route: proves we can inject a DB session into a route."""
-    return {"db": "connected"}
+@app.get("/health")
+def health(db: Session = Depends(get_db)):
+    """Health check — verifies the database is reachable."""
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok"}
 
 
 @app.post("/auth/register")
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     """Create a new user. Password is hashed before storage."""
     try:
         return register_user(
@@ -110,7 +175,8 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login")
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     """Verify email/password and return a JWT."""
     try:
         return login_user(email=body.email, password=body.password, db=db)
@@ -142,6 +208,7 @@ def vendor_search(
     latitude: float,
     longitude: float,
     category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
+    tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
     db: Session = Depends(get_db),
 ):
     """Search for vendors offering a specific service within their travel radius."""
@@ -150,7 +217,7 @@ def vendor_search(
         latitude=latitude,
         longitude=longitude,
         category=category.value if category else None,
+        tag=tag,
         db=db,
     )
     return {"vendors": vendors}
-
