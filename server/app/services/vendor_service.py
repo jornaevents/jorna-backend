@@ -2,8 +2,13 @@
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Vendor, Service, User
+from app.db.models import Vendor, Service, User, Tag, vendor_tags
 from app.utils.location import calculate_distance_miles
+
+
+def _normalize_tag(name: str) -> str:
+    """Lowercase and strip whitespace so 'Bridal Mehndi' and 'bridal mehndi' are the same tag."""
+    return name.strip().lower()
 
 
 class VendorError(Exception):
@@ -31,17 +36,21 @@ def create_vendor(*, user_id: str, bio: str, category: str, db: Session) -> dict
         "category": vendor.category,
         "rating": vendor.rating,
         "num_events": vendor.num_events,
+        "tags": [],
     }
-
-
 
 
 def get_vendor(*, vendor_id: str, db: Session) -> dict:
-    """Get a vendor by ID with their user info. Raises 404 if not found."""
-    result = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id).filter(Vendor.vendor_id == vendor_id).first()
-    if not result:
+    """Return a single vendor's full profile including tags. Raises 404 if not found."""
+    row = (
+        db.query(Vendor, User)
+        .join(User, Vendor.user_id == User.user_id)
+        .filter(Vendor.vendor_id == vendor_id)
+        .first()
+    )
+    if not row:
         raise VendorError(404, "Vendor not found")
-    v, u = result
+    v, u = row
     return {
         "vendor_id": v.vendor_id,
         "user_id": v.user_id,
@@ -49,40 +58,31 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "category": v.category,
         "rating": v.rating,
         "num_events": v.num_events,
+        "travel_radius_miles": v.travel_radius_miles,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
         "pfp_url": u.pfp_url,
+        "tags": sorted(t.name for t in v.tags),
     }
 
 
-def get_my_vendor(*, user_id: str, db: Session) -> dict:
-    """Get the current user's vendor profile with their user info. Raises 404 if not found."""
-    result = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id).filter(Vendor.user_id == user_id).first()
-    if not result:
-        raise VendorError(404, "No vendor profile found")
-    v, u = result
-    return {
-        "vendor_id": v.vendor_id,
-        "user_id": v.user_id,
-        "bio": v.bio,
-        "category": v.category,
-        "rating": v.rating,
-        "num_events": v.num_events,
-        "f_name": u.f_name,
-        "l_name": u.l_name,
-        "location": u.location,
-        "pfp_url": u.pfp_url,
-    }
-
-
-def list_vendors(*, db: Session, category: str | None = None) -> list[dict]:
+def list_vendors(
+    *, db: Session, category: str | None = None, tag: str | None = None
+) -> list[dict]:
     """Return all vendors with basic user info joined in.
-    Optionally filter by *category*.
+    Optionally filter by *category* and/or *tag*.
     """
     query = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id)
     if category:
         query = query.filter(Vendor.category == category)
+    if tag:
+        normalized = _normalize_tag(tag)
+        query = (
+            query.join(vendor_tags, Vendor.vendor_id == vendor_tags.c.vendor_id)
+                 .join(Tag, vendor_tags.c.tag_id == Tag.tag_id)
+                 .filter(Tag.name == normalized)
+        )
     rows = query.all()
     return [
         {
@@ -96,6 +96,7 @@ def list_vendors(*, db: Session, category: str | None = None) -> list[dict]:
             "l_name": u.l_name,
             "location": u.location,
             "pfp_url": u.pfp_url,
+            "tags": [t.name for t in v.tags],
         }
         for v, u in rows
     ]
@@ -107,11 +108,12 @@ def search_vendors(
     latitude: float,
     longitude: float,
     category: str | None = None,
+    tag: str | None = None,
     db: Session,
 ) -> list[dict]:
     """Return vendors offering *service_name* within their travel radius
     of the given coordinates, sorted by distance (closest first).
-    Optionally filter by *category*.
+    Optionally filter by *category* and/or *tag*.
     """
     query = (
         db.query(Vendor, Service, User)
@@ -121,6 +123,13 @@ def search_vendors(
     )
     if category:
         query = query.filter(Vendor.category == category)
+    if tag:
+        normalized = _normalize_tag(tag)
+        query = (
+            query.join(vendor_tags, Vendor.vendor_id == vendor_tags.c.vendor_id)
+                 .join(Tag, vendor_tags.c.tag_id == Tag.tag_id)
+                 .filter(Tag.name == normalized)
+        )
     results = query.all()
 
     nearby_vendors: list[dict] = []
@@ -146,8 +155,69 @@ def search_vendors(
                     "distance_miles": round(distance_miles, 2),
                     "rating": vendor.rating,
                     "travel_radius_miles": vendor.travel_radius_miles,
+                    "tags": [t.name for t in vendor.tags],
                 }
             )
 
     nearby_vendors.sort(key=lambda x: x["distance_miles"])
     return nearby_vendors
+
+
+# ── Tag management ────────────────────────────────────────────────────
+
+
+def add_tag_to_vendor(*, vendor_id: str, tag_name: str, db: Session) -> dict:
+    """Add a normalized tag to a vendor. Creates the tag row if it doesn't exist yet."""
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor not found")
+
+    normalized = _normalize_tag(tag_name)
+    if not normalized:
+        raise VendorError(400, "Tag name cannot be empty")
+    if len(normalized) > 100:
+        raise VendorError(400, "Tag name must be 100 characters or fewer")
+
+    tag = db.query(Tag).filter(Tag.name == normalized).first()
+    if not tag:
+        tag = Tag(name=normalized)
+        db.add(tag)
+        db.flush()  # assign tag_id without committing
+
+    if len(vendor.tags) >= 20:
+        raise VendorError(400, "Vendors may not have more than 20 tags")
+
+    if tag not in vendor.tags:
+        vendor.tags.append(tag)
+        db.commit()
+
+    return {"tag": tag.name}
+
+
+def remove_tag_from_vendor(*, vendor_id: str, tag_name: str, db: Session) -> dict:
+    """Remove a tag from a vendor's profile."""
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor not found")
+
+    normalized = _normalize_tag(tag_name)
+    tag = db.query(Tag).filter(Tag.name == normalized).first()
+    if not tag or tag not in vendor.tags:
+        raise VendorError(404, f"Tag '{normalized}' not found on this vendor")
+
+    vendor.tags.remove(tag)
+    db.commit()
+    return {"message": f"Tag '{normalized}' removed"}
+
+
+def get_vendor_tags(*, vendor_id: str, db: Session) -> list[str]:
+    """Return all tag names for a given vendor, sorted alphabetically."""
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor not found")
+    return sorted(t.name for t in vendor.tags)
+
+
+def list_all_tags(*, db: Session) -> list[str]:
+    """Return every tag name in the system, sorted alphabetically."""
+    return [t.name for t in db.query(Tag).order_by(Tag.name).all()]

@@ -13,3 +13,5 @@ pytest
 httpx
 pytest-mock
 python-dotenv
+slowapi
+email-validator

@@ -1,6 +1,9 @@
 """Business logic for Google Calendar OAuth and vendor availability."""
 
+import base64
+import json
 import logging
+import secrets
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -24,17 +27,59 @@ class CalendarError(Exception):
         super().__init__(detail)
 
 
+# ── PKCE helpers ──────────────────────────────────────────────────────
+
+
+def _generate_code_verifier() -> str:
+    """Return a high-entropy random string for use as a PKCE code_verifier."""
+    return secrets.token_urlsafe(96)
+
+
+def _encode_state(vendor_id: str, code_verifier: str) -> str:
+    """Pack vendor_id + code_verifier into a base64 string for the OAuth state param."""
+    payload = json.dumps({"vendor_id": vendor_id, "code_verifier": code_verifier})
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def decode_state(state: str) -> tuple[str, str]:
+    """Decode the OAuth state param back into (vendor_id, code_verifier).
+    Raises CalendarError 400 if the state is malformed.
+    """
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
+        return payload["vendor_id"], payload["code_verifier"]
+    except Exception:
+        raise CalendarError(400, "Invalid OAuth state parameter")
+
+
+# ── OAuth flow ────────────────────────────────────────────────────────
+
+
 def get_google_auth_url(*, vendor_id: str, redirect_uri: str) -> dict:
-    """Build a Google OAuth authorization URL for the vendor."""
+    """Build a Google OAuth authorization URL for the vendor.
+
+    Uses PKCE (code_verifier / code_challenge) to satisfy Google's requirement.
+    The code_verifier is encoded into the state parameter so it survives the
+    round-trip to Google and back to the callback endpoint.
+    """
     try:
         flow = get_google_auth_flow(redirect_uri)
     except FileNotFoundError as e:
         raise CalendarError(500, str(e))
 
-    auth_url, _state = flow.authorization_url(
+    code_verifier = _generate_code_verifier()
+
+    # Setting flow.code_verifier causes google_auth_oauthlib to automatically
+    # include code_challenge + code_challenge_method=S256 in the auth URL.
+    flow.code_verifier = code_verifier
+
+    state = _encode_state(vendor_id, code_verifier)
+
+    auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
-        state=vendor_id,
+        state=state,
+        prompt="consent",
     )
     return {"auth_url": auth_url}
 
@@ -44,16 +89,19 @@ def handle_google_callback(
     vendor_id: str,
     code: str,
     redirect_uri: str,
+    code_verifier: str,
     db: Session,
 ) -> dict:
-    """Exchange the auth code for tokens and persist them."""
+    """Exchange the auth code for tokens and persist them on the vendor row."""
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
         raise CalendarError(404, "Vendor not found")
 
     try:
         flow = get_google_auth_flow(redirect_uri)
-        flow.fetch_token(code=code)
+        # Pass code_verifier explicitly — more reliable than flow.code_verifier
+        # across different versions of google_auth_oauthlib.
+        flow.fetch_token(code=code, code_verifier=code_verifier)
         credentials = flow.credentials
 
         vendor.google_access_token = credentials.token
@@ -65,6 +113,9 @@ def handle_google_callback(
         raise CalendarError(400, f"Failed to fetch Google tokens: {str(e)}")
 
     return {"message": "Google Calendar successfully connected"}
+
+
+# ── Availability ──────────────────────────────────────────────────────
 
 
 def get_vendor_availability(
@@ -111,6 +162,9 @@ def get_vendor_availability(
 
     # 3. Google Calendar busy blocks
     google_busy: list[tuple[datetime, datetime]] = []
+    google_calendar_connected = bool(vendor.google_access_token)
+    google_calendar_error: str | None = None
+
     if vendor.google_access_token:
         try:
             service, creds = create_google_calendar_service(
@@ -122,13 +176,14 @@ def get_vendor_availability(
                 gb_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
                 google_busy.append((gb_start, gb_end))
 
-            # Persist refreshed access token back to DB if it changed
+            # Persist refreshed token if it changed
             if creds.token and creds.token != vendor.google_access_token:
                 vendor.google_access_token = creds.token
                 db.commit()
                 logger.info("Persisted refreshed Google access token for vendor %s", vendor_id)
-        except Exception:
-            pass  # token may be expired; continue without Google data
+        except Exception as exc:
+            logger.warning("Google Calendar fetch failed for vendor %s: %s", vendor_id, exc)
+            google_calendar_error = "Google Calendar data unavailable — the vendor may need to reconnect their account."
 
     return {
         "vendor_id": vendor_id,
@@ -139,4 +194,6 @@ def get_vendor_availability(
         "google_busy_times": [
             {"start": s.isoformat(), "end": e.isoformat()} for s, e in google_busy
         ],
+        "google_calendar_connected": google_calendar_connected,
+        "google_calendar_error": google_calendar_error,
     }

@@ -1,6 +1,7 @@
-"""SQLAlchemy table definitions for User, Vendor, Service, Booking."""
+"""SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table
+from sqlalchemy.orm import relationship
 
 from .database import Base
 
@@ -34,6 +35,23 @@ class User(Base):
     fcm_token = Column(String(512), nullable=True)
 
 
+# Many-to-many join table: one vendor has many tags, one tag belongs to many vendors.
+vendor_tags = Table(
+    "vendor_tags",
+    Base.metadata,
+    Column("vendor_id", String(36), ForeignKey("vendors.vendor_id"), primary_key=True),
+    Column("tag_id",    String(36), ForeignKey("tags.tag_id"),    primary_key=True),
+)
+
+
+class Tag(Base):
+    __tablename__ = "tags"
+
+    tag_id = Column(String(36), primary_key=True, default=uuid_str)
+    # Normalized (lowercase, stripped) tag name — unique across the whole table.
+    name = Column(String(100), unique=True, nullable=False, index=True)
+
+
 class Vendor(Base):
     __tablename__ = "vendors"
 
@@ -48,6 +66,8 @@ class Vendor(Base):
     google_access_token = Column(String(512), nullable=True)
     google_refresh_token = Column(String(512), nullable=True)
     calendar_id = Column(String(255), nullable=True)
+
+    tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
 class Service(Base):

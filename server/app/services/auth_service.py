@@ -4,10 +4,8 @@ import bcrypt
 import jwt
 from sqlalchemy.orm import Session
 
+from app.config import ALGORITHM, SECRET_KEY
 from app.db.models import User
-
-SECRET_KEY = "your-secret-key-change-in-production"
-ALGORITHM = "HS256"
 
 
 class AuthError(Exception):
