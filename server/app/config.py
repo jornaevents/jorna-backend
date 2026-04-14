@@ -13,6 +13,17 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip() or "sqlite:///./test.d
 SECRET_KEY: str = os.getenv("SECRET_KEY", "")
 ALGORITHM: str = "HS256"
 
+# ── Google Calendar OAuth ─────────────────────────────────────────────
+# Where Google redirects after the vendor grants access.
+# Must match exactly what is registered in Google Cloud Console.
+GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "http://localhost:8000/vendors/auth/callback",
+)
+
+# Where the backend redirects the vendor's browser after OAuth completes.
+FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
 # ── CORS ──────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins.
 # Example: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com
