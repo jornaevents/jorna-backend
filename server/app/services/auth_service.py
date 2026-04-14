@@ -11,6 +11,17 @@ from app.config import ALGORITHM, SECRET_KEY
 from app.db.models import User
 
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+
+# Cache the JWKS client at module level so we don't re-fetch on every request.
+_jwks_client = None
+
+def _get_jwks_client():
+    from jwt import PyJWKClient
+    global _jwks_client
+    if _jwks_client is None and SUPABASE_URL:
+        _jwks_client = PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json")
+    return _jwks_client
 
 class AuthError(Exception):
     """Raised when an auth operation fails."""
@@ -22,14 +33,24 @@ class AuthError(Exception):
 
 
 def _decode_supabase_access_token(access_token: str) -> dict:
-    """Verify a Supabase-issued JWT (HS256 with project JWT secret)."""
-    if not SUPABASE_JWT_SECRET:
-        raise AuthError(500, "Server is not configured for Google sign-in (missing SUPABASE_JWT_SECRET)")
+    """Verify a Supabase-issued JWT using the project's JWKS public key."""
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    header = jwt.get_unverified_header(access_token)
+    _logger.info("Supabase token header: %s", header)
+
+    client = _get_jwks_client()
+    if not client:
+        raise AuthError(500, "Server is not configured for Google sign-in (missing SUPABASE_URL)")
     try:
+        signing_key = client.get_signing_key_from_jwt(access_token)
+        alg = header.get("alg", "RS256")
+        _logger.info("Verifying with alg=%s", alg)
         return jwt.decode(
             access_token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
+            signing_key.key,
+            algorithms=[alg],
             audience="authenticated",
         )
     except jwt.InvalidTokenError as e:
@@ -42,7 +63,7 @@ def lookup_google_linked_user(*, access_token: str, db: Session) -> dict:
     If linked, returns a FastAPI JWT for API access.
     """
     claims = _decode_supabase_access_token(access_token)
-    sub = claims.get("sub")
+    sub = (claims.get("sub") or "").lower()
     if not sub:
         raise AuthError(401, "Invalid token: missing sub")
     email = claims.get("email")
@@ -68,7 +89,7 @@ def register_user(
     email: str,
     password: str,
     username: str,
-    phone: str,
+    phone: Optional[str] = None,
     f_name: str,
     l_name: str,
     age: int,
@@ -90,10 +111,11 @@ def register_user(
         raise AuthError(400, "Email or username already taken")
 
     if supabase_user_id:
+        supabase_user_id = supabase_user_id.lower()
         if not supabase_access_token:
             raise AuthError(400, "supabase_access_token is required when linking a Google account")
         claims = _decode_supabase_access_token(supabase_access_token)
-        if claims.get("sub") != supabase_user_id:
+        if claims.get("sub", "").lower() != supabase_user_id:
             raise AuthError(400, "supabase_user_id does not match token")
         claim_email = (claims.get("email") or "").lower()
         if claim_email != email.lower():
@@ -134,11 +156,19 @@ def change_password(*, user_id: str, current_password: str, new_password: str, d
     return {"message": "Password updated successfully"}
 
 
-def login_user(*, email: str, password: str, db: Session) -> dict:
-    """Verify credentials and return a JWT.  Returns ``{access_token, token_type}``."""
-    user = db.query(User).filter(User.email == email).first()
+def login_user(*, identifier: str, password: str, db: Session) -> dict:
+    """Verify credentials and return a JWT.  Returns ``{access_token, token_type}``.
+
+    ``identifier`` may be either an email address or a username.
+    """
+    import re as _re
+    _email_re = _re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    if _email_re.match(identifier):
+        user = db.query(User).filter(User.email == identifier.lower()).first()
+    else:
+        user = db.query(User).filter(User.username == identifier).first()
     if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
-        raise AuthError(401, "Invalid email or password")
+        raise AuthError(401, "Invalid credentials")
 
     token = jwt.encode(
         {"sub": user.user_id, "email": user.email},

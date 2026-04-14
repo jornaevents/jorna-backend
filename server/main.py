@@ -4,8 +4,11 @@ Registers routers and exposes auth / vendor-search routes that
 delegate to the service layer.
 """
 
+import logging
 import re
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before any module reads os.environ
@@ -59,7 +62,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     username: str = Field(..., min_length=3, max_length=30)
-    phone: str
+    phone: Optional[str] = None
     f_name: str = Field(..., min_length=1, max_length=50)
     l_name: str = Field(..., min_length=1, max_length=50)
     age: int = Field(..., ge=13, le=120)
@@ -83,7 +86,9 @@ class RegisterRequest(BaseModel):
 
     @field_validator("phone")
     @classmethod
-    def phone_format(cls, v: str) -> str:
+    def phone_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
         digits = re.sub(r"\D", "", v)
         if not 7 <= len(digits) <= 15:
             raise ValueError("Phone number must have between 7 and 15 digits")
@@ -95,7 +100,7 @@ class GoogleLookupRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    identifier: str = Field(..., min_length=1, description="Email address or username")
     password: str
 
 
@@ -186,6 +191,13 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
         )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        db.rollback()
+        logger.exception("Unhandled error in /auth/register: %s", e)
+        # Unique constraint violations (duplicate email/username/supabase_user_id)
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(status_code=400, detail="Email or username already taken")
+        raise HTTPException(status_code=500, detail="Registration failed")
 
 
 @app.post("/auth/login")
@@ -193,7 +205,7 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
 def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     """Verify email/password and return a JWT."""
     try:
-        return login_user(email=body.email, password=body.password, db=db)
+        return login_user(identifier=body.identifier, password=body.password, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
