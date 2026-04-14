@@ -34,6 +34,48 @@ def create_vendor(*, user_id: str, bio: str, category: str, db: Session) -> dict
     }
 
 
+
+
+def get_vendor(*, vendor_id: str, db: Session) -> dict:
+    """Get a vendor by ID with their user info. Raises 404 if not found."""
+    result = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id).filter(Vendor.vendor_id == vendor_id).first()
+    if not result:
+        raise VendorError(404, "Vendor not found")
+    v, u = result
+    return {
+        "vendor_id": v.vendor_id,
+        "user_id": v.user_id,
+        "bio": v.bio,
+        "category": v.category,
+        "rating": v.rating,
+        "num_events": v.num_events,
+        "f_name": u.f_name,
+        "l_name": u.l_name,
+        "location": u.location,
+        "pfp_url": u.pfp_url,
+    }
+
+
+def get_my_vendor(*, user_id: str, db: Session) -> dict:
+    """Get the current user's vendor profile with their user info. Raises 404 if not found."""
+    result = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id).filter(Vendor.user_id == user_id).first()
+    if not result:
+        raise VendorError(404, "No vendor profile found")
+    v, u = result
+    return {
+        "vendor_id": v.vendor_id,
+        "user_id": v.user_id,
+        "bio": v.bio,
+        "category": v.category,
+        "rating": v.rating,
+        "num_events": v.num_events,
+        "f_name": u.f_name,
+        "l_name": u.l_name,
+        "location": u.location,
+        "pfp_url": u.pfp_url,
+    }
+
+
 def list_vendors(*, db: Session, category: str | None = None) -> list[dict]:
     """Return all vendors with basic user info joined in.
     Optionally filter by *category*.

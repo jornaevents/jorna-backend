@@ -10,7 +10,7 @@ from app.db.database import get_db
 from app.db.models import User
 from app.dependencies import get_current_user
 from app.models.schemas import VendorCategory
-from app.services.vendor_service import VendorError, create_vendor, list_vendors
+from app.services.vendor_service import VendorError, create_vendor, get_vendor, get_my_vendor, list_vendors
 
 router = APIRouter(prefix="/vendors", tags=["vendors"])
 
@@ -51,4 +51,30 @@ def list_vendors_route(
 ):
     """Return all vendor profiles with basic user info. Optionally filter by category."""
     return list_vendors(db=db, category=category.value if category else None)
+
+
+@router.get("/me", summary="Get current user's vendor profile")
+def get_my_vendor_route(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated user's vendor profile."""
+    try:
+        return get_my_vendor(user_id=current_user.user_id, db=db)
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/{vendor_id}", summary="Get vendor by ID")
+def get_vendor_route(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+):
+    """Return a specific vendor profile by ID with their user info."""
+    try:
+        return get_vendor(vendor_id=vendor_id, db=db)
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 
