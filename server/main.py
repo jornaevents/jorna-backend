@@ -25,7 +25,13 @@ from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
 from app.routers import calendar, bookings, notifications, users, vendors, services
-from app.services.auth_service import AuthError, register_user, login_user, change_password
+from app.services.auth_service import (
+    AuthError,
+    register_user,
+    login_user,
+    change_password,
+    lookup_google_linked_user,
+)
 from app.services.vendor_service import search_vendors
 
 
@@ -60,6 +66,8 @@ class RegisterRequest(BaseModel):
     location: str = Field(..., min_length=1, max_length=100)
     gender: str = Field(..., min_length=1, max_length=20)
     language: str = Field(..., min_length=1, max_length=50)
+    supabase_user_id: Optional[str] = None
+    supabase_access_token: Optional[str] = None
 
     @field_validator("password")
     @classmethod
@@ -80,6 +88,10 @@ class RegisterRequest(BaseModel):
         if not 7 <= len(digits) <= 15:
             raise ValueError("Phone number must have between 7 and 15 digits")
         return v
+
+
+class GoogleLookupRequest(BaseModel):
+    access_token: str
 
 
 class LoginRequest(BaseModel):
@@ -169,6 +181,8 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             gender=body.gender,
             language=body.language,
             db=db,
+            supabase_user_id=body.supabase_user_id,
+            supabase_access_token=body.supabase_access_token,
         )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -180,6 +194,15 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     """Verify email/password and return a JWT."""
     try:
         return login_user(email=body.email, password=body.password, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/google/lookup")
+def auth_google_lookup(body: GoogleLookupRequest, db: Session = Depends(get_db)):
+    """After Google OAuth, check if this Supabase identity is linked to a Jorna user; if so, return a FastAPI JWT."""
+    try:
+        return lookup_google_linked_user(access_token=body.access_token, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

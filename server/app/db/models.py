@@ -34,6 +34,9 @@ class User(Base):
     # Firebase Cloud Messaging token for push notifications
     fcm_token = Column(String(512), nullable=True)
 
+    # Supabase Auth user id (UUID) when this Jorna account is linked to Google sign-in
+    supabase_user_id = Column(String(36), unique=True, nullable=True)
+
 
 # Many-to-many join table: one vendor has many tags, one tag belongs to many vendors.
 vendor_tags = Table(
