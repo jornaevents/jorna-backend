@@ -146,6 +146,8 @@ def update_booking_status(
             )
 
     booking.status = status_str
+    if status_str == BookingStatus.APPROVED.value:
+        booking.confirmed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(booking)
 

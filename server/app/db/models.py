@@ -1,6 +1,6 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -70,6 +70,10 @@ class Vendor(Base):
     google_refresh_token = Column(String(512), nullable=True)
     calendar_id = Column(String(255), nullable=True)
 
+    # Stripe Connect — set during vendor onboarding
+    stripe_account_id = Column(String(255), nullable=True)
+    stripe_onboarding_complete = Column(Boolean, nullable=False, default=False)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
@@ -106,6 +110,19 @@ class Booking(Base):
     venue_longitude = Column(Float, nullable=True)
     client_checked_in_at = Column(String(50), nullable=True)
     vendor_checked_in_at = Column(String(50), nullable=True)
+
+    # Payment — populated when the customer pays after booking is confirmed
+    payment_intent_id = Column(String(255), nullable=True, index=True)
+    # unpaid | processing | paid | released | refunded | disputed
+    payment_status = Column(String(50), nullable=False, default="unpaid")
+    amount_cents = Column(Integer, nullable=True)       # total charged to customer
+    platform_fee_cents = Column(Integer, nullable=True) # Desiconnect's cut
+    currency = Column(String(10), nullable=False, default="usd")
+    confirmed_at = Column(DateTime, nullable=True)      # when vendor approved — refund window starts here
+    paid_at = Column(DateTime, nullable=True)           # when Stripe payment succeeded
+    customer_confirmed_at = Column(DateTime, nullable=True)
+    vendor_confirmed_at = Column(DateTime, nullable=True)
+    funds_released_at = Column(DateTime, nullable=True)
 
 
 class VendorAvailability(Base):

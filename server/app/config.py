@@ -24,6 +24,13 @@ GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv(
 # Where the backend redirects the vendor's browser after OAuth completes.
 FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# ── Stripe ───────────────────────────────────────────────────────────
+STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+# Integer percent taken by the platform on each booking (e.g. 5 = 5 %).
+PLATFORM_FEE_PERCENT: int = int(os.getenv("PLATFORM_FEE_PERCENT", "5"))
+
 # ── CORS ──────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins.
 # Example: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com

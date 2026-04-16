@@ -22,12 +22,12 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, SECRET_KEY
+from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import calendar, bookings, notifications, users, vendors, services
+from app.routers import calendar, bookings, notifications, users, vendors, services, payments
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -130,6 +130,7 @@ app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(vendors.router)
 app.include_router(services.router)
+app.include_router(payments.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,6 +148,11 @@ def startup():
         raise RuntimeError(
             "SECRET_KEY environment variable is not set. "
             "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    if not STRIPE_SECRET_KEY:
+        raise RuntimeError(
+            "STRIPE_SECRET_KEY environment variable is not set. "
+            "Add your Stripe test key (sk_test_...) to the .env file."
         )
     Base.metadata.create_all(bind=engine)
 
