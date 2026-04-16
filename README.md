@@ -13,7 +13,9 @@ A full-stack event planning and vendor booking platform connecting South Asian e
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
 - [API Reference](#api-reference)
+- [AI Chatbot (Llama 3.3)](#ai-chatbot-llama-33)
 - [Push Notifications (Firebase)](#push-notifications-firebase)
+- [Google Calendar Integration (OAuth)](#google-calendar-integration-oauth)
 - [Running Tests](#running-tests)
 - [Frontend (Vite)](#frontend-vite)
 
@@ -24,24 +26,28 @@ A full-stack event planning and vendor booking platform connecting South Asian e
 - **User Authentication** — Registration with password hashing (bcrypt) and JWT login
 - **Vendor Search** — Location-based vendor discovery using the Haversine formula with configurable travel radius (default 30 miles)
 - **Booking System** — Full booking lifecycle: create → pending → approved/rejected → payment confirmed
+- **AI Chatbot Bundle Builder** — Conversational chatbot that helps users build vendor bundles step-by-step, with **Llama 3.3** LLM fallback for natural language understanding when users go off-script
 - **Push Notifications** — Firebase Cloud Messaging (FCM) integration for real-time booking status updates
 - **Google Calendar Integration** — Vendors can connect their Google Calendar; availability is computed by merging baseline working hours, internal bookings, and Google Calendar busy blocks
 - **Geo-Fenced Check-In** — GPS-verified venue check-in for both clients and vendors (within 0.2 miles)
 - **Vendor Availability** — Weekly working hours with smart conflict detection
+- **Rate Limiting** — API rate limiting via slowapi to prevent abuse
 
 ---
 
 ## Tech Stack
 
-| Layer       | Technology                                     |
-| ----------- | ---------------------------------------------- |
-| Backend     | Python 3.13, FastAPI, Uvicorn                  |
-| Database    | SQLite + SQLAlchemy ORM                        |
-| Auth        | bcrypt (password hashing), PyJWT (tokens)      |
-| Notifications | Firebase Admin SDK (FCM push notifications)  |
-| Calendar    | Google Calendar API (OAuth 2.0, FreeBusy)      |
-| Frontend    | Vite + TypeScript (web), Swift/SwiftUI (iOS)   |
-| Testing     | pytest, httpx, pytest-mock                     |
+| Layer         | Technology                                     |
+| ------------- | ---------------------------------------------- |
+| Backend       | Python 3.13, FastAPI, Uvicorn                  |
+| Database      | SQLite + SQLAlchemy ORM                        |
+| Auth          | bcrypt (password hashing), PyJWT (tokens)      |
+| AI / LLM      | Llama 3.3 70B via OpenRouter (openai SDK)     |
+| Notifications | Firebase Admin SDK (FCM push notifications)    |
+| Calendar      | Google Calendar API (OAuth 2.0, FreeBusy)      |
+| Rate Limiting | slowapi                                        |
+| Frontend      | Vite + TypeScript (web), Swift/SwiftUI (iOS)   |
+| Testing       | pytest, pytest-asyncio, httpx, pytest-mock     |
 
 ---
 
@@ -53,16 +59,20 @@ Desiconnect/
 │   ├── main.py                      # App entry point, route registration
 │   ├── requirements.txt             # Python dependencies
 │   ├── run.sh                       # Quick start script
+│   ├── .env.example                 # Environment variable template
 │   ├── app/
+│   │   ├── config.py                # App configuration (SECRET_KEY, CORS, etc.)
+│   │   ├── dependencies.py          # Shared FastAPI dependencies (JWT auth)
 │   │   ├── db/
-│   │   │   ├── database.py          # SQLite engine & session factory
+│   │   │   ├── database.py          # SQLite/PostgreSQL engine & session factory
 │   │   │   └── models.py            # SQLAlchemy models (User, Vendor, Service, Booking, etc.)
 │   │   ├── models/
-│   │   │   └── schemas.py           # Pydantic/dataclass schemas & BookingStatus enum
-│   │   ├── dependencies.py          # Shared FastAPI dependencies (JWT auth)
+│   │   │   ├── schemas.py           # Pydantic schemas & BookingStatus enum
+│   │   │   └── chatbot_schemas.py   # Chatbot step machine schemas & enums
 │   │   ├── routers/                 # Thin HTTP layer (request parsing → service call → response)
 │   │   │   ├── bookings.py          # Booking endpoints
 │   │   │   ├── calendar.py          # Calendar & availability endpoints
+│   │   │   ├── chatbot.py           # Chatbot bundle-builder endpoints
 │   │   │   ├── notifications.py     # FCM token management endpoints
 │   │   │   ├── services.py          # Service (offering) endpoints
 │   │   │   ├── users.py             # User profile endpoints
@@ -71,6 +81,8 @@ Desiconnect/
 │   │   │   ├── auth_service.py      # Registration & login (hashing, JWT)
 │   │   │   ├── booking_service.py   # Booking CRUD, status rules, check-in, notifications
 │   │   │   ├── calendar_service.py  # Google OAuth, availability aggregation
+│   │   │   ├── chatbot_service.py   # Chatbot step processor, bundle generation, LLM integration
+│   │   │   ├── llm_service.py       # Llama 3.3 fallback via OpenRouter (off-script detection + intent extraction)
 │   │   │   ├── notification_service.py  # FCM token registration & management
 │   │   │   ├── service_service.py   # Service (offering) CRUD
 │   │   │   ├── user_service.py      # User profile read & update
@@ -83,7 +95,12 @@ Desiconnect/
 │   │   ├── test_api.py              # Core API tests (auth, search, check-in)
 │   │   ├── test_bookings.py         # Booking lifecycle tests
 │   │   ├── test_calendar_and_location.py  # Calendar, OAuth, location tests
-│   │   └── test_notifications.py    # Notification system tests
+│   │   ├── test_chatbot.py          # Chatbot unit, integration & LLM fallback tests (69 tests)
+│   │   ├── test_integration_credentials.py  # Firebase & Google credential integration tests
+│   │   ├── test_notifications.py    # Notification system tests
+│   │   └── live_llm_test.py         # Live LLM integration test script (requires running server + API key)
+│   ├── migrations/
+│   │   └── add_supabase_user_id.sql # Supabase user ID migration
 │   └── live_test.sh                 # Comprehensive live API test script (57 tests)
 ├── src/                             # Vite frontend
 ├── package.json
@@ -98,7 +115,7 @@ The backend follows a **Router → Service → Utils** layered architecture:
 | Layer        | Responsibility |
 | ------------ | -------------- |
 | **Routers**  | HTTP concerns only — parse requests, call services, map errors to HTTP responses |
-| **Services** | All business logic — validation, authorization, database operations, notifications |
+| **Services** | All business logic — validation, authorization, database operations, notifications, LLM calls |
 | **Utils**    | Low-level helpers — external API clients (Google Calendar, Firebase), math (Haversine) |
 
 
@@ -123,6 +140,9 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Copy the example env and fill in your values
+cp .env.example .env
+
 # Make the start script executable (first time only)
 chmod +x run.sh
 
@@ -134,9 +154,22 @@ The API will be available at `http://localhost:8000`. Visit `http://localhost:80
 
 > **Note:** Every time you open a new terminal to work on the server, activate the virtual environment first with `source venv/bin/activate` (from inside the `server/` folder).
 
-### Credentials (Required)
+### Environment Variables
 
-The following credential files are **required** for push notifications and Google Calendar integration to work. They are **not committed to the repo** (listed in `.gitignore`) and must be obtained separately.
+Copy `.env.example` to `.env` and fill in the required values:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SECRET_KEY` | Yes | JWT signing key. Generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `DATABASE_URL` | No | Database connection string. Defaults to SQLite if unset |
+| `ALLOWED_ORIGINS` | No | CORS origins (comma-separated). Defaults to localhost |
+| `OPENROUTER_API_KEY` | No | [OpenRouter](https://openrouter.ai) API key for Llama 3.3 chatbot fallback |
+| `GOOGLE_CLIENT_SECRET_PATH` | No | Path to Google OAuth client secret JSON |
+| `FIREBASE_CREDENTIALS_PATH` | No | Path to Firebase service account credentials JSON |
+
+### Credentials (Required for Full Functionality)
+
+The following credential files are **not committed to the repo** (listed in `.gitignore`) and must be obtained separately.
 
 | File | Location | Purpose | Source |
 |------|----------|---------|--------|
@@ -167,10 +200,11 @@ rm desiconnect.db
 
 ### Authentication
 
-| Method | Endpoint          | Description                        |
-| ------ | ----------------- | ---------------------------------- |
-| POST   | `/auth/register`  | Create a new user account          |
-| POST   | `/auth/login`     | Login and receive a JWT token      |
+| Method | Endpoint               | Description                        |
+| ------ | ---------------------- | ---------------------------------- |
+| POST   | `/auth/register`       | Create a new user account          |
+| POST   | `/auth/login`          | Login and receive a JWT token      |
+| POST   | `/auth/change-password`| Change password (auth required)    |
 
 **Register body:**
 ```json
@@ -296,6 +330,15 @@ GET /vendors/{id}/availability?start_date=2026-03-01T00:00:00Z&end_date=2026-03-
 
 Returns baseline working hours, internal busy times (Desiconnect bookings), and Google Calendar busy times.
 
+### Chatbot (Bundle Builder)
+
+| Method | Endpoint          | Description                                    |
+| ------ | ----------------- | ---------------------------------------------- |
+| POST   | `/chatbot/start`  | Start a new chatbot session                    |
+| POST   | `/chatbot/step`   | Process a step and return the next prompt      |
+
+See [AI Chatbot (Llama 3.3)](#ai-chatbot-llama-33) below for full details.
+
 ### Notifications
 
 | Method | Endpoint                                | Description                          |
@@ -311,6 +354,72 @@ Returns baseline working hours, internal busy times (Desiconnect bookings), and 
   "fcm_token": "device_fcm_token_string"
 }
 ```
+
+---
+
+## AI Chatbot (Llama 3.3)
+
+Desiconnect includes an **AI-powered chatbot** that helps users build vendor bundles for their events through a guided conversation flow.
+
+### How It Works
+
+The chatbot uses a **deterministic step-based state machine** for the main flow:
+
+```
+Event Details → Already Booked → Still Need → Budget → Style → Bundle → Booking
+```
+
+At each step, the user can click **helper buttons** (on-script) or type **free-form text** (potentially off-script).
+
+#### LLM Fallback (Llama 3.3)
+
+When a user types something that doesn't match the expected inputs for the current step, the message is routed to **Llama 3.3 70B** (via [OpenRouter](https://openrouter.ai)) which:
+
+1. **Answers the question** naturally in the context of South Asian event planning
+2. **Extracts structured intent** from the message (e.g., budget amount, vendor categories)
+3. **Jumps to the appropriate step** if the intent maps to a flow action, or stays on the current step for question-only inputs
+
+#### Example Scenarios
+
+| User says (off-script) | LLM behavior |
+|------------------------|-------------|
+| *"What's the difference between a DJ and dhol?"* | Answers the question, stays on current step |
+| *"I think around five thousand dollars"* (at budget step) | Extracts $5,000 budget, jumps to style step |
+| *"Can you swap out the DJ?"* (at bundle review) | Detects swap intent, jumps to swap vendor step |
+| *"Mujhe ek accha DJ chahiye"* (Hinglish) | Understands and responds appropriately |
+
+### Conversation History
+
+The chatbot maintains a rolling conversation history (last 6 messages) in the client-side state, giving the LLM context about previous interactions.
+
+### Setup
+
+1. Sign up at [OpenRouter](https://openrouter.ai) and get an API key
+2. Add to your `.env`: `OPENROUTER_API_KEY=sk-or-v1-your-key-here`
+
+> **Without the API key:** The chatbot's deterministic flow works normally. Off-script messages will receive a generic "try using the buttons" fallback instead of LLM responses.
+
+### Chatbot API
+
+**Start a session:**
+```bash
+POST /chatbot/start
+# Returns: next_step, bot_message, helper_buttons, state
+```
+
+**Process a step:**
+```bash
+POST /chatbot/step
+{
+  "current_step": "budget",
+  "user_input": "I think around five thousand dollars",
+  "selected_values": [],
+  "state": { ... }
+}
+# Returns: next_step, bot_message, helper_buttons, state, bundle?, llm_response
+```
+
+The `llm_response` field (`true`/`false`) indicates whether the response was generated by the LLM fallback.
 
 ---
 
@@ -384,14 +493,28 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-**Test coverage (38 tests):**
+**Test coverage:**
 
 | File                              | Tests | Covers                                                  |
 | --------------------------------- | ----- | ------------------------------------------------------- |
 | `test_api.py`                     | 7     | Root, DB check, auth, vendor search, Google auth, check-in |
 | `test_bookings.py`                | 5     | Booking CRUD, approve/reject, fetch by user/vendor       |
 | `test_calendar_and_location.py`   | 7     | OAuth callbacks, availability aggregation, check-in edge cases |
+| `test_chatbot.py`                 | 69    | Chatbot step transitions, bundle generation, off-script detection, LLM fallback (mocked), full flow integration, HTTP endpoints |
+| `test_integration_credentials.py` | —     | Firebase & Google credential integration tests           |
 | `test_notifications.py`           | 19    | FCM token endpoints, notification utils (mocked), booking integration |
+
+### Live LLM Tests
+
+With the server running and `OPENROUTER_API_KEY` configured:
+
+```bash
+cd server
+source venv/bin/activate
+python tests/live_llm_test.py
+```
+
+This runs **60+ live tests** against the real Llama 3.3 API covering on-script flows, off-script questions, intent extraction, conversation history, Hinglish input, emojis, and mixed flows.
 
 ### Live API Tests (curl)
 
