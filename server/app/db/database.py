@@ -2,7 +2,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./desiconnect.db"
 from app.config import DATABASE_URL
 
 # SQLite requires check_same_thread=False; PostgreSQL does not need it.

@@ -22,7 +22,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY
+from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, DATABASE_URL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
@@ -141,9 +141,22 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 @app.on_event("startup")
 def startup():
     """Validate required config and create DB tables."""
+    db_display = "sqlite (local)" if DATABASE_URL.startswith("sqlite") else "postgresql"
+    logger.info("Database: %s", db_display)
+
     if not SECRET_KEY:
         raise RuntimeError(
             "SECRET_KEY environment variable is not set. "

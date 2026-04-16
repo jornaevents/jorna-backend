@@ -59,7 +59,7 @@ class Vendor(Base):
     __tablename__ = "vendors"
 
     vendor_id = Column(String(36), primary_key=True, default=uuid_str)
-    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     bio = Column(Text, nullable=False)
     category = Column(String(50), nullable=False, default="other")
     rating = Column(Float, nullable=False)
@@ -84,7 +84,7 @@ class Service(Base):
     name = Column(String(255), nullable=False)
     price = Column(Float, nullable=False)
     duration_minutes = Column(Integer, nullable=True)
-    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
     experience = Column(Text, nullable=False)
     media = Column(JSON, nullable=True)
     category = Column(String(50), nullable=True)
@@ -96,9 +96,9 @@ class Booking(Base):
     __tablename__ = "bookings"
 
     booking_id = Column(String(36), primary_key=True, default=uuid_str)
-    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
-    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False)
-    service_id = Column(String(36), ForeignKey("services.service_id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
+    service_id = Column(String(36), ForeignKey("services.service_id"), nullable=False, index=True)
     event_name = Column(String(255), nullable=False)
     time_start = Column(String(50), nullable=False)
     time_end = Column(String(50), nullable=False)
@@ -125,11 +125,20 @@ class Booking(Base):
     funds_released_at = Column(DateTime, nullable=True)
 
 
+class StripeWebhookEvent(Base):
+    """Tracks processed Stripe webhook event IDs to prevent duplicate processing."""
+
+    __tablename__ = "stripe_webhook_events"
+
+    event_id = Column(String(255), primary_key=True)  # Stripe's evt_... ID
+    processed_at = Column(DateTime, nullable=False)
+
+
 class VendorAvailability(Base):
     __tablename__ = "vendor_availability"
 
     availability_id = Column(String(36), primary_key=True, default=uuid_str)
-    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
     day_of_week = Column(Integer, nullable=False)
     start_time = Column(String(5), nullable=False)
     end_time = Column(String(5), nullable=False)

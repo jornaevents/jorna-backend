@@ -1,7 +1,9 @@
 """Router for Stripe payment and vendor onboarding endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -17,6 +19,7 @@ from app.services.stripe_service import (
 )
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Vendor onboarding ─────────────────────────────────────────────────
@@ -47,9 +50,10 @@ def stripe_onboard(
 def stripe_status(
     vendor_id: str,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    """Returns whether the vendor has completed Stripe Connect onboarding
-    and is able to receive payouts.
+    """Returns whether the vendor has completed Stripe Connect onboarding.
+    Requires authentication to prevent exposing Stripe account IDs publicly.
     """
     try:
         return get_vendor_stripe_status(vendor_id=vendor_id, db=db)
@@ -64,7 +68,9 @@ def stripe_status(
     "/bookings/{booking_id}/pay",
     summary="Initiate payment for a confirmed booking",
 )
+@limiter.limit("3/minute")
 def pay_booking(
+    request: Request,
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -108,7 +114,9 @@ def confirm_booking_event(
     "/bookings/{booking_id}/refund",
     summary="Request a refund (within 24 hours of booking confirmation)",
 )
+@limiter.limit("3/minute")
 def refund_booking(
+    request: Request,
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),

@@ -24,6 +24,8 @@ def get_current_user(
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired — please log in again")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
     user = db.query(User).filter(User.user_id == user_id).first()

@@ -1,13 +1,14 @@
 """Business logic for user authentication (register & login)."""
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
 import jwt
 from sqlalchemy.orm import Session
 
-from app.config import ALGORITHM, SECRET_KEY
+from app.config import ALGORITHM, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
 from app.db.models import User
 
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
@@ -22,6 +23,16 @@ def _get_jwks_client():
     if _jwks_client is None and SUPABASE_URL:
         _jwks_client = PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json")
     return _jwks_client
+
+def _make_token(user_id: str, email: str) -> str:
+    """Return a signed JWT with a fixed expiry window."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    return jwt.encode(
+        {"sub": user_id, "email": email, "exp": expire},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
 
 class AuthError(Exception):
     """Raised when an auth operation fails."""
@@ -70,11 +81,7 @@ def lookup_google_linked_user(*, access_token: str, db: Session) -> dict:
     user = db.query(User).filter(User.supabase_user_id == sub).first()
     if not user:
         return {"linked": False, "email": email}
-    token = jwt.encode(
-        {"sub": user.user_id, "email": user.email},
-        SECRET_KEY,
-        algorithm=ALGORITHM,
-    )
+    token = _make_token(user.user_id, user.email)
     return {
         "linked": True,
         "access_token": token,
@@ -170,9 +177,5 @@ def login_user(*, identifier: str, password: str, db: Session) -> dict:
     if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
         raise AuthError(401, "Invalid credentials")
 
-    token = jwt.encode(
-        {"sub": user.user_id, "email": user.email},
-        SECRET_KEY,
-        algorithm=ALGORITHM,
-    )
+    token = _make_token(user.user_id, user.email)
     return {"access_token": token, "token_type": "bearer"}

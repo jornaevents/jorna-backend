@@ -8,7 +8,7 @@ import stripe
 from sqlalchemy.orm import Session
 
 from app.config import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, FRONTEND_URL, PLATFORM_FEE_PERCENT
-from app.db.models import Vendor, Booking, Service
+from app.db.models import Vendor, Booking, Service, StripeWebhookEvent
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -185,6 +185,18 @@ def handle_stripe_webhook(*, payload: bytes, signature: str, db: Session) -> dic
     except stripe.error.SignatureVerificationError:
         raise StripeError(400, "Invalid webhook signature")
 
+    event_id = event["id"]
+
+    # Idempotency check — skip events we've already processed.
+    already_processed = (
+        db.query(StripeWebhookEvent)
+        .filter(StripeWebhookEvent.event_id == event_id)
+        .first()
+    )
+    if already_processed:
+        logger.info("Duplicate webhook event %s — skipping", event_id)
+        return {"received": True}
+
     event_type = event["type"]
     data = event["data"]["object"]
 
@@ -194,6 +206,10 @@ def handle_stripe_webhook(*, payload: bytes, signature: str, db: Session) -> dic
         _on_payment_failed(data, db)
     else:
         logger.debug("Unhandled Stripe event type: %s", event_type)
+
+    # Record the event so retries are ignored.
+    db.add(StripeWebhookEvent(event_id=event_id, processed_at=datetime.now(timezone.utc)))
+    db.commit()
 
     return {"received": True}
 
@@ -237,9 +253,18 @@ def confirm_event(*, booking_id: str, is_vendor: bool, db: Session) -> dict:
     When both parties have confirmed, funds are automatically transferred
     to the vendor's Stripe Connect account (minus the platform fee).
     """
-    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    # Lock the row so two simultaneous confirms can't both trigger a transfer.
+    booking = (
+        db.query(Booking)
+        .filter(Booking.booking_id == booking_id)
+        .with_for_update()
+        .first()
+    )
     if not booking:
         raise StripeError(404, "Booking not found")
+
+    if booking.payment_status == "released":
+        return {"message": "Funds have already been released for this booking."}
 
     if booking.payment_status != "paid":
         raise StripeError(400, "Cannot confirm an event that has not been paid for")
@@ -284,6 +309,9 @@ def _release_funds(booking: Booking, db: Session) -> None:
             destination=vendor.stripe_account_id,
             transfer_group=booking.booking_id,
             metadata={"booking_id": booking.booking_id},
+            # Idempotency key ensures Stripe deduplicates this transfer even if
+            # the request is retried after a network failure.
+            idempotency_key=f"release_{booking.booking_id}",
         )
     except stripe.StripeError as e:
         raise StripeError(502, f"Stripe transfer failed: {e.user_message or str(e)}")

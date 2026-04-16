@@ -1,7 +1,7 @@
 """Thin router for booking endpoints — delegates to booking_service."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -43,8 +43,8 @@ class BookingStatusUpdate(BaseModel):
 class CheckInRequest(BaseModel):
     user_id: str
     is_vendor: bool
-    latitude: float
-    longitude: float
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
 
 
 # ── Routes ────────────────────────────────────────────────────────────

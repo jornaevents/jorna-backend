@@ -100,9 +100,13 @@ def create_booking(
     db.refresh(booking)
 
     client, vendor_obj, vendor_user, _ = _get_booking_parties(db, booking)
-    notification = _dispatch_status_notification(
-        BookingStatus.PENDING.value, booking, client, vendor_user, service
-    )
+    try:
+        notification = _dispatch_status_notification(
+            BookingStatus.PENDING.value, booking, client, vendor_user, service
+        )
+    except Exception as exc:
+        logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
+        notification = {"error": "Notification unavailable"}
 
     return {
         "message": "Booking requested successfully",
@@ -152,9 +156,13 @@ def update_booking_status(
     db.refresh(booking)
 
     client, vendor_obj, vendor_user, service = _get_booking_parties(db, booking)
-    notification = _dispatch_status_notification(
-        status_str, booking, client, vendor_user, service
-    )
+    try:
+        notification = _dispatch_status_notification(
+            status_str, booking, client, vendor_user, service
+        )
+    except Exception as exc:
+        logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
+        notification = {"error": "Notification unavailable"}
 
     return {
         "message": f"Booking successfully updated to {status_str}",
