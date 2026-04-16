@@ -27,7 +27,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import calendar, bookings, notifications, users, vendors, services
+from app.routers import calendar, bookings, chatbot, notifications, users, vendors, services
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -126,6 +126,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(calendar.router)
 app.include_router(bookings.router)
+app.include_router(chatbot.router)
 app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(vendors.router)

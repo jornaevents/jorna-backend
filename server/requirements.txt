@@ -12,6 +12,8 @@ google-auth-httplib2
 pytest
 httpx
 pytest-mock
+pytest-asyncio
 python-dotenv
 slowapi
 email-validator
+openai
