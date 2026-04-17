@@ -1,6 +1,8 @@
 """Business logic for user authentication (register & login)."""
 
 import os
+import re as _re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -68,27 +70,90 @@ def _decode_supabase_access_token(access_token: str) -> dict:
         raise AuthError(401, f"Invalid Supabase token: {e}") from e
 
 
-def lookup_google_linked_user(*, access_token: str, db: Session) -> dict:
+def _unique_username_from_email(email: str, db: Session) -> str:
+    """Derive a unique username from the email prefix, appending a counter if needed."""
+    base = _re.sub(r"[^a-zA-Z0-9_]", "", email.split("@")[0])[:20] or "user"
+    username = base
+    counter = 1
+    while db.query(User).filter(User.username == username).first():
+        username = f"{base}{counter}"
+        counter += 1
+    return username
+
+
+def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     """
-    After Google OAuth, check whether this Supabase user is already linked to a Jorna row.
-    If linked, returns a FastAPI JWT for API access.
+    Verify a Supabase Google token. If the account already exists, return a JWT.
+    If not, auto-create it from the Google profile and return a JWT with
+    is_new_user=True so the client can prompt for profile completion.
     """
     claims = _decode_supabase_access_token(access_token)
     sub = (claims.get("sub") or "").lower()
     if not sub:
         raise AuthError(401, "Invalid token: missing sub")
-    email = claims.get("email")
+
     user = db.query(User).filter(User.supabase_user_id == sub).first()
-    if not user:
-        return {"linked": False, "email": email}
+    if user:
+        token = _make_token(user.user_id, user.email, user.token_version)
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user_id": user.user_id,
+            "email": user.email,
+            "is_new_user": False,
+        }
+
+    email = (claims.get("email") or "").lower()
+    if not email:
+        raise AuthError(400, "Google account has no email address")
+
+    existing = db.query(User).filter(User.email == email).first()
+    if existing:
+        raise AuthError(
+            400,
+            "An account with this email already exists. Please sign in with your password.",
+        )
+
+    meta = claims.get("user_metadata") or {}
+    f_name = meta.get("given_name") or ""
+    l_name = meta.get("family_name") or ""
+    if not f_name and not l_name:
+        full = (meta.get("full_name") or meta.get("name") or "").strip()
+        parts = full.split(" ", 1)
+        f_name = parts[0]
+        l_name = parts[1] if len(parts) > 1 else ""
+    pfp_url = meta.get("avatar_url") or meta.get("picture") or None
+
+    # Google users never use a password — store an unusable random hash
+    random_pw = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
+
+    user = User(
+        email=email,
+        username=_unique_username_from_email(email, db),
+        password=random_pw,
+        f_name=f_name or email.split("@")[0],
+        l_name=l_name or "",
+        pfp_url=pfp_url,
+        supabase_user_id=sub,
+        # age/location/gender/language are nullable — user completes profile later
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
     token = _make_token(user.user_id, user.email, user.token_version)
     return {
-        "linked": True,
         "access_token": token,
         "token_type": "bearer",
         "user_id": user.user_id,
         "email": user.email,
+        "is_new_user": True,
     }
+
+
+def lookup_google_linked_user(*, access_token: str, db: Session) -> dict:
+    """Kept for backwards-compatibility — delegates to google_sign_in_or_create."""
+    return google_sign_in_or_create(access_token=access_token, db=db)
 
 
 def register_user(
@@ -149,6 +214,20 @@ def register_user(
     db.commit()
     db.refresh(user)
     return {"user_id": user.user_id, "email": user.email}
+
+
+def complete_profile(*, user_id: str, updates: dict, db: Session) -> dict:
+    """Fill in profile fields that were left blank after Google sign-up."""
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise AuthError(404, "User not found")
+    for field in ("f_name", "l_name", "age", "location", "gender", "language", "phone"):
+        val = updates.get(field)
+        if val is not None:
+            setattr(user, field, val)
+    db.commit()
+    profile_done = all([user.age is not None, user.location, user.gender, user.language])
+    return {"message": "Profile updated", "profile_complete": profile_done}
 
 
 def change_password(*, user_id: str, current_password: str, new_password: str, db: Session) -> dict:

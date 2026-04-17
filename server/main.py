@@ -34,6 +34,7 @@ from app.services.auth_service import (
     logout_user,
     change_password,
     lookup_google_linked_user,
+    complete_profile,
 )
 
 
@@ -97,6 +98,16 @@ class RegisterRequest(BaseModel):
 
 class GoogleLookupRequest(BaseModel):
     access_token: str
+
+
+class ProfileCompleteRequest(BaseModel):
+    f_name: Optional[str] = None
+    l_name: Optional[str] = None
+    age: Optional[int] = Field(None, ge=13, le=120)
+    location: Optional[str] = None
+    gender: Optional[str] = None
+    language: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -256,6 +267,25 @@ def auth_google_lookup(request: Request, body: GoogleLookupRequest, db: Session 
     """After Google OAuth, check if this Supabase identity is linked to a Jorna user; if so, return a FastAPI JWT."""
     try:
         return lookup_google_linked_user(access_token=body.access_token, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.patch("/auth/profile")
+@limiter.limit("10/minute")
+def complete_profile_route(
+    request: Request,
+    body: ProfileCompleteRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fill in profile fields left blank after Google sign-up (age, location, gender, etc.)."""
+    try:
+        return complete_profile(
+            user_id=current_user.user_id,
+            updates=body.model_dump(exclude_none=True),
+            db=db,
+        )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
