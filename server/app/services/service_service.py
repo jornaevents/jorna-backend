@@ -64,9 +64,13 @@ def create_service(
     return _service_dict(service)
 
 
-def list_services(*, vendor_id: Optional[str] = None, db: Session) -> list[dict]:
-    """Return all services, optionally filtered by *vendor_id*."""
+def list_services(
+    *, vendor_id: Optional[str] = None, limit: int = 20, offset: int = 0, db: Session
+) -> dict:
+    """Return a paginated list of services, optionally filtered by *vendor_id*."""
     query = db.query(Service)
     if vendor_id:
         query = query.filter(Service.vendor_id == vendor_id)
-    return [_service_dict(s) for s in query.all()]
+    total = query.count()
+    items = [_service_dict(s) for s in query.offset(offset).limit(limit).all()]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}

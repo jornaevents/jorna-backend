@@ -24,11 +24,11 @@ def _get_jwks_client():
         _jwks_client = PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json")
     return _jwks_client
 
-def _make_token(user_id: str, email: str) -> str:
+def _make_token(user_id: str, email: str, token_version: int) -> str:
     """Return a signed JWT with a fixed expiry window."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode(
-        {"sub": user_id, "email": email, "exp": expire},
+        {"sub": user_id, "email": email, "exp": expire, "tv": token_version},
         SECRET_KEY,
         algorithm=ALGORITHM,
     )
@@ -81,7 +81,7 @@ def lookup_google_linked_user(*, access_token: str, db: Session) -> dict:
     user = db.query(User).filter(User.supabase_user_id == sub).first()
     if not user:
         return {"linked": False, "email": email}
-    token = _make_token(user.user_id, user.email)
+    token = _make_token(user.user_id, user.email, user.token_version)
     return {
         "linked": True,
         "access_token": token,
@@ -159,8 +159,19 @@ def change_password(*, user_id: str, current_password: str, new_password: str, d
     if not bcrypt.checkpw(current_password.encode(), user.password.encode()):
         raise AuthError(401, "Current password is incorrect")
     user.password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    user.token_version = (user.token_version or 0) + 1
     db.commit()
     return {"message": "Password updated successfully"}
+
+
+def logout_user(*, user_id: str, db: Session) -> dict:
+    """Invalidate all tokens for this user by bumping token_version."""
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise AuthError(404, "User not found")
+    user.token_version = (user.token_version or 0) + 1
+    db.commit()
+    return {"message": "Logged out successfully"}
 
 
 def login_user(*, identifier: str, password: str, db: Session) -> dict:
@@ -177,5 +188,5 @@ def login_user(*, identifier: str, password: str, db: Session) -> dict:
     if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
         raise AuthError(401, "Invalid credentials")
 
-    token = _make_token(user.user_id, user.email)
+    token = _make_token(user.user_id, user.email, user.token_version)
     return {"access_token": token, "token_type": "bearer"}

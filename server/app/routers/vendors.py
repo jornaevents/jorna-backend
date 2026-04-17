@@ -2,19 +2,21 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import User, Vendor
 from app.dependencies import get_current_user
+from app.limiter import limiter
 from app.models.schemas import VendorCategory
 from app.services.vendor_service import (
     VendorError,
     create_vendor,
     get_vendor,
     list_vendors,
+    search_vendors,
     add_tag_to_vendor,
     remove_tag_from_vendor,
     get_vendor_tags,
@@ -37,8 +39,8 @@ class TagRequest(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────
-# IMPORTANT: static paths must be declared before parameterised paths so
-# FastAPI doesn't match e.g. "tags" or "search" as a {vendor_id} value.
+# IMPORTANT: static paths must come before parameterised paths so
+# FastAPI doesn't match e.g. "search", "me", or "tags" as a {vendor_id}.
 
 
 @router.post("", summary="Create a vendor profile")
@@ -63,10 +65,44 @@ def create_vendor_route(
 def list_vendors_route(
     category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
     tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return all vendor profiles with basic user info. Optionally filter by category and/or tag."""
-    return list_vendors(db=db, category=category.value if category else None, tag=tag)
+    """Return a paginated list of vendor profiles. Optionally filter by category and/or tag."""
+    return list_vendors(
+        db=db,
+        category=category.value if category else None,
+        tag=tag,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/search", summary="Search vendors by service and location")
+@limiter.limit("30/minute")
+def vendor_search(
+    request: Request,
+    service_name: str,
+    latitude: float,
+    longitude: float,
+    category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
+    tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Search for vendors offering a service within their travel radius, sorted by distance."""
+    return search_vendors(
+        service_name=service_name,
+        latitude=latitude,
+        longitude=longitude,
+        category=category.value if category else None,
+        tag=tag,
+        limit=limit,
+        offset=offset,
+        db=db,
+    )
 
 
 @router.get("/me", summary="Get current user's vendor profile")
@@ -75,27 +111,18 @@ def get_my_vendor_route(
     db: Session = Depends(get_db),
 ):
     """Return the authenticated user's vendor profile."""
+    from app.services.vendor_service import get_my_vendor
     try:
         return get_my_vendor(user_id=current_user.user_id, db=db)
     except VendorError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
-@router.get("/{vendor_id}", summary="Get vendor by ID")
-def get_vendor_route(
-    vendor_id: str,
-    db: Session = Depends(get_db),
-):
-    """Return a specific vendor profile by ID with their user info."""
-# Static paths — must come before /{vendor_id} ────────────────────────
-
 @router.get("/tags", summary="List all tags")
 def list_tags_route(db: Session = Depends(get_db)):
     """Return every tag in the system sorted alphabetically. Useful for autocomplete."""
     return {"tags": list_all_tags(db=db)}
 
-
-# Parameterised single-vendor path ────────────────────────────────────
 
 @router.get("/{vendor_id}", summary="Get a single vendor profile")
 def get_vendor_route(vendor_id: str, db: Session = Depends(get_db)):

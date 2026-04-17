@@ -57,7 +57,9 @@ def create_service_route(
 @router.get("", summary="List services")
 def list_services_route(
     vendor_id: Optional[str] = Query(None, description="Filter by vendor ID"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return all services, optionally filtered by vendor_id. No auth required."""
-    return list_services(vendor_id=vendor_id, db=db)
+    """Return a paginated list of services, optionally filtered by vendor_id. No auth required."""
+    return list_services(vendor_id=vendor_id, limit=limit, offset=offset, db=db)

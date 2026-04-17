@@ -2,8 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from pydantic import BaseModel, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.limiter import limiter
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -19,7 +18,6 @@ from app.services.stripe_service import (
 )
 
 router = APIRouter(prefix="/payments", tags=["payments"])
-limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Vendor onboarding ─────────────────────────────────────────────────
@@ -82,7 +80,7 @@ def pay_booking(
     Desiconnect platform balance until both parties confirm the event.
     """
     try:
-        return create_payment_intent(booking_id=booking_id, db=db)
+        return create_payment_intent(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -96,16 +94,16 @@ def pay_booking(
 )
 def confirm_booking_event(
     booking_id: str,
-    is_vendor: bool = Query(..., description="True if the caller is the vendor"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     """Record that the customer or vendor confirms the event happened.
-    When both parties have confirmed, funds are automatically transferred
-    to the vendor minus the platform fee.
+    The caller's role (customer vs vendor) is derived from their identity,
+    not a client-supplied flag. When both parties have confirmed, funds are
+    automatically transferred to the vendor minus the platform fee.
     """
     try:
-        return confirm_event(booking_id=booking_id, is_vendor=is_vendor, db=db)
+        return confirm_event(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -125,7 +123,7 @@ def refund_booking(
     vendor confirmed the booking. Returns 400 outside that window.
     """
     try:
-        return request_refund(booking_id=booking_id, db=db)
+        return request_refund(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

@@ -17,9 +17,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, DATABASE_URL
@@ -32,15 +31,16 @@ from app.services.auth_service import (
     AuthError,
     register_user,
     login_user,
+    logout_user,
     change_password,
     lookup_google_linked_user,
 )
-from app.services.vendor_service import search_vendors
+
 
 
 # ── Rate limiter ──────────────────────────────────────────────────────
 
-limiter = Limiter(key_func=get_remote_address)
+from app.limiter import limiter
 
 
 # ── Request schemas ───────────────────────────────────────────────────
@@ -148,6 +148,10 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; "
+        "frame-ancestors 'none'"
+    )
     return response
 
 
@@ -167,7 +171,24 @@ def startup():
             "STRIPE_SECRET_KEY environment variable is not set. "
             "Add your Stripe test key (sk_test_...) to the .env file."
         )
-    Base.metadata.create_all(bind=engine)
+    # Verify Alembic migrations are up to date (PostgreSQL only — SQLite is test/dev only).
+    if not DATABASE_URL.startswith("sqlite"):
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from alembic.config import Config as AlembicConfig
+
+        alembic_cfg = AlembicConfig("alembic.ini")
+        script = ScriptDirectory.from_config(alembic_cfg)
+        with engine.connect() as conn:
+            migration_ctx = MigrationContext.configure(conn)
+            current_heads = set(migration_ctx.get_current_heads())
+            expected_heads = set(script.get_heads())
+            if current_heads != expected_heads:
+                raise RuntimeError(
+                    f"Database migrations are not up to date. "
+                    f"Run `alembic upgrade head` before starting. "
+                    f"Current: {current_heads or 'none'}, Expected: {expected_heads}"
+                )
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -230,7 +251,8 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/google/lookup")
-def auth_google_lookup(body: GoogleLookupRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def auth_google_lookup(request: Request, body: GoogleLookupRequest, db: Session = Depends(get_db)):
     """After Google OAuth, check if this Supabase identity is linked to a Jorna user; if so, return a FastAPI JWT."""
     try:
         return lookup_google_linked_user(access_token=body.access_token, db=db)
@@ -239,7 +261,9 @@ def auth_google_lookup(body: GoogleLookupRequest, db: Session = Depends(get_db))
 
 
 @app.post("/auth/change-password")
+@limiter.limit("5/minute")
 def change_password_route(
+    request: Request,
     body: ChangePasswordRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -256,24 +280,15 @@ def change_password_route(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
-@app.get("/vendors/search")
-def vendor_search(
-    service_name: str,
-    latitude: float,
-    longitude: float,
-    category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
-    tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
-    db: Session = Depends(get_db),
-):
-    """Search for vendors offering a specific service within their travel radius."""
-    vendors = search_vendors(
-        service_name=service_name,
-        latitude=latitude,
-        longitude=longitude,
-        category=category.value if category else None,
-        tag=tag,
-        db=db,
-    )
-    return {"vendors": vendors}
+@app.post("/auth/logout")
+@limiter.limit("10/minute")
+def logout_route(request: Request, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Invalidate all tokens for the current user. The caller must re-authenticate."""
+    try:
+        return logout_user(user_id=current_user.user_id, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 
 

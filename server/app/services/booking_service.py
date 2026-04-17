@@ -171,14 +171,20 @@ def update_booking_status(
     }
 
 
-def get_user_bookings(*, user_id: str, db: Session) -> list:
-    """Return all bookings created by a client."""
-    return db.query(Booking).filter(Booking.user_id == user_id).all()
+def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
+    """Return a paginated list of bookings created by a client."""
+    query = db.query(Booking).filter(Booking.user_id == user_id)
+    total = query.count()
+    items = query.offset(offset).limit(limit).all()
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-def get_vendor_bookings(*, vendor_id: str, db: Session) -> list:
-    """Return all bookings directed to a vendor."""
-    return db.query(Booking).filter(Booking.vendor_id == vendor_id).all()
+def get_vendor_bookings(*, vendor_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
+    """Return a paginated list of bookings directed to a vendor."""
+    query = db.query(Booking).filter(Booking.vendor_id == vendor_id)
+    total = query.count()
+    items = query.offset(offset).limit(limit).all()
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 def check_in(

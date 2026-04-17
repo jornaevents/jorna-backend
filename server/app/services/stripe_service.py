@@ -92,7 +92,7 @@ def get_vendor_stripe_status(*, vendor_id: str, db: Session) -> dict:
 # ── Payment intent ────────────────────────────────────────────────────
 
 
-def create_payment_intent(*, booking_id: str, db: Session) -> dict:
+def create_payment_intent(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     """Create a Stripe PaymentIntent for a confirmed booking.
 
     The charge lands in the Desiconnect platform balance (not sent directly
@@ -105,6 +105,9 @@ def create_payment_intent(*, booking_id: str, db: Session) -> dict:
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise StripeError(404, "Booking not found")
+
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
 
     if booking.status != "approved":
         raise StripeError(400, "Payment can only be initiated for approved bookings")
@@ -247,7 +250,7 @@ def _on_payment_failed(intent: dict, db: Session) -> None:
 # ── Event confirmation & fund release ────────────────────────────────
 
 
-def confirm_event(*, booking_id: str, is_vendor: bool, db: Session) -> dict:
+def confirm_event(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     """Record that the customer or vendor has confirmed the event took place.
 
     When both parties have confirmed, funds are automatically transferred
@@ -262,6 +265,13 @@ def confirm_event(*, booking_id: str, is_vendor: bool, db: Session) -> dict:
     )
     if not booking:
         raise StripeError(404, "Booking not found")
+
+    # Derive role from identity — never trust a client-supplied flag.
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    is_vendor = vendor is not None and vendor.user_id == caller_user_id
+    is_customer = booking.user_id == caller_user_id
+    if not is_vendor and not is_customer:
+        raise StripeError(403, "You are not a party to this booking")
 
     if booking.payment_status == "released":
         return {"message": "Funds have already been released for this booking."}
@@ -332,7 +342,7 @@ def _release_funds(booking: Booking, db: Session) -> None:
 REFUND_WINDOW_HOURS = 24
 
 
-def request_refund(*, booking_id: str, db: Session) -> dict:
+def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     """Issue a full refund if the customer cancels within 24 hours of
     the booking being confirmed (vendor approval timestamp).
 
@@ -341,6 +351,9 @@ def request_refund(*, booking_id: str, db: Session) -> dict:
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise StripeError(404, "Booking not found")
+
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
 
     if booking.payment_status not in ("paid", "processing"):
         raise StripeError(

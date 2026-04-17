@@ -68,11 +68,14 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
 
 
 def list_vendors(
-    *, db: Session, category: str | None = None, tag: str | None = None
-) -> list[dict]:
-    """Return all vendors with basic user info joined in.
-    Optionally filter by *category* and/or *tag*.
-    """
+    *,
+    db: Session,
+    category: str | None = None,
+    tag: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    """Return a paginated list of vendors with basic user info joined in."""
     query = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id)
     if category:
         query = query.filter(Vendor.category == category)
@@ -83,8 +86,9 @@ def list_vendors(
                  .join(Tag, vendor_tags.c.tag_id == Tag.tag_id)
                  .filter(Tag.name == normalized)
         )
-    rows = query.all()
-    return [
+    total = query.count()
+    rows = query.offset(offset).limit(limit).all()
+    items = [
         {
             "vendor_id": v.vendor_id,
             "user_id": v.user_id,
@@ -100,6 +104,7 @@ def list_vendors(
         }
         for v, u in rows
     ]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 def search_vendors(
@@ -109,8 +114,10 @@ def search_vendors(
     longitude: float,
     category: str | None = None,
     tag: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
     db: Session,
-) -> list[dict]:
+) -> dict:
     """Return vendors offering *service_name* within their travel radius
     of the given coordinates, sorted by distance (closest first).
     Optionally filter by *category* and/or *tag*.
@@ -160,7 +167,13 @@ def search_vendors(
             )
 
     nearby_vendors.sort(key=lambda x: x["distance_miles"])
-    return nearby_vendors
+    total = len(nearby_vendors)
+    return {
+        "items": nearby_vendors[offset: offset + limit],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ── Tag management ────────────────────────────────────────────────────

@@ -37,6 +37,9 @@ class User(Base):
     # Supabase Auth user id (UUID) when this Jorna account is linked to Google sign-in
     supabase_user_id = Column(String(36), unique=True, nullable=True)
 
+    # Incremented on logout or password change to invalidate all previously issued tokens
+    token_version = Column(Integer, nullable=False, default=0)
+
 
 # Many-to-many join table: one vendor has many tags, one tag belongs to many vendors.
 vendor_tags = Table(

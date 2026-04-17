@@ -1,6 +1,8 @@
 """Business logic for Google Calendar OAuth and vendor availability."""
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -8,6 +10,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.config import SECRET_KEY
 from app.db.models import Vendor, VendorAvailability, Booking
 from app.utils.calendar import (
     get_google_auth_flow,
@@ -35,19 +38,38 @@ def _generate_code_verifier() -> str:
     return secrets.token_urlsafe(96)
 
 
+def _sign(payload: str) -> str:
+    """Return a hex HMAC-SHA256 signature of payload using SECRET_KEY."""
+    return hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
 def _encode_state(vendor_id: str, code_verifier: str) -> str:
-    """Pack vendor_id + code_verifier into a base64 string for the OAuth state param."""
-    payload = json.dumps({"vendor_id": vendor_id, "code_verifier": code_verifier})
-    return base64.urlsafe_b64encode(payload.encode()).decode()
+    """Pack vendor_id + code_verifier into a signed state param for the OAuth flow.
+
+    Format: <base64-payload>.<hmac-signature>
+    The signature prevents forged state params (CSRF protection).
+    """
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"vendor_id": vendor_id, "code_verifier": code_verifier}).encode()
+    ).decode()
+    return f"{payload}.{_sign(payload)}"
 
 
 def decode_state(state: str) -> tuple[str, str]:
-    """Decode the OAuth state param back into (vendor_id, code_verifier).
-    Raises CalendarError 400 if the state is malformed.
+    """Verify the HMAC signature and decode state back into (vendor_id, code_verifier).
+    Raises CalendarError 400 if the state is malformed or the signature is invalid.
     """
     try:
-        payload = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
-        return payload["vendor_id"], payload["code_verifier"]
+        payload, sig = state.rsplit(".", 1)
+    except ValueError:
+        raise CalendarError(400, "Invalid OAuth state parameter")
+
+    if not hmac.compare_digest(sig, _sign(payload)):
+        raise CalendarError(400, "Invalid OAuth state signature")
+
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+        return data["vendor_id"], data["code_verifier"]
     except Exception:
         raise CalendarError(400, "Invalid OAuth state parameter")
 
