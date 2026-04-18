@@ -134,16 +134,37 @@ The API will be available at `http://localhost:8000`. Visit `http://localhost:80
 
 > **Note:** Every time you open a new terminal to work on the server, activate the virtual environment first with `source venv/bin/activate` (from inside the `server/` folder).
 
-### Credentials (Required)
+### Environment Variables
 
-The following credential files are **required** for push notifications and Google Calendar integration to work. They are **not committed to the repo** (listed in `.gitignore`) and must be obtained separately.
+Copy `.env.example` to `.env` and fill in every value:
 
-| File | Location | Purpose | Source |
-|------|----------|---------|--------|
-| `firebase_credentials.json` | `server/` | Firebase Admin SDK (push notifications) | [Firebase Console](https://console.firebase.google.com/) → Project Settings → Service Accounts → "Generate new private key" |
-| `client_secret.json` | `server/` | Google OAuth 2.0 (calendar integration) | [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → OAuth 2.0 Client ID → Download JSON |
+```bash
+cp server/.env.example server/.env
+```
 
-> **Without these files:** The server will still start and all other endpoints will work normally. Push notifications will return `"Firebase not configured"` and the Google Calendar OAuth flow will return a 500 error.
+| Variable | Required | How to get it |
+|----------|----------|---------------|
+| `SECRET_KEY` | ✅ | Run `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `DATABASE_URL` | Local dev: no | Leave blank for SQLite. Production: your PostgreSQL/Supabase connection string |
+| `ALLOWED_ORIGINS` | Local dev: no | Defaults to `localhost:3000,localhost:8080`. Set to your real frontend URL in production |
+| `STRIPE_SECRET_KEY` | ✅ | [Stripe Dashboard](https://dashboard.stripe.com/apikeys) → Secret key (`sk_test_...`) |
+| `STRIPE_PUBLISHABLE_KEY` | ✅ | [Stripe Dashboard](https://dashboard.stripe.com/apikeys) → Publishable key (`pk_test_...`) |
+| `STRIPE_WEBHOOK_SECRET` | ✅ | Local: run `stripe listen --forward-to localhost:8000/payments/webhook`, copy the `whsec_...` it prints. Production: Stripe Dashboard → Developers → Webhooks → Signing secret |
+| `PLATFORM_FEE_PERCENT` | No | Integer platform fee percent (default `5`) |
+| `GOOGLE_OAUTH_REDIRECT_URI` | No | Defaults to `http://localhost:8000/vendors/auth/callback`. In production set to your real callback URL and register it in Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET_PATH` | No | Path to `client_secret.json` (default: `client_secret.json`) |
+| `FIREBASE_CREDENTIALS_PATH` | No | Path to `firebase_credentials.json` (default: `firebase_credentials.json`) |
+
+### Credential Files (Required for Calendar & Notifications)
+
+These JSON files are **not committed to the repo** and must be obtained separately.
+
+| File | Location | Purpose | How to get it |
+|------|----------|---------|---------------|
+| `firebase_credentials.json` | `server/` | Firebase push notifications | [Firebase Console](https://console.firebase.google.com/) → Project Settings → Service Accounts → **Generate new private key** → save as `server/firebase_credentials.json` |
+| `client_secret.json` | `server/` | Google Calendar OAuth | [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → OAuth 2.0 Client ID → **Download JSON** → save as `server/client_secret.json` |
+
+> **Without these files:** The server still starts and all other endpoints work normally. Push notifications return `"Firebase not configured"` and the Google Calendar OAuth flow returns a 500 error.
 
 ### Database
 
@@ -272,11 +293,11 @@ Returns vendors within their `travel_radius_miles`, sorted by distance.
 **Status update body:**
 ```json
 {
-  "user_id": "uuid",
-  "is_vendor": true,
   "status": "approved"
 }
 ```
+
+> The caller's role (vendor vs client) is derived server-side from their JWT — no `is_vendor` flag is accepted.
 
 > ⚡ All booking mutations (create, status update, check-in) automatically dispatch push notifications to the relevant parties.
 
@@ -384,14 +405,15 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-**Test coverage (38 tests):**
+**Test coverage (63 tests):**
 
-| File                              | Tests | Covers                                                  |
-| --------------------------------- | ----- | ------------------------------------------------------- |
-| `test_api.py`                     | 7     | Root, DB check, auth, vendor search, Google auth, check-in |
-| `test_bookings.py`                | 5     | Booking CRUD, approve/reject, fetch by user/vendor       |
-| `test_calendar_and_location.py`   | 7     | OAuth callbacks, availability aggregation, check-in edge cases |
-| `test_notifications.py`           | 19    | FCM token endpoints, notification utils (mocked), booking integration |
+| File                                  | Tests | Covers                                                  |
+| ------------------------------------- | ----- | ------------------------------------------------------- |
+| `test_api.py`                         | 7     | Root, DB check, auth, vendor search, Google auth, check-in |
+| `test_bookings.py`                    | 8     | Booking CRUD, approve/reject, ownership checks, fetch by user/vendor |
+| `test_calendar_and_location.py`       | 7     | OAuth callbacks, availability aggregation, check-in edge cases |
+| `test_integration_credentials.py`     | 22    | Firebase SDK, Google OAuth credentials, token refresh, env config |
+| `test_notifications.py`               | 19    | FCM token endpoints, notification utils (mocked), booking integration |
 
 ### Live API Tests (curl)
 
