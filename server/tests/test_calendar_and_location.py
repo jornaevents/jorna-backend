@@ -166,7 +166,7 @@ def test_check_in_no_coordinates():
     headers = make_auth_headers_from_parts(user_id, user_email, 0)
     response = client.post(
         f"/bookings/{booking_id}/check-in",
-        json={"is_vendor": False, "latitude": 40.0, "longitude": -70.0},
+        json={"latitude": 40.0, "longitude": -70.0},
         headers=headers,
     )
     assert response.status_code == 400
@@ -198,7 +198,7 @@ def test_check_in_unauthorized_user():
     headers = make_auth_headers_from_parts(str(uuid.uuid4()), "stranger@test.com", 0)
     response = client.post(
         f"/bookings/{booking_id}/check-in",
-        json={"is_vendor": False, "latitude": 40.0, "longitude": -70.0},
+        json={"latitude": 40.0, "longitude": -70.0},
         headers=headers,
     )
     # get_current_user returns 401 (user not in DB), or 403 if booking unauthorized

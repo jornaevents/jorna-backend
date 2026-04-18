@@ -89,7 +89,7 @@ def test_approve_booking(seeded_db):
     headers = make_auth_headers(vendor_user)
     response = client.put(
         f"/bookings/{booking.booking_id}/status",
-        json={"is_vendor": True, "status": "approved"},
+        json={"status": "approved"},
         headers=headers,
     )
     assert response.status_code == 200
@@ -119,7 +119,7 @@ def test_client_cannot_approve(seeded_db):
     headers = make_auth_headers(user)
     response = client.put(
         f"/bookings/{booking.booking_id}/status",
-        json={"is_vendor": False, "status": "approved"},
+        json={"status": "approved"},
         headers=headers,
     )
     assert response.status_code == 403
@@ -179,6 +179,16 @@ def test_get_vendor_bookings(seeded_db):
     data = response.json()
     assert "items" in data
     assert len(data["items"]) > 0
+
+
+def test_get_vendor_bookings_forbidden(seeded_db):
+    """A non-vendor user cannot fetch another vendor's bookings."""
+    vendor = seeded_db["vendor"]
+    user = seeded_db["user"]
+
+    headers = make_auth_headers(user)
+    response = client.get(f"/bookings/vendor/{vendor.vendor_id}", headers=headers)
+    assert response.status_code == 403
 
 
 def test_unauthenticated_booking_rejected():

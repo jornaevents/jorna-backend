@@ -22,7 +22,7 @@ import os
 import pytest
 from unittest.mock import patch
 
-from tests.test_api import TestingSessionLocal, client
+from tests.test_api import TestingSessionLocal, client, make_auth_headers
 from app.db.models import User, Vendor, Service, Booking
 
 # ---------------------------------------------------------------------------
@@ -202,17 +202,21 @@ class TestFirebaseCredentials:
         db.commit()
         db.refresh(service)
 
+        service_id = service.service_id
+        auth_headers = make_auth_headers(user)
+        db.close()
+
         response = client.post(
             "/bookings",
             json={
-                "user_id": user.user_id,
-                "service_id": service.service_id,
+                "service_id": service_id,
                 "event_name": "Integration Diwali",
                 "time_start": "18:00",
                 "time_end": "22:00",
                 "location": "Community Hall",
                 "date_iso": "2026-11-01",
             },
+            headers=auth_headers,
         )
         assert response.status_code == 200
         data = response.json()
@@ -225,8 +229,6 @@ class TestFirebaseCredentials:
             assert notif[key].get("error") != "Firebase not configured", (
                 f"Expected real Firebase attempt, got: {notif[key]}"
             )
-
-        db.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -319,7 +321,7 @@ class TestGoogleOAuthCredentials:
 
         # Verify it's a real Google URL with our client_id embedded
         assert "accounts.google.com" in auth_url
-        assert vendor.vendor_id in auth_url  # state param
+        assert "state=" in auth_url  # state param is HMAC-encoded, not raw vendor_id
 
         # Verify the client_id from our real file is in the URL
         from app.utils.calendar import _load_client_credentials
@@ -367,12 +369,15 @@ class TestGoogleOAuthCredentials:
         db.commit()
         db.refresh(vendor)
 
+        from app.services.calendar_service import _encode_state
+        state = _encode_state(str(vendor.vendor_id), "test-code-verifier")
         response = client.get(
-            f"/vendors/auth/callback?state={vendor.vendor_id}&code=totally_fake_auth_code"
+            f"/vendors/auth/callback?state={state}&code=totally_fake_auth_code",
+            follow_redirects=False,
         )
-        # Should be 400 (bad code), not 500 (credentials broken)
-        assert response.status_code == 400
-        assert "Failed to fetch Google tokens" in response.json()["detail"]
+        # Callback always redirects; bad code → success=false in location
+        assert response.status_code in (302, 307)
+        assert "success=false" in response.headers["location"]
 
         db.close()
 

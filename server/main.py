@@ -21,7 +21,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, DATABASE_URL
+from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
@@ -186,6 +186,21 @@ def startup():
             "STRIPE_SECRET_KEY environment variable is not set. "
             "Add your Stripe test key (sk_test_...) to the .env file."
         )
+    if not STRIPE_WEBHOOK_SECRET:
+        raise RuntimeError(
+            "STRIPE_WEBHOOK_SECRET environment variable is not set. "
+            "Add your Stripe webhook signing secret (whsec_...) to the .env file."
+        )
+
+    is_production_db = not DATABASE_URL.startswith("sqlite")
+
+    if is_production_db and any("localhost" in o for o in ALLOWED_ORIGINS):
+        logger.warning(
+            "ALLOWED_ORIGINS contains localhost entries in a production environment: %s — "
+            "set the ALLOWED_ORIGINS env var to your real frontend URL(s).",
+            ALLOWED_ORIGINS,
+        )
+
     # Verify Alembic migrations are up to date (PostgreSQL only — SQLite is test/dev only).
     if not DATABASE_URL.startswith("sqlite"):
         from alembic.runtime.migration import MigrationContext

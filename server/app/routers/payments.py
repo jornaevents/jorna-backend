@@ -36,7 +36,7 @@ def stripe_onboard(
     Creates a Connect Express account if one doesn't exist yet.
     """
     try:
-        return create_vendor_onboarding_url(vendor_id=vendor_id, db=db)
+        return create_vendor_onboarding_url(vendor_id=vendor_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -54,7 +54,7 @@ def stripe_status(
     Requires authentication to prevent exposing Stripe account IDs publicly.
     """
     try:
-        return get_vendor_stripe_status(vendor_id=vendor_id, db=db)
+        return get_vendor_stripe_status(vendor_id=vendor_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

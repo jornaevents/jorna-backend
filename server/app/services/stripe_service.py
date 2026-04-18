@@ -27,7 +27,7 @@ class StripeError(Exception):
 # ── Vendor onboarding ─────────────────────────────────────────────────
 
 
-def create_vendor_onboarding_url(*, vendor_id: str, db: Session) -> dict:
+def create_vendor_onboarding_url(*, vendor_id: str, caller_user_id: str, db: Session) -> dict:
     """Create (or reuse) a Stripe Express Connect account for the vendor
     and return a one-time hosted onboarding URL.
 
@@ -38,6 +38,8 @@ def create_vendor_onboarding_url(*, vendor_id: str, db: Session) -> dict:
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
         raise StripeError(404, "Vendor not found")
+    if vendor.user_id != caller_user_id:
+        raise StripeError(403, "You are not authorised to onboard this vendor")
 
     try:
         if not vendor.stripe_account_id:
@@ -58,7 +60,7 @@ def create_vendor_onboarding_url(*, vendor_id: str, db: Session) -> dict:
     return {"onboarding_url": account_link.url}
 
 
-def get_vendor_stripe_status(*, vendor_id: str, db: Session) -> dict:
+def get_vendor_stripe_status(*, vendor_id: str, caller_user_id: str, db: Session) -> dict:
     """Check whether the vendor has completed Stripe Connect onboarding.
 
     Queries the Stripe API for the latest status and syncs it to the DB.
@@ -66,6 +68,8 @@ def get_vendor_stripe_status(*, vendor_id: str, db: Session) -> dict:
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
         raise StripeError(404, "Vendor not found")
+    if vendor.user_id != caller_user_id:
+        raise StripeError(403, "You are not authorised to view this vendor's Stripe status")
 
     if not vendor.stripe_account_id:
         return {"stripe_account_id": None, "stripe_onboarding_complete": False}
@@ -185,8 +189,10 @@ def handle_stripe_webhook(*, payload: bytes, signature: str, db: Session) -> dic
     """
     try:
         event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
-    except stripe.error.SignatureVerificationError:
+    except stripe.SignatureVerificationError:
         raise StripeError(400, "Invalid webhook signature")
+    except ValueError:
+        raise StripeError(400, "Invalid webhook payload")
 
     event_id = event["id"]
 

@@ -4,6 +4,7 @@ import pytest
 # Set required env vars before importing the app
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only-32chars!!")
 os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_dummy")
+os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -247,7 +248,7 @@ def test_booking_check_in():
     # Too far away — should fail
     response = client.post(
         f"/bookings/{booking_id}/check-in",
-        json={"is_vendor": False, "latitude": 40.1, "longitude": -70.0},
+        json={"latitude": 40.1, "longitude": -70.0},
         headers=headers,
     )
     assert response.status_code == 400
@@ -256,7 +257,7 @@ def test_booking_check_in():
     # Exact location — should pass
     response = client.post(
         f"/bookings/{booking_id}/check-in",
-        json={"is_vendor": False, "latitude": 40.0, "longitude": -70.0},
+        json={"latitude": 40.0, "longitude": -70.0},
         headers=headers,
     )
     assert response.status_code == 200

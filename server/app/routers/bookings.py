@@ -36,12 +36,10 @@ class BookingCreate(BaseModel):
 
 
 class BookingStatusUpdate(BaseModel):
-    is_vendor: bool
     status: BookingStatus
 
 
 class CheckInRequest(BaseModel):
-    is_vendor: bool
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
 
@@ -86,8 +84,7 @@ def update_booking_status(
     try:
         return svc_update_booking_status(
             booking_id=booking_id,
-            user_id=current_user.user_id,
-            is_vendor=body.is_vendor,
+            caller_user_id=current_user.user_id,
             status=body.status,
             db=db,
         )
@@ -117,8 +114,11 @@ def get_vendor_bookings(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Fetch bookings directed to a specific vendor. Requires authentication."""
-    return svc_get_vendor_bookings(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+    """Fetch bookings directed to a specific vendor. Only the vendor themselves can access this."""
+    try:
+        return svc_get_vendor_bookings(vendor_id=vendor_id, caller_user_id=current_user.user_id, limit=limit, offset=offset, db=db)
+    except BookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.post("/{booking_id}/check-in", summary="Verify and check into an event venue")
@@ -132,8 +132,7 @@ def booking_check_in(
     try:
         return svc_check_in(
             booking_id=booking_id,
-            user_id=current_user.user_id,
-            is_vendor=body.is_vendor,
+            caller_user_id=current_user.user_id,
             latitude=body.latitude,
             longitude=body.longitude,
             db=db,

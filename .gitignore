@@ -1,16 +1,31 @@
 .idea/
+.vscode/
 __pycache__/
 *.pyc
+*.pyo
 *.db
 server/venv/
 virtual/
+node_modules/
+dist/
 plan.md
 server/desiconnect.db
+
+# -- Environment --
 .env
+.env.*
+!.env.example
 
 # -- Credentials (NEVER commit these) --
 server/firebase_credentials.json
 server/client_secret.json
+*credentials*.json
+*service_account*.json
 
 # -- Local reports --
 server/notifications_and_calendar_report.md
+
+# -- OS/editor noise --
+.DS_Store
+Thumbs.db
+*.swp

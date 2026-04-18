@@ -119,8 +119,7 @@ def create_booking(
 def update_booking_status(
     *,
     booking_id: str,
-    user_id: str,
-    is_vendor: bool,
+    caller_user_id: str,
     status: BookingStatus,
     db: Session,
 ) -> dict:
@@ -131,14 +130,13 @@ def update_booking_status(
 
     status_str = status.value
 
-    # Authorization
-    if is_vendor:
-        vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
-        if not vendor or vendor.user_id != user_id:
-            raise BookingError(403, "Unauthorized: Not the vendor for this booking")
-    else:
-        if booking.user_id != user_id:
-            raise BookingError(403, "Unauthorized: Not the client who created this booking")
+    # Derive role server-side — never trust a client-supplied flag.
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    is_vendor = vendor is not None and vendor.user_id == caller_user_id
+    is_customer = booking.user_id == caller_user_id
+
+    if not is_vendor and not is_customer:
+        raise BookingError(403, "You are not a party to this booking")
 
     # Business rules
     if status_str in [BookingStatus.APPROVED.value, BookingStatus.REJECTED.value]:
@@ -179,8 +177,13 @@ def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Ses
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-def get_vendor_bookings(*, vendor_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
+def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
     """Return a paginated list of bookings directed to a vendor."""
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    if not vendor:
+        raise BookingError(404, "Vendor not found")
+    if vendor.user_id != caller_user_id:
+        raise BookingError(403, "You are not authorised to view these bookings")
     query = db.query(Booking).filter(Booking.vendor_id == vendor_id)
     total = query.count()
     items = query.offset(offset).limit(limit).all()
@@ -190,8 +193,7 @@ def get_vendor_bookings(*, vendor_id: str, limit: int = 20, offset: int = 0, db:
 def check_in(
     *,
     booking_id: str,
-    user_id: str,
-    is_vendor: bool,
+    caller_user_id: str,
     latitude: float,
     longitude: float,
     db: Session,
@@ -213,16 +215,19 @@ def check_in(
             f"You must be at the venue to check in. You are currently {round(distance, 2)} miles away.",
         )
 
+    # Derive role server-side — never trust a client-supplied flag.
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    is_vendor = vendor is not None and vendor.user_id == caller_user_id
+    is_customer = booking.user_id == caller_user_id
+
+    if not is_vendor and not is_customer:
+        raise BookingError(403, "You are not a party to this booking")
+
     current_time = datetime.now(timezone.utc).isoformat()
 
     if is_vendor:
-        vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
-        if not vendor or vendor.user_id != user_id:
-            raise BookingError(403, "Unauthorized vendor")
         booking.vendor_checked_in_at = current_time
     else:
-        if booking.user_id != user_id:
-            raise BookingError(403, "Unauthorized user")
         booking.client_checked_in_at = current_time
 
     db.commit()

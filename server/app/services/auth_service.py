@@ -50,7 +50,10 @@ def _decode_supabase_access_token(access_token: str) -> dict:
     import logging as _log
     _logger = _log.getLogger(__name__)
 
-    header = jwt.get_unverified_header(access_token)
+    try:
+        header = jwt.get_unverified_header(access_token)
+    except jwt.exceptions.DecodeError as e:
+        raise AuthError(400, "Invalid supabase_access_token: not a valid JWT") from e
     _logger.info("Supabase token header: %s", header)
 
     client = _get_jwks_client()
