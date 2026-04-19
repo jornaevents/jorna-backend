@@ -61,5 +61,6 @@ def list_services_route(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return a paginated list of services, optionally filtered by vendor_id. No auth required."""
-    return list_services(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+    """Return a list of services, optionally filtered by vendor_id. No auth required."""
+    response = list_services(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+    return response["items"]

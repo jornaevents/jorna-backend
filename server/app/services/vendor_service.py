@@ -67,6 +67,33 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
     }
 
 
+def get_my_vendor(*, user_id: str, db: Session) -> dict:
+    """Return the authenticated user's vendor profile. Raises 404 if no vendor exists."""
+    row = (
+        db.query(Vendor, User)
+        .join(User, Vendor.user_id == User.user_id)
+        .filter(Vendor.user_id == user_id)
+        .first()
+    )
+    if not row:
+        raise VendorError(404, "Vendor profile not found for this user")
+    v, u = row
+    return {
+        "vendor_id": v.vendor_id,
+        "user_id": v.user_id,
+        "bio": v.bio,
+        "category": v.category,
+        "rating": v.rating,
+        "num_events": v.num_events,
+        "travel_radius_miles": v.travel_radius_miles,
+        "f_name": u.f_name,
+        "l_name": u.l_name,
+        "location": u.location,
+        "pfp_url": u.pfp_url,
+        "tags": sorted(t.name for t in v.tags),
+    }
+
+
 def list_vendors(
     *,
     db: Session,

@@ -69,14 +69,15 @@ def list_vendors_route(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return a paginated list of vendor profiles. Optionally filter by category and/or tag."""
-    return list_vendors(
+    """Return a list of vendor profiles. Optionally filter by category and/or tag."""
+    response = list_vendors(
         db=db,
         category=category.value if category else None,
         tag=tag,
         limit=limit,
         offset=offset,
     )
+    return response["items"]
 
 
 @router.get("/search", summary="Search vendors by service and location")
