@@ -94,6 +94,36 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
     }
 
 
+def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
+    """Apply *update_data* (partial) to the vendor profile and return the updated profile."""
+    vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor profile not found for this user")
+    
+    # Validate category if provided
+    if "category" in update_data:
+        from app.models.schemas import VendorCategory
+        try:
+            VendorCategory(update_data["category"])
+        except ValueError:
+            raise VendorError(400, f"Invalid category: {update_data['category']}")
+    
+    # Validate travel_radius_miles if provided
+    if "travel_radius_miles" in update_data:
+        radius = update_data["travel_radius_miles"]
+        if not isinstance(radius, int) or radius < 1 or radius > 500:
+            raise VendorError(400, "Travel radius must be an integer between 1 and 500 miles")
+    
+    for field, value in update_data.items():
+        if field in ["bio", "category", "travel_radius_miles"]:
+            setattr(vendor, field, value)
+    
+    db.commit()
+    db.refresh(vendor)
+    # Return updated vendor profile
+    return get_my_vendor(user_id=user_id, db=db)
+
+
 def list_vendors(
     *,
     db: Session,
