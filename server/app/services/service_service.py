@@ -74,3 +74,30 @@ def list_services(
     total = query.count()
     items = [_service_dict(s) for s in query.offset(offset).limit(limit).all()]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def update_service(*, user_id: str, service_id: str, update_data: dict, db: Session) -> dict:
+    """Partially update a service. Raises 404 if not found, 403 if not the owner."""
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service:
+        raise ServiceError(404, "Service not found")
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    if not vendor or vendor.user_id != user_id:
+        raise ServiceError(403, "Not authorized to edit this service")
+    for field, value in update_data.items():
+        setattr(service, field, value)
+    db.commit()
+    db.refresh(service)
+    return _service_dict(service)
+
+
+def delete_service(*, user_id: str, service_id: str, db: Session) -> None:
+    """Delete a service. Raises 404 if not found, 403 if not the owner."""
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service:
+        raise ServiceError(404, "Service not found")
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    if not vendor or vendor.user_id != user_id:
+        raise ServiceError(403, "Not authorized to delete this service")
+    db.delete(service)
+    db.commit()

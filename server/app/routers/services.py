@@ -8,12 +8,29 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import User
 from app.dependencies import get_current_user
-from app.services.service_service import ServiceError, create_service, list_services
+from app.services.service_service import (
+    ServiceError,
+    create_service,
+    delete_service,
+    list_services,
+    update_service,
+)
 
 router = APIRouter(prefix="/services", tags=["services"])
 
 
 # ── Request schemas ───────────────────────────────────────────────────
+
+
+class UpdateServiceRequest(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    duration_minutes: Optional[int] = None
+    experience: Optional[str] = None
+    media: Optional[list[str]] = None
+    category: Optional[str] = None
+    price_unit: Optional[str] = None
+    description: Optional[str] = None
 
 
 class CreateServiceRequest(BaseModel):
@@ -50,6 +67,38 @@ def create_service_route(
             description=body.description,
             db=db,
         )
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.patch("/{service_id}", summary="Update a service")
+def update_service_route(
+    service_id: str,
+    body: UpdateServiceRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Partially update a service. Only the owning vendor may call this."""
+    try:
+        return update_service(
+            user_id=current_user.user_id,
+            service_id=service_id,
+            update_data=body.model_dump(exclude_unset=True),
+            db=db,
+        )
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/{service_id}", summary="Delete a service", status_code=204)
+def delete_service_route(
+    service_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a service. Only the owning vendor may call this."""
+    try:
+        delete_service(user_id=current_user.user_id, service_id=service_id, db=db)
     except ServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
