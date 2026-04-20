@@ -15,6 +15,8 @@ from app.services.vendor_service import (
     VendorError,
     create_vendor,
     get_vendor,
+    get_my_vendor,
+    update_vendor,
     list_vendors,
     search_vendors,
     add_tag_to_vendor,
@@ -32,6 +34,12 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 class CreateVendorRequest(BaseModel):
     bio: str
     category: VendorCategory
+
+
+class UpdateVendorRequest(BaseModel):
+    bio: Optional[str] = None
+    category: Optional[VendorCategory] = None
+    travel_radius_miles: Optional[int] = None
 
 
 class TagRequest(BaseModel):
@@ -69,14 +77,15 @@ def list_vendors_route(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return a paginated list of vendor profiles. Optionally filter by category and/or tag."""
-    return list_vendors(
+    """Return a list of vendor profiles. Optionally filter by category and/or tag."""
+    response = list_vendors(
         db=db,
         category=category.value if category else None,
         tag=tag,
         limit=limit,
         offset=offset,
     )
+    return response["items"]
 
 
 @router.get("/search", summary="Search vendors by service and location")
@@ -114,6 +123,23 @@ def get_my_vendor_route(
     from app.services.vendor_service import get_my_vendor
     try:
         return get_my_vendor(user_id=current_user.user_id, db=db)
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.patch("/me", summary="Update current user's vendor profile")
+def update_my_vendor_route(
+    body: UpdateVendorRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Partially update the authenticated user's vendor profile."""
+    try:
+        return update_vendor(
+            user_id=current_user.user_id,
+            update_data=body.model_dump(exclude_unset=True),
+            db=db,
+        )
     except VendorError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

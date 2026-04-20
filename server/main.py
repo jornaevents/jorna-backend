@@ -219,6 +219,8 @@ def startup():
                     f"Run `alembic upgrade head` before starting. "
                     f"Current: {current_heads or 'none'}, Expected: {expected_heads}"
                 )
+    else:
+        Base.metadata.create_all(bind=engine)
 
 
 # ── Routes ────────────────────────────────────────────────────────────

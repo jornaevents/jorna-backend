@@ -67,6 +67,63 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
     }
 
 
+def get_my_vendor(*, user_id: str, db: Session) -> dict:
+    """Return the authenticated user's vendor profile. Raises 404 if no vendor exists."""
+    row = (
+        db.query(Vendor, User)
+        .join(User, Vendor.user_id == User.user_id)
+        .filter(Vendor.user_id == user_id)
+        .first()
+    )
+    if not row:
+        raise VendorError(404, "Vendor profile not found for this user")
+    v, u = row
+    return {
+        "vendor_id": v.vendor_id,
+        "user_id": v.user_id,
+        "bio": v.bio,
+        "category": v.category,
+        "rating": v.rating,
+        "num_events": v.num_events,
+        "travel_radius_miles": v.travel_radius_miles,
+        "f_name": u.f_name,
+        "l_name": u.l_name,
+        "location": u.location,
+        "pfp_url": u.pfp_url,
+        "tags": sorted(t.name for t in v.tags),
+    }
+
+
+def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
+    """Apply *update_data* (partial) to the vendor profile and return the updated profile."""
+    vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor profile not found for this user")
+    
+    # Validate category if provided
+    if "category" in update_data:
+        from app.models.schemas import VendorCategory
+        try:
+            VendorCategory(update_data["category"])
+        except ValueError:
+            raise VendorError(400, f"Invalid category: {update_data['category']}")
+    
+    # Validate travel_radius_miles if provided
+    if "travel_radius_miles" in update_data:
+        radius = update_data["travel_radius_miles"]
+        if not isinstance(radius, int) or radius < 1 or radius > 500:
+            raise VendorError(400, "Travel radius must be an integer between 1 and 500 miles")
+    
+    for field, value in update_data.items():
+        if field in ["bio", "category", "travel_radius_miles"]:
+            setattr(vendor, field, value)
+    
+    db.commit()
+    db.refresh(vendor)
+    # Return updated vendor profile
+    return get_my_vendor(user_id=user_id, db=db)
+
+
 def list_vendors(
     *,
     db: Session,

@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
+from app.db.models import User, Vendor
 from app.dependencies import get_current_user
 from app.limiter import limiter
 from app.models.schemas import BookingStatus
@@ -106,8 +107,26 @@ def get_user_bookings(
     return svc_get_user_bookings(user_id=user_id, limit=limit, offset=offset, db=db)
 
 
+@router.get("/vendor", summary="Get all bookings for the authenticated vendor")
+def get_vendor_bookings_route(
+    vendor_id: Optional[str] = Query(None, description="Vendor ID to filter by"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Fetch bookings for the authenticated vendor. If vendor_id is omitted, use the current user's vendor profile."""
+    if vendor_id is None:
+        vendor = db.query(Vendor).filter(Vendor.user_id == current_user.user_id).first()
+        if not vendor:
+            raise HTTPException(status_code=403, detail="You must be a vendor to view vendor bookings")
+        vendor_id = vendor.vendor_id
+    response = svc_get_vendor_bookings(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+    return response["items"]
+
+
 @router.get("/vendor/{vendor_id}", summary="Get all bookings for a vendor")
-def get_vendor_bookings(
+def get_vendor_bookings_by_id_route(
     vendor_id: str,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
