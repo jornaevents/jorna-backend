@@ -97,6 +97,11 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
 
     user = db.query(User).filter(User.supabase_user_id == sub).first()
     if user:
+        meta = claims.get("user_metadata") or {}
+        google_picture = meta.get("avatar_url") or meta.get("picture") or None
+        if google_picture and user.pfp_url != google_picture:
+            user.pfp_url = google_picture
+            db.commit()
         token = _make_token(user.user_id, user.email, user.token_version)
         return {
             "access_token": token,
@@ -198,6 +203,10 @@ def register_user(
         taken = db.query(User).filter(User.supabase_user_id == supabase_user_id).first()
         if taken:
             raise AuthError(400, "This Google account is already linked to another Jorna user")
+        meta = claims.get("user_metadata") or {}
+        google_picture = meta.get("avatar_url") or meta.get("picture") or None
+    else:
+        google_picture = None
 
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     user = User(
@@ -212,6 +221,7 @@ def register_user(
         gender=gender,
         language=language,
         supabase_user_id=supabase_user_id,
+        pfp_url=google_picture,
     )
     db.add(user)
     db.commit()

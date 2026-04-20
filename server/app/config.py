@@ -33,6 +33,11 @@ STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 # Integer percent taken by the platform on each booking (e.g. 5 = 5 %).
 PLATFORM_FEE_PERCENT: int = int(os.getenv("PLATFORM_FEE_PERCENT", "5"))
 
+# ── Supabase Storage ──────────────────────────────────────────────────
+# Service role key (Settings → API in Supabase dashboard).
+# Required only for server-side file uploads; keep this secret.
+SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+
 # ── CORS ──────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins.
 # Example: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com
