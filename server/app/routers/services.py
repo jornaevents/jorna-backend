@@ -1,7 +1,7 @@
 """Thin router for service (offering) endpoints — delegates to service_service."""
 
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,10 @@ from app.services.service_service import (
     delete_service,
     list_services,
     update_service,
+    add_service_image,
+    remove_service_image,
 )
+from app.services.storage_service import StorageError, upload_service_image, delete_service_image
 
 router = APIRouter(prefix="/services", tags=["services"])
 
@@ -99,6 +102,113 @@ def delete_service_route(
     """Delete a service. Only the owning vendor may call this."""
     try:
         delete_service(user_id=current_user.user_id, service_id=service_id, db=db)
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+MAX_IMAGES_PER_SERVICE = 10
+MAX_TOTAL_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB per request
+
+
+@router.post(
+    "/{service_id}/images",
+    summary="Upload one or more images to a service",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string", "format": "binary"},
+                            }
+                        },
+                        "required": ["files"],
+                    }
+                }
+            },
+            "required": True,
+        }
+    },
+)
+async def upload_service_image_route(
+    service_id: str,
+    files: List[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload one or more images and append them to the service's media list. Vendors only."""
+    from app.db.models import Service as ServiceModel
+    try:
+        service = db.query(ServiceModel).filter(ServiceModel.service_id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="Service not found")
+
+        existing_count = len(service.media or [])
+        if existing_count + len(files) > MAX_IMAGES_PER_SERVICE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"A service may have at most {MAX_IMAGES_PER_SERVICE} images. "
+                       f"This service already has {existing_count}.",
+            )
+
+        # Read all files into memory first so we can validate before touching storage
+        uploads: list[tuple[bytes, str]] = []
+        total_bytes = 0
+        for file in files:
+            data = await file.read()
+            total_bytes += len(data)
+            if total_bytes > MAX_TOTAL_UPLOAD_BYTES:
+                raise HTTPException(status_code=400, detail="Total upload size exceeds 20 MB")
+            uploads.append((data, file.content_type or ""))
+
+        # Upload all files to storage; on any failure roll back already-uploaded files
+        uploaded_urls: list[str] = []
+        try:
+            for i, (data, content_type) in enumerate(uploads):
+                url = upload_service_image(
+                    service_id=service_id,
+                    image_index=existing_count + i,
+                    file_bytes=data,
+                    content_type=content_type,
+                )
+                uploaded_urls.append(url)
+        except StorageError:
+            for url in uploaded_urls:
+                delete_service_image(url)
+            raise
+
+        # All uploads succeeded — commit to DB in one shot
+        service.media = list(service.media or []) + uploaded_urls
+        db.commit()
+        db.refresh(service)
+        return {"media": service.media}
+
+    except StorageError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/{service_id}/images", summary="Remove an image from a service", status_code=200)
+def delete_service_image_route(
+    service_id: str,
+    image_url: str = Query(..., description="The exact URL of the image to remove"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove an image URL from the service and delete it from storage. Vendors only."""
+    try:
+        result = remove_service_image(
+            user_id=current_user.user_id,
+            service_id=service_id,
+            image_url=image_url,
+            db=db,
+        )
+        delete_service_image(image_url)
+        return result
     except ServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

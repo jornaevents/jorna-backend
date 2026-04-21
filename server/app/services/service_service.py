@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.db.models import Service, Vendor
+from app.services.storage_service import delete_service_image
 
 
 class ServiceError(Exception):
@@ -91,6 +92,40 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
     return _service_dict(service)
 
 
+def add_service_image(*, user_id: str, service_id: str, image_url: str, db: Session) -> dict:
+    """Append an already-uploaded image URL to the service's media list."""
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service:
+        raise ServiceError(404, "Service not found")
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    if not vendor or vendor.user_id != user_id:
+        raise ServiceError(403, "Not authorized to edit this service")
+    media = list(service.media or [])
+    media.append(image_url)
+    service.media = media
+    db.commit()
+    db.refresh(service)
+    return _service_dict(service)
+
+
+def remove_service_image(*, user_id: str, service_id: str, image_url: str, db: Session) -> dict:
+    """Remove an image URL from the service's media list."""
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service:
+        raise ServiceError(404, "Service not found")
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    if not vendor or vendor.user_id != user_id:
+        raise ServiceError(403, "Not authorized to edit this service")
+    media = list(service.media or [])
+    if image_url not in media:
+        raise ServiceError(404, "Image not found on this service")
+    media.remove(image_url)
+    service.media = media
+    db.commit()
+    db.refresh(service)
+    return _service_dict(service)
+
+
 def delete_service(*, user_id: str, service_id: str, db: Session) -> None:
     """Delete a service. Raises 404 if not found, 403 if not the owner."""
     service = db.query(Service).filter(Service.service_id == service_id).first()
@@ -99,5 +134,8 @@ def delete_service(*, user_id: str, service_id: str, db: Session) -> None:
     vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
     if not vendor or vendor.user_id != user_id:
         raise ServiceError(403, "Not authorized to delete this service")
+    media = list(service.media or [])
     db.delete(service)
     db.commit()
+    for url in media:
+        delete_service_image(url)
