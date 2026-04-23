@@ -1,0 +1,23 @@
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.Python
+**/venv
+**/.venv
+**/*.egg-info
+
+# Local secrets and data — never bake these into the image
+server/.env
+server/*.db
+server/firebase_credentials.json
+server/client_secret.json
+
+# Frontend (not part of the backend image)
+node_modules/
+dist/
+build/
+src/
+
+# Misc
+.git
