@@ -5,6 +5,9 @@ import os
 # Default to SQLite for local development; set DATABASE_URL to a
 # PostgreSQL connection string (e.g. Supabase) for staging/production.
 DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip() or "sqlite:///./test.db"
+# Railway (and Heroku) provide postgres:// but SQLAlchemy 2.x dropped that alias.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # ── JWT ───────────────────────────────────────────────────────────────
 # Generate a secure value with:
