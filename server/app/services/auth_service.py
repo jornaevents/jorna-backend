@@ -86,15 +86,17 @@ def _unique_username_from_email(email: str, db: Session) -> str:
 
 def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     """
-    Verify a Supabase Google token. If the account already exists, return a JWT.
-    If not, auto-create it from the Google profile and return a JWT with
-    is_new_user=True so the client can prompt for profile completion.
+    Verify a Supabase Google token and look up any existing Jorna account.
+    Returns a JWT if an account is found. Returns is_new_user=True with the
+    email if no account exists — the client must complete registration via
+    /auth/register. No account is auto-created here.
     """
     claims = _decode_supabase_access_token(access_token)
     sub = (claims.get("sub") or "").lower()
     if not sub:
         raise AuthError(401, "Invalid token: missing sub")
 
+    # Check by Supabase user ID first (Google-linked accounts)
     user = db.query(User).filter(User.supabase_user_id == sub).first()
     if user:
         meta = claims.get("user_metadata") or {}
@@ -116,18 +118,11 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
         raise AuthError(400, "Google account has no email address")
 
     meta = claims.get("user_metadata") or {}
-    f_name = meta.get("given_name") or ""
-    l_name = meta.get("family_name") or ""
-    if not f_name and not l_name:
-        full = (meta.get("full_name") or meta.get("name") or "").strip()
-        parts = full.split(" ", 1)
-        f_name = parts[0]
-        l_name = parts[1] if len(parts) > 1 else ""
     pfp_url = meta.get("avatar_url") or meta.get("picture") or None
 
+    # Check by email (password-based account with same address — link it)
     existing = db.query(User).filter(User.email == email).first()
     if existing:
-        # Email-based account found — link the Google identity and log them in
         if not existing.supabase_user_id:
             existing.supabase_user_id = sub
         if pfp_url and not existing.pfp_url:
@@ -142,29 +137,12 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
             "is_new_user": False,
         }
 
-    # Google users never use a password — store an unusable random hash
-    random_pw = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
-
-    user = User(
-        email=email,
-        username=_unique_username_from_email(email, db),
-        password=random_pw,
-        f_name=f_name or email.split("@")[0],
-        l_name=l_name or "",
-        pfp_url=pfp_url,
-        supabase_user_id=sub,
-        # age/location/gender/language are nullable — user completes profile later
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    token = _make_token(user.user_id, user.email, user.token_version)
+    # No existing account — tell the client to complete registration
     return {
-        "access_token": token,
+        "access_token": None,
         "token_type": "bearer",
-        "user_id": user.user_id,
-        "email": user.email,
+        "user_id": None,
+        "email": email,
         "is_new_user": True,
     }
 
