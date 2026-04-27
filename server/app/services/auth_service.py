@@ -115,13 +115,6 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     if not email:
         raise AuthError(400, "Google account has no email address")
 
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
-        raise AuthError(
-            400,
-            "An account with this email already exists. Please sign in with your password.",
-        )
-
     meta = claims.get("user_metadata") or {}
     f_name = meta.get("given_name") or ""
     l_name = meta.get("family_name") or ""
@@ -131,6 +124,23 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
         f_name = parts[0]
         l_name = parts[1] if len(parts) > 1 else ""
     pfp_url = meta.get("avatar_url") or meta.get("picture") or None
+
+    existing = db.query(User).filter(User.email == email).first()
+    if existing:
+        # Email-based account found — link the Google identity and log them in
+        if not existing.supabase_user_id:
+            existing.supabase_user_id = sub
+        if pfp_url and not existing.pfp_url:
+            existing.pfp_url = pfp_url
+        db.commit()
+        token = _make_token(existing.user_id, existing.email, existing.token_version)
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user_id": existing.user_id,
+            "email": existing.email,
+            "is_new_user": False,
+        }
 
     # Google users never use a password — store an unusable random hash
     random_pw = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
