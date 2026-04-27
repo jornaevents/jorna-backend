@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import User
 from app.dependencies import get_current_user
-from app.services.user_service import UserError, get_user, update_user
+from app.services.user_service import UserError, get_user, update_user, delete_user
 from app.services.storage_service import StorageError, upload_avatar, delete_avatar
 
 router = APIRouter(tags=["users"])
@@ -62,6 +62,15 @@ async def upload_avatar_endpoint(
         delete_avatar(old_url)
         return {"pfp_url": new_url}
     except StorageError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/me", status_code=204, summary="Permanently delete current user account")
+def delete_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Delete the authenticated user and all their associated data. This action is irreversible."""
+    try:
+        delete_user(user_id=current_user.user_id, db=db)
+    except UserError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 

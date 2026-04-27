@@ -1,8 +1,9 @@
 """Business logic for user profile management."""
 
 from sqlalchemy.orm import Session
+from sqlalchemy import delete as sql_delete
 
-from app.db.models import User
+from app.db.models import User, Vendor, Service, Booking, VendorAvailability, vendor_tags
 
 
 class UserError(Exception):
@@ -36,6 +37,34 @@ def get_user(*, user_id: str, db: Session) -> dict:
     if not user:
         raise UserError(404, "User not found")
     return _user_dict(user)
+
+
+def delete_user(*, user_id: str, db: Session) -> None:
+    """Permanently delete a user and all their associated data."""
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise UserError(404, "User not found")
+
+    # Delete bookings where this user is the customer
+    db.execute(sql_delete(Booking).where(Booking.user_id == user_id))
+
+    # Handle vendor-side cleanup if user is a vendor
+    vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
+    if vendor:
+        vendor_id = vendor.vendor_id
+        # Delete bookings where this user is the vendor
+        db.execute(sql_delete(Booking).where(Booking.vendor_id == vendor_id))
+        # Delete vendor availability slots
+        db.execute(sql_delete(VendorAvailability).where(VendorAvailability.vendor_id == vendor_id))
+        # Delete services
+        db.execute(sql_delete(Service).where(Service.vendor_id == vendor_id))
+        # Delete vendor_tags join table entries
+        db.execute(vendor_tags.delete().where(vendor_tags.c.vendor_id == vendor_id))
+        # Delete vendor
+        db.delete(vendor)
+
+    db.delete(user)
+    db.commit()
 
 
 def update_user(*, user_id: str, update_data: dict, db: Session) -> dict:
