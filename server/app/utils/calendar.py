@@ -14,39 +14,69 @@ CLIENT_SECRETS_FILE = os.environ.get("GOOGLE_CLIENT_SECRETS_FILE", "client_secre
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
 
-def _load_client_credentials() -> tuple[str | None, str | None]:
-    """Extract client_id and client_secret from the OAuth secrets file.
+def _load_client_config() -> dict | None:
+    """Return the parsed OAuth client config dict.
 
-    Returns (client_id, client_secret) or (None, None) if the file is
-    missing or malformed.
+    Resolution order:
+    1. client_secret.json file (local dev)
+    2. GOOGLE_CLIENT_SECRETS_JSON env var (full JSON blob)
+    3. GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET env vars (individual values)
     """
-    if not os.path.exists(CLIENT_SECRETS_FILE):
-        logger.warning("Cannot load client credentials — %s not found", CLIENT_SECRETS_FILE)
-        return None, None
+    if os.path.exists(CLIENT_SECRETS_FILE):
+        try:
+            with open(CLIENT_SECRETS_FILE) as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to parse %s: %s", CLIENT_SECRETS_FILE, exc)
 
+    raw = os.environ.get("GOOGLE_CLIENT_SECRETS_JSON", "")
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception as exc:
+            logger.warning("Failed to parse GOOGLE_CLIENT_SECRETS_JSON: %s", exc)
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    if client_id and client_secret:
+        return {
+            "web": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [],
+            }
+        }
+
+    return None
+
+
+def _load_client_credentials() -> tuple[str | None, str | None]:
+    """Extract client_id and client_secret from available config sources."""
+    data = _load_client_config()
+    if not data:
+        logger.warning(
+            "Cannot load client credentials — set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET",
+        )
+        return None, None
     try:
-        with open(CLIENT_SECRETS_FILE) as f:
-            data = json.load(f)
-        # The JSON has a top-level key like "web" or "installed"
         key = next(iter(data))
         return data[key].get("client_id"), data[key].get("client_secret")
     except Exception as exc:
-        logger.warning("Failed to parse %s: %s", CLIENT_SECRETS_FILE, exc)
+        logger.warning("Failed to extract credentials from client config: %s", exc)
         return None, None
 
 
 def get_google_auth_flow(redirect_uri: str) -> Flow:
-    """Initialize standard Google OAuth flow."""
-    # Note: In production, check if CLIENT_SECRETS_FILE exists, otherwise handle gracefully
-    if not os.path.exists(CLIENT_SECRETS_FILE):
-        raise FileNotFoundError(f"OAuth credentials file not found: {CLIENT_SECRETS_FILE}")
-        
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
-        scopes=SCOPES,
-        redirect_uri=redirect_uri
-    )
-    return flow
+    """Initialize Google OAuth flow from file, JSON blob, or individual env vars."""
+    config = _load_client_config()
+    if config is None:
+        raise FileNotFoundError(
+            "Google OAuth credentials not found. Set GOOGLE_CLIENT_ID and "
+            "GOOGLE_CLIENT_SECRET environment variables."
+        )
+    return Flow.from_client_config(config, scopes=SCOPES, redirect_uri=redirect_uri)
 
 
 def create_google_calendar_service(
