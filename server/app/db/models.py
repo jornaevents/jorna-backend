@@ -145,3 +145,18 @@ class VendorAvailability(Base):
     day_of_week = Column(Integer, nullable=False)
     start_time = Column(String(5), nullable=False)
     end_time = Column(String(5), nullable=False)
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    event_id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    date_iso = Column(String(50), nullable=False)
+    location = Column(String(255), nullable=False)
+    event_type = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    guest_count = Column(Integer, nullable=True)
+    budget = Column(Float, nullable=True)
+    services_needed = Column(JSON, nullable=True)
