@@ -198,7 +198,10 @@ def get_vendor_availability(
             service, creds = create_google_calendar_service(
                 vendor.google_access_token, vendor.google_refresh_token
             )
-            g_busy = get_freebusy_schedule(service, start_date, end_date)
+            # Ensure full RFC3339 format — Google rejects bare dates like "2026-05-03"
+            rfc_start = start_date if "T" in start_date else f"{start_date}T00:00:00Z"
+            rfc_end = end_date if "T" in end_date else f"{end_date}T23:59:59Z"
+            g_busy = get_freebusy_schedule(service, rfc_start, rfc_end)
             for busy in g_busy:
                 gb_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
                 gb_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
