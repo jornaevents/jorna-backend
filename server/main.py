@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env before any module reads os.environ
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -225,6 +226,15 @@ def startup():
 
 
 # ── Routes ────────────────────────────────────────────────────────────
+
+
+@app.get("/calendar-connected", response_class=HTMLResponse, include_in_schema=False)
+def calendar_connected(success: str = "true", vendor_id: str = "", error: str = ""):
+    if success == "true":
+        body = f"<h2>Google Calendar connected!</h2><p>Vendor ID: {vendor_id}</p><p>You can close this tab.</p>"
+    else:
+        body = f"<h2>Failed to connect Google Calendar</h2><p>{error}</p><p>Close this tab and try again.</p>"
+    return HTMLResponse(f"<html><body style='font-family:sans-serif;padding:2rem'>{body}</body></html>")
 
 
 @app.get("/")
