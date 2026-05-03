@@ -5,8 +5,14 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 from datetime import datetime
+
+# google_auth_oauthlib raises an error if Google returns extra scopes (e.g. openid,
+# userinfo.email) beyond what was explicitly requested. Relaxing this is safe here
+# because we only use the calendar scope — the extra ones come from Google automatically.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 from sqlalchemy.orm import Session
 
@@ -205,7 +211,7 @@ def get_vendor_availability(
                 logger.info("Persisted refreshed Google access token for vendor %s", vendor_id)
         except Exception as exc:
             logger.warning("Google Calendar fetch failed for vendor %s: %s", vendor_id, exc)
-            google_calendar_error = "Google Calendar data unavailable — the vendor may need to reconnect their account."
+            google_calendar_error = f"Google Calendar error: {exc}"
 
     return {
         "vendor_id": vendor_id,
