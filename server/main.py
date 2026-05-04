@@ -203,24 +203,15 @@ def startup():
             ALLOWED_ORIGINS,
         )
 
-    # Verify Alembic migrations are up to date (PostgreSQL only — SQLite is test/dev only).
+    # Auto-run migrations on startup (PostgreSQL only — SQLite is test/dev only).
     if not DATABASE_URL.startswith("sqlite"):
-        from alembic.runtime.migration import MigrationContext
-        from alembic.script import ScriptDirectory
+        from alembic.command import upgrade as alembic_upgrade
         from alembic.config import Config as AlembicConfig
 
         alembic_cfg = AlembicConfig("alembic.ini")
-        script = ScriptDirectory.from_config(alembic_cfg)
-        with engine.connect() as conn:
-            migration_ctx = MigrationContext.configure(conn)
-            current_heads = set(migration_ctx.get_current_heads())
-            expected_heads = set(script.get_heads())
-            if current_heads != expected_heads:
-                raise RuntimeError(
-                    f"Database migrations are not up to date. "
-                    f"Run `alembic upgrade head` before starting. "
-                    f"Current: {current_heads or 'none'}, Expected: {expected_heads}"
-                )
+        logger.info("Running alembic upgrade head...")
+        alembic_upgrade(alembic_cfg, "head")
+        logger.info("Migrations up to date.")
     else:
         Base.metadata.create_all(bind=engine)
 
