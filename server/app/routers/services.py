@@ -11,6 +11,7 @@ from app.dependencies import get_current_user
 from app.services.service_service import (
     ServiceError,
     create_service,
+    get_service,
     delete_service,
     list_services,
     update_service,
@@ -70,6 +71,15 @@ def create_service_route(
             description=body.description,
             db=db,
         )
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/{service_id}", summary="Get a single service")
+def get_service_route(service_id: str, db: Session = Depends(get_db)):
+    """Return a single service by ID. No auth required."""
+    try:
+        return get_service(service_id=service_id, db=db)
     except ServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

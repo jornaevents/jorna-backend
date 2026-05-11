@@ -74,3 +74,13 @@ def update_event(*, user_id: str, event_id: str, update_data: dict, db: Session)
 def list_events(*, user_id: str, db: Session) -> list[dict]:
     events = db.query(Event).filter(Event.user_id == user_id).all()
     return [_event_dict(e) for e in events]
+
+
+def delete_event(*, user_id: str, event_id: str, db: Session) -> None:
+    event = db.query(Event).filter(Event.event_id == event_id).first()
+    if not event:
+        raise EventError(404, "Event not found")
+    if event.user_id != user_id:
+        raise EventError(403, "Not authorized to delete this event")
+    db.delete(event)
+    db.commit()

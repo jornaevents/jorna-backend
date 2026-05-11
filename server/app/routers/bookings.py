@@ -13,6 +13,7 @@ from app.models.schemas import BookingStatus
 from app.services.booking_service import (
     BookingError,
     create_booking as svc_create_booking,
+    get_booking as svc_get_booking,
     update_booking_status as svc_update_booking_status,
     get_user_bookings as svc_get_user_bookings,
     get_vendor_bookings as svc_get_vendor_bookings,
@@ -70,6 +71,19 @@ def create_booking(
             venue_longitude=body.venue_longitude,
             db=db,
         )
+    except BookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/{booking_id}", summary="Get a single booking")
+def get_booking_route(
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Fetch a single booking by ID. Caller must be the client or the vendor."""
+    try:
+        return svc_get_booking(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except BookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

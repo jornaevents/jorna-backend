@@ -169,6 +169,19 @@ def update_booking_status(
     }
 
 
+def get_booking(*, booking_id: str, caller_user_id: str, db: Session) -> Booking:
+    """Return a single booking. Caller must be the client or the vendor."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise BookingError(404, "Booking not found")
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    is_vendor = vendor is not None and vendor.user_id == caller_user_id
+    is_customer = booking.user_id == caller_user_id
+    if not is_vendor and not is_customer:
+        raise BookingError(403, "You are not a party to this booking")
+    return booking
+
+
 def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
     """Return a paginated list of bookings created by a client."""
     query = db.query(Booking).filter(Booking.user_id == user_id)

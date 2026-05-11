@@ -17,8 +17,11 @@ from app.services.vendor_service import (
     get_vendor,
     get_my_vendor,
     update_vendor,
+    delete_vendor,
     list_vendors,
     search_vendors,
+    get_availability,
+    set_availability,
     add_tag_to_vendor,
     remove_tag_from_vendor,
     get_vendor_tags,
@@ -44,6 +47,16 @@ class UpdateVendorRequest(BaseModel):
 
 class TagRequest(BaseModel):
     tag: str
+
+
+class AvailabilitySlot(BaseModel):
+    day_of_week: int
+    start_time: str
+    end_time: str
+
+
+class SetAvailabilityRequest(BaseModel):
+    slots: list[AvailabilitySlot]
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -127,6 +140,18 @@ def get_my_vendor_route(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+@router.delete("/me", summary="Delete current user's vendor profile", status_code=204)
+def delete_my_vendor_route(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete the authenticated user's vendor profile, services, and availability."""
+    try:
+        delete_vendor(user_id=current_user.user_id, db=db)
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 @router.patch("/me", summary="Update current user's vendor profile")
 def update_my_vendor_route(
     body: UpdateVendorRequest,
@@ -142,6 +167,45 @@ def update_my_vendor_route(
         )
     except VendorError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/me/availability", summary="Get current vendor's availability slots")
+def get_my_availability(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated vendor's weekly availability slots."""
+    try:
+        vendor = db.query(Vendor).filter(Vendor.user_id == current_user.user_id).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail="Vendor profile not found")
+        return get_availability(vendor_id=vendor.vendor_id, db=db)
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.put("/me/availability", summary="Replace current vendor's availability slots")
+def set_my_availability(
+    body: SetAvailabilityRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Replace all availability slots. Send an empty list to clear all slots.
+    day_of_week: 0=Monday, 6=Sunday. Times are strings like '09:00'."""
+    try:
+        return set_availability(
+            user_id=current_user.user_id,
+            slots=[s.model_dump() for s in body.slots],
+            db=db,
+        )
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/{vendor_id}/availability", summary="Get a vendor's availability slots")
+def get_vendor_availability_route(vendor_id: str, db: Session = Depends(get_db)):
+    """Return availability slots for any vendor. No auth required."""
+    return get_availability(vendor_id=vendor_id, db=db)
 
 
 @router.get("/tags", summary="List all tags")

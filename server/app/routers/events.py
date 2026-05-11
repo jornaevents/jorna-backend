@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import User
 from app.dependencies import get_current_user
-from app.services.event_service import EventError, create_event, update_event, list_events
+from app.services.event_service import EventError, create_event, update_event, list_events, delete_event
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -73,6 +73,19 @@ def list_events_route(
 ):
     """Return all events belonging to the authenticated user."""
     return list_events(user_id=current_user.user_id, db=db)
+
+
+@router.delete("/{event_id}", summary="Delete an event", status_code=204)
+def delete_event_route(
+    event_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete an event. Only the event owner may call this."""
+    try:
+        delete_event(user_id=current_user.user_id, event_id=event_id, db=db)
+    except EventError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.patch("/{event_id}", summary="Update an event")

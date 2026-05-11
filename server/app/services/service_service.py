@@ -65,6 +65,14 @@ def create_service(
     return _service_dict(service)
 
 
+def get_service(*, service_id: str, db: Session) -> dict:
+    """Return a single service by ID. Raises 404 if not found."""
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service:
+        raise ServiceError(404, "Service not found")
+    return _service_dict(service)
+
+
 def list_services(
     *, vendor_id: Optional[str] = None, limit: int = 20, offset: int = 0, db: Session
 ) -> dict:

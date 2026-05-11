@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Vendor, Service, User, Tag, vendor_tags
+from app.db.models import Vendor, Service, User, Tag, VendorAvailability, vendor_tags
 from app.utils.location import calculate_distance_miles
 
 
@@ -231,6 +231,63 @@ def search_vendors(
         "limit": limit,
         "offset": offset,
     }
+
+
+# ── Vendor deletion ───────────────────────────────────────────────────
+
+
+def delete_vendor(*, user_id: str, db: Session) -> None:
+    """Delete the vendor profile for *user_id*, including services and availability slots."""
+    from sqlalchemy import delete as sql_delete
+    vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor profile not found for this user")
+    vendor_id = vendor.vendor_id
+    db.execute(sql_delete(VendorAvailability).where(VendorAvailability.vendor_id == vendor_id))
+    for service in db.query(Service).filter(Service.vendor_id == vendor_id).all():
+        for url in list(service.media or []):
+            from app.services.storage_service import delete_service_image
+            delete_service_image(url)
+        db.delete(service)
+    db.execute(vendor_tags.delete().where(vendor_tags.c.vendor_id == vendor_id))
+    db.delete(vendor)
+    db.commit()
+
+
+# ── Availability CRUD ─────────────────────────────────────────────────
+
+
+def get_availability(*, vendor_id: str, db: Session) -> list[dict]:
+    slots = db.query(VendorAvailability).filter(VendorAvailability.vendor_id == vendor_id).all()
+    return [
+        {
+            "availability_id": s.availability_id,
+            "day_of_week": s.day_of_week,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+        }
+        for s in slots
+    ]
+
+
+def set_availability(*, user_id: str, slots: list[dict], db: Session) -> list[dict]:
+    """Replace all availability slots for the vendor with the provided list."""
+    vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
+    if not vendor:
+        raise VendorError(404, "Vendor profile not found for this user")
+    db.query(VendorAvailability).filter(VendorAvailability.vendor_id == vendor.vendor_id).delete()
+    for slot in slots:
+        day = slot["day_of_week"]
+        if not (0 <= day <= 6):
+            raise VendorError(400, "day_of_week must be 0 (Monday) – 6 (Sunday)")
+        db.add(VendorAvailability(
+            vendor_id=vendor.vendor_id,
+            day_of_week=day,
+            start_time=slot["start_time"],
+            end_time=slot["end_time"],
+        ))
+    db.commit()
+    return get_availability(vendor_id=vendor.vendor_id, db=db)
 
 
 # ── Tag management ────────────────────────────────────────────────────
