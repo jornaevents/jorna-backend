@@ -1,6 +1,6 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -145,6 +145,19 @@ class VendorAvailability(Base):
     day_of_week = Column(Integer, nullable=False)
     start_time = Column(String(5), nullable=False)
     end_time = Column(String(5), nullable=False)
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+    __table_args__ = (UniqueConstraint("booking_id", name="uq_review_booking"),)
+
+    review_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=False, index=True)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    rating = Column(Float, nullable=False)
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False)
 
 
 class Event(Base):
