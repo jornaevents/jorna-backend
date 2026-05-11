@@ -206,16 +206,7 @@ def startup():
             ALLOWED_ORIGINS,
         )
 
-    # Auto-run migrations on startup (PostgreSQL only — SQLite is test/dev only).
-    if not DATABASE_URL.startswith("sqlite"):
-        from alembic.command import upgrade as alembic_upgrade
-        from alembic.config import Config as AlembicConfig
-
-        alembic_cfg = AlembicConfig("alembic.ini")
-        logger.info("Running alembic upgrade head...")
-        alembic_upgrade(alembic_cfg, "head")
-        logger.info("Migrations up to date.")
-    else:
+    if DATABASE_URL.startswith("sqlite"):
         Base.metadata.create_all(bind=engine)
 
     # Bootstrap initial admin from env var if set.
