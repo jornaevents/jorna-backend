@@ -171,13 +171,17 @@ def search_vendors(
     longitude: float,
     category: str | None = None,
     tag: str | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
+    min_rating: float | None = None,
+    sort_by: str = "distance",
     limit: int = 20,
     offset: int = 0,
     db: Session,
 ) -> dict:
-    """Return vendors offering *service_name* within their travel radius
-    of the given coordinates, sorted by distance (closest first).
-    Optionally filter by *category* and/or *tag*.
+    """Return vendors offering *service_name* within their travel radius of the
+    given coordinates. Supports filtering by category, tag, price range, and
+    minimum rating. sort_by accepts: distance (default), rating, price.
     """
     query = (
         db.query(Vendor, Service, User)
@@ -194,18 +198,22 @@ def search_vendors(
                  .join(Tag, vendor_tags.c.tag_id == Tag.tag_id)
                  .filter(Tag.name == normalized)
         )
+    if min_price is not None:
+        query = query.filter(Service.price >= min_price)
+    if max_price is not None:
+        query = query.filter(Service.price <= max_price)
+    if min_rating is not None:
+        query = query.filter(Vendor.rating >= min_rating)
+
     results = query.all()
 
     nearby_vendors: list[dict] = []
-
     for vendor, service, user in results:
         if user.latitude is None or user.longitude is None:
             continue
-
         distance_miles = calculate_distance_miles(
             latitude, longitude, user.latitude, user.longitude
         )
-
         if distance_miles <= vendor.travel_radius_miles:
             nearby_vendors.append(
                 {
@@ -223,7 +231,13 @@ def search_vendors(
                 }
             )
 
-    nearby_vendors.sort(key=lambda x: x["distance_miles"])
+    sort_keys = {
+        "rating": lambda x: -(x["rating"] or 0),
+        "price": lambda x: x["service_price"],
+        "distance": lambda x: x["distance_miles"],
+    }
+    nearby_vendors.sort(key=sort_keys.get(sort_by, sort_keys["distance"]))
+
     total = len(nearby_vendors)
     return {
         "items": nearby_vendors[offset: offset + limit],

@@ -110,17 +110,27 @@ def vendor_search(
     longitude: float,
     category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
     tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
+    min_price: Optional[float] = Query(None, ge=0, description="Minimum service price"),
+    max_price: Optional[float] = Query(None, ge=0, description="Maximum service price"),
+    min_rating: Optional[float] = Query(None, ge=0, le=5, description="Minimum vendor rating (0–5)"),
+    sort_by: Optional[str] = Query("distance", description="Sort order: distance, rating, price"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Search for vendors offering a service within their travel radius, sorted by distance."""
+    """Search for vendors offering a service within their travel radius.
+    Filterable by category, tag, price range, and minimum rating.
+    Sort by distance (default), rating, or price."""
     return search_vendors(
         service_name=service_name,
         latitude=latitude,
         longitude=longitude,
         category=category.value if category else None,
         tag=tag,
+        min_price=min_price,
+        max_price=max_price,
+        min_rating=min_rating,
+        sort_by=sort_by or "distance",
         limit=limit,
         offset=offset,
         db=db,
