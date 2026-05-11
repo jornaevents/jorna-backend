@@ -149,6 +149,18 @@ class VendorAvailability(Base):
     end_time = Column(String(5), nullable=False)
 
 
+class Message(Base):
+    __tablename__ = "messages"
+
+    message_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=False, index=True)
+    sender_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    receiver_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    is_read = Column(Boolean, nullable=False, default=False)
+
+
 class Review(Base):
     __tablename__ = "reviews"
     __table_args__ = (UniqueConstraint("booking_id", name="uq_review_booking"),)
