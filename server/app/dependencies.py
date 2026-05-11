@@ -35,3 +35,10 @@ def get_current_user(
     if token_version != user.token_version:
         raise HTTPException(status_code=401, detail="Token has been revoked — please log in again")
     return user
+
+
+def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Require the authenticated user to have is_admin=True. Returns 403 otherwise."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user

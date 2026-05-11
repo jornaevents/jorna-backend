@@ -40,6 +40,8 @@ class User(Base):
     # Incremented on logout or password change to invalidate all previously issued tokens
     token_version = Column(Integer, nullable=False, default=0)
 
+    is_admin = Column(Boolean, nullable=False, default=False)
+
 
 # Many-to-many join table: one vendor has many tags, one tag belongs to many vendors.
 vendor_tags = Table(

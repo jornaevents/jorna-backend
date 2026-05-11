@@ -22,12 +22,12 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL
+from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import calendar, bookings, events, notifications, users, vendors, services, payments, reviews
+from app.routers import admin, calendar, bookings, events, notifications, users, vendors, services, payments, reviews
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -145,6 +145,7 @@ app.include_router(vendors.router)
 app.include_router(services.router)
 app.include_router(payments.router)
 app.include_router(reviews.router)
+app.include_router(admin.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -215,6 +216,19 @@ def startup():
         logger.info("Migrations up to date.")
     else:
         Base.metadata.create_all(bind=engine)
+
+    # Bootstrap initial admin from env var if set.
+    if INITIAL_ADMIN_EMAIL:
+        from app.db.database import SessionLocal
+        from app.db.models import User as UserModel
+        with SessionLocal() as session:
+            user = session.query(UserModel).filter(UserModel.email == INITIAL_ADMIN_EMAIL.lower()).first()
+            if user and not user.is_admin:
+                user.is_admin = True
+                session.commit()
+                logger.info("Bootstrapped admin: %s", INITIAL_ADMIN_EMAIL)
+            elif not user:
+                logger.warning("INITIAL_ADMIN_EMAIL set to '%s' but no user with that email exists yet.", INITIAL_ADMIN_EMAIL)
 
 
 # ── Routes ────────────────────────────────────────────────────────────

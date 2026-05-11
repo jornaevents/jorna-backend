@@ -403,3 +403,73 @@ def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict
     logger.info("Refund issued for booking %s", booking_id)
 
     return {"message": "Refund issued successfully. Funds will be returned within 5–10 business days."}
+
+
+# ── Disputes ──────────────────────────────────────────────────────────
+
+
+def raise_dispute(*, booking_id: str, caller_user_id: str, reason: str | None, db: Session) -> dict:
+    """Mark a paid booking as disputed, freezing funds on the platform.
+
+    Only the customer may raise a dispute, and only while payment_status is 'paid'
+    (funds still held on the platform). Once disputed, auto-release is blocked
+    until an admin resolves it.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "Only the customer can raise a dispute")
+    if booking.payment_status != "paid":
+        raise StripeError(
+            400,
+            f"Disputes can only be raised while payment is held on the platform "
+            f"(current status: '{booking.payment_status}'). "
+            "If funds were already released, contact support directly."
+        )
+
+    booking.payment_status = "disputed"
+    db.commit()
+    logger.info("Dispute raised for booking %s by user %s", booking_id, caller_user_id)
+    return {
+        "message": "Dispute raised. Our team will review and resolve it within 3–5 business days.",
+        "booking_id": booking_id,
+        "payment_status": "disputed",
+    }
+
+
+def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
+    """Resolve a disputed booking. Caller must be an admin (enforced at the router level).
+
+    resolution must be one of:
+    - 'refund_customer' — issue a full Stripe refund to the customer
+    - 'release_vendor'  — transfer funds to the vendor as normal
+    """
+    if resolution not in ("refund_customer", "release_vendor"):
+        raise StripeError(400, "resolution must be 'refund_customer' or 'release_vendor'")
+
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.payment_status != "disputed":
+        raise StripeError(400, f"Booking is not disputed (status: '{booking.payment_status}')")
+    if not booking.payment_intent_id:
+        raise StripeError(500, "No payment intent found for this booking")
+
+    if resolution == "refund_customer":
+        try:
+            stripe.Refund.create(
+                payment_intent=booking.payment_intent_id,
+                reason="fraudulent",
+            )
+        except stripe.StripeError as e:
+            raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
+        booking.payment_status = "refunded"
+        db.commit()
+        logger.info("Dispute resolved: refund issued for booking %s", booking_id)
+        return {"message": "Dispute resolved. Customer has been refunded.", "payment_status": "refunded"}
+
+    # release_vendor — transfer funds to vendor
+    _release_funds(booking, db)
+    logger.info("Dispute resolved: funds released to vendor for booking %s", booking_id)
+    return {"message": "Dispute resolved. Funds have been released to the vendor.", "payment_status": "released"}

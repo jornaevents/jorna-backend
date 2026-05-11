@@ -1,12 +1,13 @@
 """Router for Stripe payment and vendor onboarding endpoints."""
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from pydantic import BaseModel, Field
 from app.limiter import limiter
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_admin
 from app.services.stripe_service import (
     StripeError,
     create_vendor_onboarding_url,
@@ -15,6 +16,8 @@ from app.services.stripe_service import (
     handle_stripe_webhook,
     confirm_event,
     request_refund,
+    raise_dispute,
+    resolve_dispute,
 )
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -124,6 +127,59 @@ def refund_booking(
     """
     try:
         return request_refund(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# ── Disputes ─────────────────────────────────────────────────────────
+
+
+class DisputeRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class ResolveDisputeRequest(BaseModel):
+    resolution: str
+
+
+@router.post(
+    "/bookings/{booking_id}/dispute",
+    summary="Raise a dispute for a paid booking",
+)
+@limiter.limit("3/minute")
+def dispute_booking(
+    request: Request,
+    booking_id: str,
+    body: DisputeRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Customer raises a dispute, freezing funds on the platform.
+    Only allowed while payment_status is 'paid'."""
+    try:
+        return raise_dispute(
+            booking_id=booking_id,
+            caller_user_id=current_user.user_id,
+            reason=body.reason,
+            db=db,
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/dispute/resolve",
+    summary="Resolve a dispute (admin only)",
+)
+def resolve_booking_dispute(
+    booking_id: str,
+    body: ResolveDisputeRequest,
+    db: Session = Depends(get_db),
+    current_admin=Depends(get_current_admin),
+):
+    """Admin resolves a dispute. resolution must be 'refund_customer' or 'release_vendor'."""
+    try:
+        return resolve_dispute(booking_id=booking_id, resolution=body.resolution, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

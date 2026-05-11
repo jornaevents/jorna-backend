@@ -29,6 +29,11 @@ GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv(
 # Where the backend redirects the vendor's browser after OAuth completes.
 FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# ── Admin bootstrap ───────────────────────────────────────────────────
+# If set, this email address is automatically promoted to admin on startup.
+# Use this to create the first admin without needing direct DB access.
+INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
+
 # ── Stripe ───────────────────────────────────────────────────────────
 STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
