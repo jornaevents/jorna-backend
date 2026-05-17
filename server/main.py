@@ -28,7 +28,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import admin, calendar, bookings, events, messages, notifications, users, vendors, services, payments, reviews
+from app.routers import admin, calendar, bookings, events, feed, messages, notifications, users, vendors, services, payments, reviews
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -198,6 +198,7 @@ app.include_router(services.router)
 app.include_router(payments.router)
 app.include_router(reviews.router)
 app.include_router(messages.router)
+app.include_router(feed.router)
 app.include_router(admin.router)
 
 app.add_middleware(

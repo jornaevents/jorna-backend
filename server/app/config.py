@@ -46,6 +46,9 @@ PLATFORM_FEE_PERCENT: int = int(os.getenv("PLATFORM_FEE_PERCENT", "5"))
 # Required only for server-side file uploads; keep this secret.
 SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 
+# ── YouTube ───────────────────────────────────────────────────────────
+YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
+
 # ── CORS ──────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins.
 # Example: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com
