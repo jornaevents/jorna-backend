@@ -98,7 +98,7 @@ def list_vendors_route(
         limit=limit,
         offset=offset,
     )
-    return response["items"]
+    return response
 
 
 @router.get("/search", summary="Search vendors by service and location")

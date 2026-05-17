@@ -231,5 +231,4 @@ def list_services_route(
     db: Session = Depends(get_db),
 ):
     """Return a list of services, optionally filtered by vendor_id. No auth required."""
-    response = list_services(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
-    return response["items"]
+    return list_services(vendor_id=vendor_id, limit=limit, offset=offset, db=db)

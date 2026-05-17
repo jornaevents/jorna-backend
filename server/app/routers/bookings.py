@@ -135,8 +135,7 @@ def get_vendor_bookings_route(
         if not vendor:
             raise HTTPException(status_code=403, detail="You must be a vendor to view vendor bookings")
         vendor_id = vendor.vendor_id
-    response = svc_get_vendor_bookings(vendor_id=vendor_id, caller_user_id=current_user.user_id, limit=limit, offset=offset, db=db)
-    return response["items"]
+    return svc_get_vendor_bookings(vendor_id=vendor_id, caller_user_id=current_user.user_id, limit=limit, offset=offset, db=db)
 
 
 @router.get("/vendor/{vendor_id}", summary="Get all bookings for a vendor")
