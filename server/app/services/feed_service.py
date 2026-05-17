@@ -1,5 +1,6 @@
 """Business logic for the short-form video feed via YouTube Data API v3."""
 
+import html
 import logging
 import time
 from typing import Optional
@@ -88,13 +89,13 @@ def get_shorts_feed(
     items = [
         {
             "video_id": item["id"]["videoId"],
-            "title": item["snippet"]["title"],
-            "description": item["snippet"]["description"],
+            "title": html.unescape(item["snippet"]["title"]),
+            "description": html.unescape(item["snippet"]["description"]),
             "thumbnail": (
                 item["snippet"]["thumbnails"].get("high", {}).get("url")
                 or item["snippet"]["thumbnails"].get("default", {}).get("url")
             ),
-            "channel_name": item["snippet"]["channelTitle"],
+            "channel_name": html.unescape(item["snippet"]["channelTitle"]),
             "published_at": item["snippet"]["publishedAt"],
         }
         for item in data.get("items", [])
