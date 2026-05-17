@@ -147,10 +147,6 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     }
 
 
-def lookup_google_linked_user(*, access_token: str, db: Session) -> dict:
-    """Kept for backwards-compatibility — delegates to google_sign_in_or_create."""
-    return google_sign_in_or_create(access_token=access_token, db=db)
-
 
 def register_user(
     *,

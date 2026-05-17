@@ -6,6 +6,7 @@ delegate to the service layer.
 
 import logging
 import re
+from contextlib import asynccontextmanager
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ from app.services.auth_service import (
     login_user,
     logout_user,
     change_password,
-    lookup_google_linked_user,
+    google_sign_in_or_create,
     complete_profile,
 )
 
@@ -128,10 +129,61 @@ class ChangePasswordRequest(BaseModel):
 
 # ── App setup ─────────────────────────────────────────────────────────
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db_display = "sqlite (local)" if DATABASE_URL.startswith("sqlite") else "postgresql"
+    logger.info("Database: %s", db_display)
+
+    if not SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY environment variable is not set. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    if not STRIPE_SECRET_KEY:
+        raise RuntimeError(
+            "STRIPE_SECRET_KEY environment variable is not set. "
+            "Add your Stripe test key (sk_test_...) to the .env file."
+        )
+    if not STRIPE_WEBHOOK_SECRET:
+        raise RuntimeError(
+            "STRIPE_WEBHOOK_SECRET environment variable is not set. "
+            "Add your Stripe webhook signing secret (whsec_...) to the .env file."
+        )
+
+    if not DATABASE_URL.startswith("sqlite") and any("localhost" in o for o in ALLOWED_ORIGINS):
+        logger.warning(
+            "ALLOWED_ORIGINS contains localhost entries in a production environment: %s — "
+            "set the ALLOWED_ORIGINS env var to your real frontend URL(s).",
+            ALLOWED_ORIGINS,
+        )
+
+    if DATABASE_URL.startswith("sqlite"):
+        Base.metadata.create_all(bind=engine)
+
+    if INITIAL_ADMIN_EMAIL:
+        from app.db.database import SessionLocal
+        from app.db.models import User as UserModel
+        with SessionLocal() as session:
+            user = session.query(UserModel).filter(UserModel.email == INITIAL_ADMIN_EMAIL.lower()).first()
+            if user and not user.is_admin:
+                user.is_admin = True
+                session.commit()
+                logger.info("Bootstrapped admin: %s", INITIAL_ADMIN_EMAIL)
+            elif not user:
+                logger.warning(
+                    "INITIAL_ADMIN_EMAIL set to '%s' but no user with that email exists yet.",
+                    INITIAL_ADMIN_EMAIL,
+                )
+
+    yield
+
+
 app = FastAPI(
     title="Desiconnect API",
     description="Backend for Desiconnect — a marketplace for South Asian event vendors.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -173,54 +225,6 @@ async def add_security_headers(request: Request, call_next):
         "frame-ancestors 'none'"
     )
     return response
-
-
-@app.on_event("startup")
-def startup():
-    """Validate required config and create DB tables."""
-    db_display = "sqlite (local)" if DATABASE_URL.startswith("sqlite") else "postgresql"
-    logger.info("Database: %s", db_display)
-
-    if not SECRET_KEY:
-        raise RuntimeError(
-            "SECRET_KEY environment variable is not set. "
-            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
-        )
-    if not STRIPE_SECRET_KEY:
-        raise RuntimeError(
-            "STRIPE_SECRET_KEY environment variable is not set. "
-            "Add your Stripe test key (sk_test_...) to the .env file."
-        )
-    if not STRIPE_WEBHOOK_SECRET:
-        raise RuntimeError(
-            "STRIPE_WEBHOOK_SECRET environment variable is not set. "
-            "Add your Stripe webhook signing secret (whsec_...) to the .env file."
-        )
-
-    is_production_db = not DATABASE_URL.startswith("sqlite")
-
-    if is_production_db and any("localhost" in o for o in ALLOWED_ORIGINS):
-        logger.warning(
-            "ALLOWED_ORIGINS contains localhost entries in a production environment: %s — "
-            "set the ALLOWED_ORIGINS env var to your real frontend URL(s).",
-            ALLOWED_ORIGINS,
-        )
-
-    if DATABASE_URL.startswith("sqlite"):
-        Base.metadata.create_all(bind=engine)
-
-    # Bootstrap initial admin from env var if set.
-    if INITIAL_ADMIN_EMAIL:
-        from app.db.database import SessionLocal
-        from app.db.models import User as UserModel
-        with SessionLocal() as session:
-            user = session.query(UserModel).filter(UserModel.email == INITIAL_ADMIN_EMAIL.lower()).first()
-            if user and not user.is_admin:
-                user.is_admin = True
-                session.commit()
-                logger.info("Bootstrapped admin: %s", INITIAL_ADMIN_EMAIL)
-            elif not user:
-                logger.warning("INITIAL_ADMIN_EMAIL set to '%s' but no user with that email exists yet.", INITIAL_ADMIN_EMAIL)
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -296,7 +300,7 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
 def auth_google_lookup(request: Request, body: GoogleLookupRequest, db: Session = Depends(get_db)):
     """After Google OAuth, check if this Supabase identity is linked to a Jorna user; if so, return a FastAPI JWT."""
     try:
-        return lookup_google_linked_user(access_token=body.access_token, db=db)
+        return google_sign_in_or_create(access_token=body.access_token, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
