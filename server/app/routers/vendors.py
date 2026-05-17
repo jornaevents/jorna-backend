@@ -212,12 +212,6 @@ def set_my_availability(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
-@router.get("/{vendor_id}/availability", summary="Get a vendor's availability slots")
-def get_vendor_availability_route(vendor_id: str, db: Session = Depends(get_db)):
-    """Return availability slots for any vendor. No auth required."""
-    return get_availability(vendor_id=vendor_id, db=db)
-
-
 @router.get("/tags", summary="List all tags")
 def list_tags_route(db: Session = Depends(get_db)):
     """Return every tag in the system sorted alphabetically. Useful for autocomplete."""

@@ -136,12 +136,12 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+app.include_router(vendors.router)
 app.include_router(calendar.router)
 app.include_router(bookings.router)
 app.include_router(events.router)
 app.include_router(notifications.router)
 app.include_router(users.router)
-app.include_router(vendors.router)
 app.include_router(services.router)
 app.include_router(payments.router)
 app.include_router(reviews.router)
