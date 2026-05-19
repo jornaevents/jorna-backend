@@ -111,6 +111,8 @@ class Booking(Base):
     date_iso = Column(String(50), nullable=False)
     status = Column(String(50), nullable=False, default="pending")
 
+    bundle_id = Column(String(36), ForeignKey("bundles.bundle_id"), nullable=True, index=True)
+
     venue_latitude = Column(Float, nullable=True)
     venue_longitude = Column(Float, nullable=True)
     client_checked_in_at = Column(String(50), nullable=True)
@@ -128,6 +130,19 @@ class Booking(Base):
     customer_confirmed_at = Column(DateTime, nullable=True)
     vendor_confirmed_at = Column(DateTime, nullable=True)
     funds_released_at = Column(DateTime, nullable=True)
+
+
+class Bundle(Base):
+    __tablename__ = "bundles"
+
+    bundle_id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    event_id = Column(String(36), ForeignKey("events.event_id"), nullable=True, index=True)
+    name = Column(String(255), nullable=False)
+    # draft | active | completed | cancelled
+    status = Column(String(20), nullable=False, default="draft")
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
 
 
 class Negotiation(Base):
