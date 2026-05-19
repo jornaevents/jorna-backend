@@ -74,7 +74,7 @@ def seeded_db():
     db.close()
 
 
-def _create_bundle(seeded_db) -> tuple[str, list[str]]:
+def _create_bundle(seeded_db, confirm=True) -> tuple[str, list[str]]:
     """Helper: create a bundle and return (bundle_id, [conversation_ids])."""
     client_user = seeded_db["client_user"]
     booking1 = seeded_db["booking1"]
@@ -85,6 +85,12 @@ def _create_bundle(seeded_db) -> tuple[str, list[str]]:
     }, headers=make_auth_headers(client_user))
     assert resp.status_code == 201
     bundle_id = resp.json()["bundle_id"]
+
+    if confirm:
+        confirm_resp = client.patch(f"/bundles/{bundle_id}/status",
+                                    json={"status": "confirmed"},
+                                    headers=make_auth_headers(client_user))
+        assert confirm_resp.status_code == 200
 
     convs = client.get("/conversations", headers=make_auth_headers(client_user))
     conv_ids = [c["conversation_id"] for c in convs.json()]

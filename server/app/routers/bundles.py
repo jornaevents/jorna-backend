@@ -127,7 +127,8 @@ def update_status_route(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Update bundle status: draft | active | completed | cancelled."""
+    """Update bundle status: draft | confirmed | completed | cancelled.
+    Setting status to 'confirmed' creates the group chats and notifies all vendors."""
     try:
         return update_bundle_status(
             bundle_id=bundle_id, status=body.status,

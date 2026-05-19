@@ -129,14 +129,6 @@ def create_bundle(
         bookings.append(booking)
 
     db.commit()
-
-    # Auto-create group conversations for the bundle
-    try:
-        from app.services.conversation_service import create_bundle_conversations
-        create_bundle_conversations(bundle_id=bundle.bundle_id, client_user_id=user_id, db=db)
-    except Exception as exc:
-        logger.warning("Failed to create bundle conversations: %s", exc)
-
     return _bundle_dict(bundle, bookings, db)
 
 
@@ -272,7 +264,7 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
 
 
 def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db: Session) -> dict:
-    valid = {"draft", "active", "completed", "cancelled"}
+    valid = {"draft", "confirmed", "completed", "cancelled"}
     if status not in valid:
         raise BundleError(400, f"Status must be one of: {', '.join(sorted(valid))}")
 
@@ -281,9 +273,23 @@ def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
 
+    if status == "confirmed" and bundle.status != "draft":
+        raise BundleError(400, "Only a draft bundle can be confirmed")
+
+    prev_status = bundle.status
     bundle.status = status
     bundle.updated_at = datetime.now(timezone.utc)
     db.commit()
+
+    # Create group chats when the bundle is confirmed for the first time
+    if status == "confirmed" and prev_status == "draft":
+        try:
+            from app.services.conversation_service import create_bundle_conversations
+            create_bundle_conversations(
+                bundle_id=bundle_id, client_user_id=caller_user_id, db=db
+            )
+        except Exception as exc:
+            logger.warning("Failed to create bundle conversations on confirm: %s", exc)
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     return _bundle_dict(bundle, bookings, db)

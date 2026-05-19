@@ -200,9 +200,9 @@ def test_update_bundle_status(seeded_db):
     create_resp = client.post("/bundles", json={"name": "Status Test"}, headers=headers)
     bundle_id = create_resp.json()["bundle_id"]
 
-    response = client.patch(f"/bundles/{bundle_id}/status", json={"status": "active"}, headers=headers)
+    response = client.patch(f"/bundles/{bundle_id}/status", json={"status": "confirmed"}, headers=headers)
     assert response.status_code == 200
-    assert response.json()["status"] == "active"
+    assert response.json()["status"] == "confirmed"
 
 
 def test_invalid_status_rejected(seeded_db):
