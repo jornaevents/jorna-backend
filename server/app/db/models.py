@@ -202,6 +202,47 @@ class Message(Base):
     is_read = Column(Boolean, nullable=False, default=False)
 
 
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    conversation_id = Column(String(36), primary_key=True, default=uuid_str)
+    bundle_id = Column(String(36), ForeignKey("bundles.bundle_id"), nullable=False, index=True)
+    # vendors_only | all_parties
+    type = Column(String(20), nullable=False)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
+class ConversationMember(Base):
+    __tablename__ = "conversation_members"
+    __table_args__ = (UniqueConstraint("conversation_id", "user_id", name="uq_conv_member"),)
+
+    member_id = Column(String(36), primary_key=True, default=uuid_str)
+    conversation_id = Column(String(36), ForeignKey("conversations.conversation_id"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    joined_at = Column(DateTime, nullable=False)
+
+
+class GroupMessage(Base):
+    __tablename__ = "group_messages"
+
+    message_id = Column(String(36), primary_key=True, default=uuid_str)
+    conversation_id = Column(String(36), ForeignKey("conversations.conversation_id"), nullable=False, index=True)
+    sender_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
+class GroupMessageRead(Base):
+    __tablename__ = "group_message_reads"
+    __table_args__ = (UniqueConstraint("message_id", "user_id", name="uq_msg_read"),)
+
+    read_id = Column(String(36), primary_key=True, default=uuid_str)
+    message_id = Column(String(36), ForeignKey("group_messages.message_id"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    read_at = Column(DateTime, nullable=False)
+
+
 class Review(Base):
     __tablename__ = "reviews"
     __table_args__ = (UniqueConstraint("booking_id", name="uq_review_booking"),)

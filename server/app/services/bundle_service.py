@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Bundle, Event, Service, User, Vendor
+import logging
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +132,14 @@ def create_bundle(
         bookings.append(booking)
 
     db.commit()
+
+    # Auto-create group conversations for the bundle
+    try:
+        from app.services.conversation_service import create_bundle_conversations
+        create_bundle_conversations(bundle_id=bundle.bundle_id, client_user_id=user_id, db=db)
+    except Exception as exc:
+        logger.warning("Failed to create bundle conversations: %s", exc)
+
     return _bundle_dict(bundle, bookings, db)
 
 
@@ -173,6 +184,15 @@ def add_booking_to_bundle(*, bundle_id: str, booking_id: str, caller_user_id: st
     bundle.updated_at = datetime.now(timezone.utc)
     db.commit()
 
+    # Add the new vendor to all bundle conversations
+    try:
+        from app.services.conversation_service import add_vendor_to_bundle_conversations
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+        if vendor:
+            add_vendor_to_bundle_conversations(bundle_id=bundle_id, vendor_user_id=vendor.user_id, db=db)
+    except Exception as exc:
+        logger.warning("Failed to add vendor to conversations: %s", exc)
+
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     return _bundle_dict(bundle, bookings, db)
 
@@ -189,9 +209,18 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
     if booking.bundle_id != bundle_id:
         raise BundleError(400, "Booking is not in this bundle")
 
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     booking.bundle_id = None
     bundle.updated_at = datetime.now(timezone.utc)
     db.commit()
+
+    # Remove vendor from conversations if they have no other bookings in the bundle
+    try:
+        from app.services.conversation_service import remove_vendor_from_bundle_conversations
+        if vendor:
+            remove_vendor_from_bundle_conversations(bundle_id=bundle_id, vendor_user_id=vendor.user_id, db=db)
+    except Exception as exc:
+        logger.warning("Failed to remove vendor from conversations: %s", exc)
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     return _bundle_dict(bundle, bookings, db)
