@@ -17,3 +17,5 @@ slowapi==0.1.9
 sqlalchemy==2.0.48
 stripe==15.0.1
 uvicorn==0.42.0
+openai
+pytest-asyncio==0.24.0
