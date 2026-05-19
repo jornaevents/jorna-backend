@@ -5,12 +5,23 @@ Exposes two endpoints:
   POST /chatbot/step   — process a step and return the next prompt
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
-from app.models.chatbot_schemas import StepRequest, StepResponse
-from app.services.chatbot_service import get_initial_step, process_step
+from app.db.database import get_db
+from app.models.chatbot_schemas import BundleRequest, StepRequest, StepResponse
+from app.services.chatbot_service import generate_bundle_from_request, get_initial_step, process_step
 
 router = APIRouter(prefix="/chatbot", tags=["chatbot"])
+
+
+@router.post("/bundle", response_model=StepResponse, summary="Generate a bundle from user selections in one shot")
+def chatbot_bundle(body: BundleRequest, db: Session = Depends(get_db)):
+    """Accept all user inputs at once — needed categories, already booked,
+    budget, date/date range, guest count, style — all optional.
+    Returns a bundle immediately without requiring a multi-step flow.
+    Use the returned state with POST /chatbot/step to refine the bundle."""
+    return generate_bundle_from_request(body, db=db)
 
 
 @router.post("/start", response_model=StepResponse, summary="Start a new chatbot session")

@@ -11,10 +11,13 @@ import logging
 import re
 from typing import Optional
 
+from sqlalchemy.orm import Session
+
 from app.models.chatbot_schemas import (
     BudgetTier,
     Bundle,
     BundleItem,
+    BundleRequest,
     ChatbotState,
     ChatStep,
     CATEGORY_LABELS,
@@ -225,12 +228,10 @@ def _step_add_category(state: ChatbotState) -> StepResponse:
 def _step_results_booking(state: ChatbotState) -> StepResponse:
     return StepResponse(
         next_step=ChatStep.RESULTS_BOOKING,
-        bot_message="What would you like to do next?",
+        bot_message="Ready to book? You can book the whole bundle or select specific categories.",
         helper_buttons=[
             HelperButton(label="Book this whole bundle", value="book_all"),
             HelperButton(label="Book only some categories", value="book_some"),
-            HelperButton(label="Contact vendors first", value="contact"),
-            HelperButton(label="Save bundle for later", value="save"),
             HelperButton(label="Go back and edit", value="go_back"),
         ],
         state=state,
@@ -249,6 +250,62 @@ def _step_partial_booking(state: ChatbotState) -> StepResponse:
         ],
         state=state,
         bundle=state.bundle,
+    )
+
+
+# ── Single-shot bundle generation ────────────────────────────────────
+
+
+def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) -> StepResponse:
+    """Accept all user inputs at once and return a bundle immediately.
+
+    Any field can be omitted — sensible defaults are applied:
+    - needed_categories defaults to all categories minus booked ones
+    - budget_tier defaults to mid-range
+    """
+    state = ChatbotState(
+        event_date=req.event_date,
+        date_range=req.date_range,
+        location=req.location,
+        guest_count=req.guest_count,
+        booked_categories=req.booked_categories,
+        needed_categories=req.needed_categories or [
+            c for c in VENDOR_CATEGORIES if c not in req.booked_categories
+        ],
+        budget_tier=req.budget_tier or BudgetTier.MID_RANGE,
+        budget_amount=req.budget_amount,
+        style=req.style,
+        preferences=req.preferences,
+    )
+
+    bundle = generate_bundle(state, db=db)
+    state.bundle = bundle
+
+    def _looks_like_date(val: str | None) -> bool:
+        return bool(val and val.lower() not in ("string", "null", "") and len(val) >= 4)
+
+    date_info = ""
+    if req.date_range and (_looks_like_date(req.date_range.start) or _looks_like_date(req.date_range.end)):
+        start = req.date_range.start if _looks_like_date(req.date_range.start) else "?"
+        end = req.date_range.end if _looks_like_date(req.date_range.end) else "?"
+        date_info = f" for your event between {start} and {end}"
+    elif _looks_like_date(req.event_date):
+        date_info = f" for your event on {req.event_date}"
+
+    return StepResponse(
+        next_step=ChatStep.BUNDLE_ACTION,
+        bot_message=f"Here's your bundle{date_info}.",
+        helper_buttons=[
+            HelperButton(label="Keep this bundle", value="keep"),
+            HelperButton(label="Swap a vendor", value="swap"),
+            HelperButton(label="Remove a category", value="remove"),
+            HelperButton(label="Add a category", value="add"),
+            HelperButton(label="See cheaper options", value="cheaper"),
+            HelperButton(label="See premium options", value="premium_bundle"),
+            HelperButton(label="Start over", value="start_over"),
+        ],
+        state=state,
+        bundle=bundle,
     )
 
 
@@ -297,43 +354,206 @@ _TIER_INDEX = {
 }
 
 
-def generate_bundle(state: ChatbotState) -> Bundle:
-    """Build a mock bundle based on needed_categories and budget_tier."""
-    tier = state.budget_tier or BudgetTier.UNKNOWN
-    vendor_idx = _TIER_INDEX.get(tier, 0)
+def generate_bundle(state: ChatbotState, db: Session | None = None) -> Bundle:
+    """Build a bundle from real DB vendors when db is provided, otherwise use mock data."""
+    if db is not None:
+        return _generate_bundle_from_db(state, db)
+    return _generate_bundle_mock(state)
 
+
+# Chatbot category keys → DB vendor category values
+_CATEGORY_MAP = {
+    "venue": "venue",
+    "catering": "catering",
+    "decor": "decoration",
+    "photographer": "photography",
+    "dj": "dj",
+    "mehndi": "mehndi",
+    "dhol": "dhol",
+}
+
+# User style/preference selections → tag keywords to match against vendor tags
+_STYLE_TAG_KEYWORDS: dict[str, list[str]] = {
+    "elegant":     ["elegant", "luxury", "premium", "sophisticated", "upscale"],
+    "traditional": ["traditional", "classical", "cultural", "heritage", "authentic"],
+    "modern":      ["modern", "contemporary", "fusion", "trendy", "stylish"],
+    "luxury":      ["luxury", "premium", "high-end", "exclusive", "vip"],
+    "fun":         ["fun", "energetic", "party", "vibrant", "upbeat", "lively"],
+    "minimal":     ["minimal", "simple", "clean", "minimalist", "understated"],
+    "pref_cultural":     ["cultural", "bhangra", "bollywood", "desi", "south asian", "traditional", "punjabi"],
+    "pref_luxury":       ["luxury", "premium", "high-end", "exclusive"],
+    "pref_highly_rated": [],   # handled by rating weight boost
+    "pref_budget":       [],   # handled by price filtering
+    "pref_local":        [],   # handled by location (not yet implemented)
+    "pref_fast":         [],   # no response-time data yet
+}
+
+
+def _score_vendor(
+    vendor,        # Vendor ORM object
+    services,      # list of Service ORM objects
+    style: list[str],
+    preferences: list[str],
+    tier: BudgetTier,
+) -> float:
+    """Score a vendor for bundle selection.
+
+    Higher score = better match. Factors:
+    - Rating (primary signal)
+    - Tag overlap with user's style and preferences
+    - Experience (num_events) as a tiebreaker
+    - Price alignment with budget tier
+    """
+    # Base: rating out of 5, doubled so it dominates
+    score = (vendor.rating or 0.0) * 2.0
+
+    # Tag match bonus — collect all keywords the user cares about
+    wanted_keywords: set[str] = set()
+    for sel in list(style) + list(preferences):
+        wanted_keywords.update(_STYLE_TAG_KEYWORDS.get(sel, []))
+
+    if wanted_keywords:
+        vendor_tag_names = {t.name.lower() for t in (vendor.tags or [])}
+        matches = sum(
+            1 for kw in wanted_keywords
+            if any(kw in tag for tag in vendor_tag_names)
+        )
+        score += matches * 0.5
+
+    # Boost for highly-rated preference
+    if "pref_highly_rated" in preferences:
+        score += (vendor.rating or 0.0) * 0.5
+
+    # Experience tiebreaker (capped at 1.0)
+    score += min((vendor.num_events or 0) * 0.05, 1.0)
+
+    # Price alignment: penalise mismatches between tier and vendor pricing
+    if services:
+        prices = [s.price for s in services]
+        avg_price = sum(prices) / len(prices)
+        if tier == BudgetTier.BUDGET_FRIENDLY and avg_price > 3000:
+            score -= 1.0
+        elif tier == BudgetTier.PREMIUM and avg_price < 1000:
+            score -= 1.0
+
+    return score
+
+
+def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
+    """Query real vendors from the DB, one per needed category."""
+    from app.db.models import Vendor, Service, User
+
+    tier = state.budget_tier or BudgetTier.MID_RANGE
     items: list[BundleItem] = []
     total_min = 0.0
     total_max = 0.0
 
     for cat in state.needed_categories:
-        pool = _MOCK_VENDORS.get(cat)
-        if not pool:
-            # Unknown category → skip
+        db_category = _CATEGORY_MAP.get(cat)
+        if not db_category:
             continue
-        vendor = pool[vendor_idx] if vendor_idx < len(pool) else pool[0]
 
-        # Adjust prices by tier
-        price_mult = 1.0
-        if tier == BudgetTier.BUDGET_FRIENDLY:
-            price_mult = 0.8
-        elif tier == BudgetTier.PREMIUM:
-            price_mult = 1.3
+        # Find vendors for this category, joined with their user for name/pfp
+        vendor_rows = (
+            db.query(Vendor, User)
+            .join(User, Vendor.user_id == User.user_id)
+            .filter(Vendor.category == db_category)
+            .all()
+        )
 
-        p_min = round(vendor["price_min"] * price_mult, 2)
-        p_max = round(vendor["price_max"] * price_mult, 2)
+        if not vendor_rows:
+            # No real vendors — fall back to mock for this category
+            mock_item = _mock_item_for_category(cat, tier)
+            if mock_item:
+                items.append(mock_item)
+                total_min += mock_item.price_min
+                total_max += mock_item.price_max
+            continue
+
+        # Fetch services for all candidate vendors in one query
+        vendor_ids = [v.vendor_id for v, _ in vendor_rows]
+        all_services = db.query(Service).filter(Service.vendor_id.in_(vendor_ids)).all()
+        services_by_vendor: dict[str, list] = {}
+        for svc in all_services:
+            services_by_vendor.setdefault(svc.vendor_id, []).append(svc)
+
+        # Score every vendor and pick the best match
+        scored = [
+            (
+                _score_vendor(v, services_by_vendor.get(v.vendor_id, []), state.style, state.preferences, tier),
+                v,
+                u,
+                services_by_vendor.get(v.vendor_id, []),
+            )
+            for v, u in vendor_rows
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        _, vendor, user, services = scored[0]
+
+        if services:
+            prices = [s.price for s in services]
+            p_min = min(prices)
+            p_max = max(prices)
+            best_service = sorted(services, key=lambda s: s.price)[0]
+            service_id = best_service.service_id
+            match_reason = best_service.description or best_service.experience or vendor.bio or ""
+        else:
+            p_min = 0.0
+            p_max = 0.0
+            service_id = None
+            match_reason = vendor.bio or ""
 
         items.append(BundleItem(
             category=cat,
-            vendor_name=vendor["name"],
-            price_min=p_min,
-            price_max=p_max,
-            rating=vendor["rating"],
-            match_reason=vendor["reason"],
+            vendor_id=vendor.vendor_id,
+            service_id=service_id,
+            vendor_name=f"{user.f_name} {user.l_name}",
+            pfp_url=user.pfp_url,
+            price_min=round(p_min, 2),
+            price_max=round(p_max, 2),
+            rating=vendor.rating or 0.0,
+            match_reason=(match_reason[:120] + "…") if len(match_reason) > 120 else match_reason,
         ))
         total_min += p_min
         total_max += p_max
 
+    return Bundle(
+        items=items,
+        estimated_total_min=round(total_min, 2),
+        estimated_total_max=round(total_max, 2),
+    )
+
+
+def _mock_item_for_category(cat: str, tier: BudgetTier) -> BundleItem | None:
+    """Return a mock BundleItem for a category when no real vendors exist."""
+    pool = _MOCK_VENDORS.get(cat)
+    if not pool:
+        return None
+    vendor_idx = _TIER_INDEX.get(tier, 0)
+    vendor = pool[vendor_idx] if vendor_idx < len(pool) else pool[0]
+    price_mult = 0.8 if tier == BudgetTier.BUDGET_FRIENDLY else (1.3 if tier == BudgetTier.PREMIUM else 1.0)
+    return BundleItem(
+        category=cat,
+        vendor_name=vendor["name"],
+        price_min=round(vendor["price_min"] * price_mult, 2),
+        price_max=round(vendor["price_max"] * price_mult, 2),
+        rating=vendor["rating"],
+        match_reason=vendor["reason"],
+    )
+
+
+def _generate_bundle_mock(state: ChatbotState) -> Bundle:
+    """Pure mock bundle — used when no DB session is available."""
+    tier = state.budget_tier or BudgetTier.UNKNOWN
+    items: list[BundleItem] = []
+    total_min = 0.0
+    total_max = 0.0
+    for cat in state.needed_categories:
+        item = _mock_item_for_category(cat, tier)
+        if item:
+            items.append(item)
+            total_min += item.price_min
+            total_max += item.price_max
     return Bundle(
         items=items,
         estimated_total_min=round(total_min, 2),
@@ -776,36 +996,9 @@ async def process_step(
 
     # ── STEP 7: RESULTS & BOOKING ────────────────────────────────────
     if current_step == ChatStep.RESULTS_BOOKING:
-        if selection == "book_all":
-            resp = StepResponse(
-                next_step=ChatStep.RESULTS_BOOKING,
-                bot_message="Great! Proceeding to book your entire bundle. (Booking flow placeholder)",
-                helper_buttons=[],
-                state=state,
-                bundle=state.bundle,
-            )
-        elif selection == "book_some":
+        if selection == "book_some":
             resp = _step_partial_booking(state)
-        elif selection == "contact":
-            resp = StepResponse(
-                next_step=ChatStep.RESULTS_BOOKING,
-                bot_message="Opening vendor contact flow. (Contact flow placeholder)",
-                helper_buttons=[
-                    HelperButton(label="Done contacting", value="done_contact"),
-                    HelperButton(label="Go back and edit", value="go_back"),
-                ],
-                state=state,
-                bundle=state.bundle,
-            )
-        elif selection == "save":
-            resp = StepResponse(
-                next_step=ChatStep.RESULTS_BOOKING,
-                bot_message="Your bundle has been saved for later!",
-                helper_buttons=[],
-                state=state,
-                bundle=state.bundle,
-            )
-        elif selection in ("go_back", "done_contact"):
+        elif selection in ("go_back",):
             resp = _step_bundle_action(state)
         else:
             resp = _step_results_booking(state)
@@ -814,14 +1007,7 @@ async def process_step(
 
     # ── STEP 7b: PARTIAL BOOKING ─────────────────────────────────────
     if current_step == ChatStep.PARTIAL_BOOKING:
-        booked = [v for v in selections if v in VENDOR_CATEGORIES]
-        resp = StepResponse(
-            next_step=ChatStep.RESULTS_BOOKING,
-            bot_message=f"Proceeding to book: {', '.join(CATEGORY_LABELS.get(c, c) for c in booked)}. (Booking flow placeholder)",
-            helper_buttons=[],
-            state=state,
-            bundle=state.bundle,
-        )
+        resp = _step_results_booking(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
 

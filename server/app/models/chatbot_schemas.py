@@ -16,7 +16,6 @@ class ChatStep(str, Enum):
     BUDGET = "budget"
     CUSTOM_BUDGET = "custom_budget"
     STYLE_PREFERENCES = "style_preferences"
-    GENERATE_BUNDLE = "generate_bundle"
     BUNDLE_ACTION = "bundle_action"
     MANUAL_CUSTOMIZE = "manual_customize"
     SWAP_VENDOR = "swap_vendor"
@@ -59,6 +58,11 @@ CATEGORY_LABELS = {
 # ── Nested models ────────────────────────────────────────────────────
 
 
+class DateRange(BaseModel):
+    start: Optional[str] = None   # ISO date e.g. "2026-10-01"
+    end: Optional[str] = None     # ISO date e.g. "2026-10-15"
+
+
 class HelperButton(BaseModel):
     label: str
     value: str
@@ -66,7 +70,10 @@ class HelperButton(BaseModel):
 
 class BundleItem(BaseModel):
     category: str
+    vendor_id: Optional[str] = None    # None when falling back to mock data
+    service_id: Optional[str] = None
     vendor_name: str
+    pfp_url: Optional[str] = None
     price_min: float
     price_max: float
     rating: float
@@ -84,6 +91,7 @@ class Bundle(BaseModel):
 
 class ChatbotState(BaseModel):
     event_date: Optional[str] = None
+    date_range: Optional[DateRange] = None
     location: Optional[str] = None
     guest_count: Optional[int] = None
     booked_categories: list[str] = Field(default_factory=list)
@@ -100,6 +108,52 @@ class ChatbotState(BaseModel):
 
 
 # ── Request / Response ───────────────────────────────────────────────
+
+
+def _split_categories(v: list[str]) -> list[str]:
+    """Allow ['dj', 'venue'] or ['dj, venue'] — split comma-separated entries."""
+    result = []
+    for item in v:
+        for part in item.split(","):
+            part = part.strip().lower()
+            if part and part in VENDOR_CATEGORIES:
+                result.append(part)
+    return result
+
+
+class BundleRequest(BaseModel):
+    """Single-shot bundle request — all fields optional.
+    Provide whatever the user has selected and a bundle is returned immediately.
+    """
+    needed_categories: list[str] = Field(
+        default_factory=list,
+        description="Vendor categories to include e.g. ['dj', 'catering', 'venue']",
+    )
+    booked_categories: list[str] = Field(
+        default_factory=list,
+        description="Categories the user already has booked — excluded from the bundle",
+    )
+
+    from pydantic import field_validator
+
+    @field_validator("needed_categories", "booked_categories", mode="before")
+    @classmethod
+    def split_comma_separated(cls, v: list[str]) -> list[str]:
+        return _split_categories(v) if isinstance(v, list) else v
+    budget_tier: Optional[BudgetTier] = Field(
+        None,
+        description="budget-friendly | mid-range | premium. Defaults to mid-range if omitted.",
+    )
+    budget_amount: Optional[str] = Field(
+        None,
+        description="Custom budget as a string e.g. '$10,000'. Only used when budget_tier is custom.",
+    )
+    event_date: Optional[str] = Field(None, description="Single event date e.g. '2026-10-15'")
+    date_range: Optional[DateRange] = Field(None, description="Date range when the exact date is unknown")
+    guest_count: Optional[int] = Field(None, description="Approximate number of guests")
+    location: Optional[str] = Field(None, description="City or venue location")
+    style: list[str] = Field(default_factory=list, description="Style preferences e.g. ['elegant', 'traditional']")
+    preferences: list[str] = Field(default_factory=list, description="Vendor preferences e.g. ['pref_highly_rated', 'pref_local']")
 
 
 class StepRequest(BaseModel):
