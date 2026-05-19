@@ -9,10 +9,19 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.chatbot_schemas import BundleRequest, StepRequest, StepResponse
-from app.services.chatbot_service import generate_bundle_from_request, get_initial_step, process_step
+from app.models.chatbot_schemas import BundleRequest, MultiBundleResponse, StepRequest, StepResponse
+from app.services.chatbot_service import generate_bundle_from_request, generate_multi_bundle, get_initial_step, process_step
 
 router = APIRouter(prefix="/chatbot", tags=["chatbot"])
+
+
+@router.post("/bundles", response_model=MultiBundleResponse, summary="Generate 3 bundle options to compare")
+def chatbot_multi_bundle(body: BundleRequest, db: Session = Depends(get_db)):
+    """Returns 3 bundle options (Budget, Top Rated, Balanced) for users who
+    aren't sure what they want. All inputs are optional — omit anything you
+    don't know yet. Pick an option and pass its state to POST /chatbot/step
+    to keep refining."""
+    return generate_multi_bundle(body, db=db)
 
 
 @router.post("/bundle", response_model=StepResponse, summary="Generate a bundle from user selections in one shot")

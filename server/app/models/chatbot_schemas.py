@@ -121,6 +121,17 @@ def _split_categories(v: list[str]) -> list[str]:
     return result
 
 
+class BundleOption(BaseModel):
+    label: str
+    description: str
+    bundle: Bundle
+    state: "ChatbotState"
+
+
+class MultiBundleResponse(BaseModel):
+    options: list[BundleOption]
+
+
 class BundleRequest(BaseModel):
     """Single-shot bundle request — all fields optional.
     Provide whatever the user has selected and a bundle is returned immediately.

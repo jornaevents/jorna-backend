@@ -17,11 +17,13 @@ from app.models.chatbot_schemas import (
     BudgetTier,
     Bundle,
     BundleItem,
+    BundleOption,
     BundleRequest,
     ChatbotState,
     ChatStep,
     CATEGORY_LABELS,
     HelperButton,
+    MultiBundleResponse,
     StepResponse,
     VENDOR_CATEGORIES,
 )
@@ -251,6 +253,160 @@ def _step_partial_booking(state: ChatbotState) -> StepResponse:
         state=state,
         bundle=state.bundle,
     )
+
+
+# ── Multi-bundle generation ───────────────────────────────────────────
+
+
+def _build_bundle_with_strategy(
+    state: ChatbotState,
+    strategy: str,
+    db: Session,
+) -> Bundle:
+    """Build a bundle using a specific selection strategy.
+
+    strategy:
+      'budget'    — pick the cheapest vendor per category
+      'top_rated' — pick the highest rated vendor per category
+      'balanced'  — balance rating and price equally
+    """
+    from app.db.models import Vendor, Service, User
+
+    items: list[BundleItem] = []
+    total_min = 0.0
+    total_max = 0.0
+
+    for cat in state.needed_categories:
+        db_category = _CATEGORY_MAP.get(cat)
+        if not db_category:
+            continue
+
+        vendor_rows = (
+            db.query(Vendor, User)
+            .join(User, Vendor.user_id == User.user_id)
+            .filter(Vendor.category == db_category)
+            .all()
+        )
+
+        if not vendor_rows:
+            mock_tier = {
+                "budget": BudgetTier.BUDGET_FRIENDLY,
+                "top_rated": BudgetTier.PREMIUM,
+                "balanced": BudgetTier.MID_RANGE,
+            }.get(strategy, BudgetTier.MID_RANGE)
+            item = _mock_item_for_category(cat, mock_tier)
+            if item:
+                items.append(item)
+                total_min += item.price_min
+                total_max += item.price_max
+            continue
+
+        vendor_ids = [v.vendor_id for v, _ in vendor_rows]
+        all_services = db.query(Service).filter(Service.vendor_id.in_(vendor_ids)).all()
+        services_by_vendor: dict[str, list] = {}
+        for svc in all_services:
+            services_by_vendor.setdefault(svc.vendor_id, []).append(svc)
+
+        def _avg_price(v) -> float:
+            svcs = services_by_vendor.get(v.vendor_id, [])
+            return sum(s.price for s in svcs) / len(svcs) if svcs else 0.0
+
+        if strategy == "budget":
+            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: _avg_price(r[0]))
+        elif strategy == "top_rated":
+            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: r[0].rating or 0.0, reverse=True)
+        else:  # balanced
+            max_price = max((_avg_price(v) for v, _ in vendor_rows), default=1.0) or 1.0
+            max_rating = max((v.rating or 0.0 for v, _ in vendor_rows), default=1.0) or 1.0
+            vendor_rows_sorted = sorted(
+                vendor_rows,
+                key=lambda r: (r[0].rating or 0.0) / max_rating * 0.6
+                              + (1 - _avg_price(r[0]) / max_price) * 0.4,
+                reverse=True,
+            )
+
+        vendor, user = vendor_rows_sorted[0]
+        services = services_by_vendor.get(vendor.vendor_id, [])
+
+        if services:
+            prices = [s.price for s in services]
+            p_min, p_max = min(prices), max(prices)
+            best = sorted(services, key=lambda s: s.price)[0]
+            service_id = best.service_id
+            match_reason = best.description or best.experience or vendor.bio or ""
+        else:
+            p_min = p_max = 0.0
+            service_id = None
+            match_reason = vendor.bio or ""
+
+        items.append(BundleItem(
+            category=cat,
+            vendor_id=vendor.vendor_id,
+            service_id=service_id,
+            vendor_name=f"{user.f_name} {user.l_name}",
+            pfp_url=user.pfp_url,
+            price_min=round(p_min, 2),
+            price_max=round(p_max, 2),
+            rating=vendor.rating or 0.0,
+            match_reason=(match_reason[:120] + "…") if len(match_reason) > 120 else match_reason,
+        ))
+        total_min += p_min
+        total_max += p_max
+
+    return Bundle(
+        items=items,
+        estimated_total_min=round(total_min, 2),
+        estimated_total_max=round(total_max, 2),
+    )
+
+
+def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> MultiBundleResponse:
+    """Generate 3 bundle options for users who aren't sure what they want.
+
+    Returns Budget, Top Rated, and Balanced bundles so the user can compare
+    and pick one to refine further using the /chatbot/step flow.
+    """
+    needed = req.needed_categories or [
+        c for c in VENDOR_CATEGORIES if c not in req.booked_categories
+    ]
+
+    _PRESETS = [
+        ("budget",    BudgetTier.BUDGET_FRIENDLY, "Budget Bundle",    "Best value — quality vendors at the lowest prices"),
+        ("top_rated", BudgetTier.PREMIUM,          "Top Rated Bundle", "The best of the best — highest rated vendors regardless of price"),
+        ("balanced",  BudgetTier.MID_RANGE,        "Balanced Bundle",  "The sweet spot — great quality at a reasonable price"),
+    ]
+
+    options: list[BundleOption] = []
+
+    for strategy, tier, label, description in _PRESETS:
+        state = ChatbotState(
+            event_date=req.event_date,
+            date_range=req.date_range,
+            location=req.location,
+            guest_count=req.guest_count,
+            booked_categories=req.booked_categories,
+            needed_categories=needed,
+            budget_tier=tier,
+            budget_amount=req.budget_amount,
+            style=req.style,
+            preferences=req.preferences,
+        )
+
+        bundle = (
+            _build_bundle_with_strategy(state, strategy, db)
+            if db is not None
+            else _generate_bundle_mock(state)
+        )
+        state.bundle = bundle
+
+        options.append(BundleOption(
+            label=label,
+            description=description,
+            bundle=bundle,
+            state=state,
+        ))
+
+    return MultiBundleResponse(options=options)
 
 
 # ── Single-shot bundle generation ────────────────────────────────────
