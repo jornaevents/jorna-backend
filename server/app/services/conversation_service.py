@@ -102,6 +102,9 @@ def create_bundle_conversations(*, bundle_id: str, client_user_id: str, db: Sess
         ("vendors_only", vendor_user_ids),
         ("all_parties", [client_user_id] + vendor_user_ids),
     ]:
+        # Skip vendors_only if there are no vendors yet
+        if conv_type == "vendors_only" and not vendor_user_ids:
+            continue
         label = "Vendors" if conv_type == "vendors_only" else "All Parties"
         conv = Conversation(
             bundle_id=bundle_id,
@@ -122,6 +125,21 @@ def create_bundle_conversations(*, bundle_id: str, client_user_id: str, db: Sess
         db.commit()
         members = db.query(User).filter(User.user_id.in_(member_ids)).all()
         created.append(_conversation_dict(conv, members, None))
+
+    # Notify all vendors that they've been added to group chats
+    try:
+        from app.utils.notifications import send_push_notification
+        for uid in vendor_user_ids:
+            user = db.query(User).filter(User.user_id == uid).first()
+            if user and user.fcm_token:
+                send_push_notification(
+                    fcm_token=user.fcm_token,
+                    title="You've been added to a group chat",
+                    body=f"You're now part of group chats for bundle '{bundle.name}'.",
+                    data={"bundle_id": bundle_id, "type": "added_to_conversation"},
+                )
+    except Exception as exc:
+        logger.warning("Failed to notify vendors of group chat creation: %s", exc)
 
     return created
 
@@ -145,6 +163,21 @@ def add_vendor_to_bundle_conversations(*, bundle_id: str, vendor_user_id: str, d
                 joined_at=now,
             ))
     db.commit()
+
+    # Notify the vendor they've been added
+    try:
+        from app.utils.notifications import send_push_notification
+        bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+        user = db.query(User).filter(User.user_id == vendor_user_id).first()
+        if user and user.fcm_token and bundle:
+            send_push_notification(
+                fcm_token=user.fcm_token,
+                title="You've been added to a group chat",
+                body=f"You're now part of group chats for bundle '{bundle.name}'.",
+                data={"bundle_id": bundle_id, "type": "added_to_conversation"},
+            )
+    except Exception as exc:
+        logger.warning("Failed to notify vendor of conversation addition: %s", exc)
 
 
 def remove_vendor_from_bundle_conversations(*, bundle_id: str, vendor_user_id: str, db: Session) -> None:

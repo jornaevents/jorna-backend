@@ -11,6 +11,7 @@ from app.services.bundle_service import (
     BundleError,
     create_bundle,
     get_bundle,
+    get_bundle_conversations,
     list_bundles,
     add_booking_to_bundle,
     remove_booking_from_bundle,
@@ -68,6 +69,19 @@ def get_bundle_route(
     """Return a bundle with all bookings, total cost, and status breakdown."""
     try:
         return get_bundle(bundle_id=bundle_id, caller_user_id=current_user.user_id, db=db)
+    except BundleError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/{bundle_id}/conversations", summary="Get group conversations for a bundle")
+def get_bundle_conversations_route(
+    bundle_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return both group conversations (vendors_only and all_parties) for a bundle."""
+    try:
+        return get_bundle_conversations(bundle_id=bundle_id, caller_user_id=current_user.user_id, db=db)
     except BundleError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

@@ -5,9 +5,6 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Bundle, Event, Service, User, Vendor
-import logging
-
-logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +158,54 @@ def list_bundles(*, user_id: str, db: Session) -> list[dict]:
     return result
 
 
+def get_bundle_conversations(*, bundle_id: str, caller_user_id: str, db: Session) -> list[dict]:
+    """Return group conversations for a bundle.
+    Accessible by the bundle owner (client) or any vendor who is a member of the bundle's conversations.
+    """
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+    if not bundle:
+        raise BundleError(404, "Bundle not found")
+
+    # Allow the bundle owner or any conversation member
+    from app.db.models import Conversation, ConversationMember
+    is_owner = bundle.user_id == caller_user_id
+    if not is_owner:
+        is_member = db.query(ConversationMember).join(
+            Conversation, Conversation.conversation_id == ConversationMember.conversation_id
+        ).filter(
+            Conversation.bundle_id == bundle_id,
+            ConversationMember.user_id == caller_user_id,
+        ).first()
+        if not is_member:
+            raise BundleError(403, "You are not a party to this bundle")
+
+    from app.db.models import Conversation, ConversationMember, GroupMessage
+    from app.services.conversation_service import _conversation_dict
+
+    conversations = (
+        db.query(Conversation)
+        .filter(Conversation.bundle_id == bundle_id)
+        .order_by(Conversation.type)
+        .all()
+    )
+    result = []
+    from app.db.models import User
+    for conv in conversations:
+        member_rows = db.query(ConversationMember).filter(
+            ConversationMember.conversation_id == conv.conversation_id
+        ).all()
+        user_ids = [m.user_id for m in member_rows]
+        members = db.query(User).filter(User.user_id.in_(user_ids)).all()
+        last_msg = (
+            db.query(GroupMessage)
+            .filter(GroupMessage.conversation_id == conv.conversation_id)
+            .order_by(GroupMessage.created_at.desc())
+            .first()
+        )
+        result.append(_conversation_dict(conv, members, last_msg))
+    return result
+
+
 def add_booking_to_bundle(*, bundle_id: str, booking_id: str, caller_user_id: str, db: Session) -> dict:
     bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
     if not bundle:
@@ -252,5 +297,19 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
 
     # Detach bookings — they remain active, just no longer part of this bundle
     db.query(Booking).filter(Booking.bundle_id == bundle_id).update({"bundle_id": None})
+
+    # Clean up group conversations and their messages/members
+    from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
+    conversations = db.query(Conversation).filter(Conversation.bundle_id == bundle_id).all()
+    for conv in conversations:
+        msg_ids = [m.message_id for m in db.query(GroupMessage).filter(
+            GroupMessage.conversation_id == conv.conversation_id).all()]
+        if msg_ids:
+            db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete()
+            db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete()
+        db.query(ConversationMember).filter(
+            ConversationMember.conversation_id == conv.conversation_id).delete()
+        db.delete(conv)
+
     db.delete(bundle)
     db.commit()
