@@ -130,6 +130,32 @@ class Booking(Base):
     funds_released_at = Column(DateTime, nullable=True)
 
 
+class Negotiation(Base):
+    __tablename__ = "negotiations"
+
+    negotiation_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=False, unique=True, index=True)
+    # open | accepted | rejected
+    status = Column(String(20), nullable=False, default="open")
+    current_offer_cents = Column(Integer, nullable=False)
+    proposed_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+
+class NegotiationOffer(Base):
+    __tablename__ = "negotiation_offers"
+
+    offer_id = Column(String(36), primary_key=True, default=uuid_str)
+    negotiation_id = Column(String(36), ForeignKey("negotiations.negotiation_id"), nullable=False, index=True)
+    proposed_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    # offer | counter | accept | reject
+    action = Column(String(20), nullable=False)
+    amount_cents = Column(Integer, nullable=True)   # None for accept/reject
+    message = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
+
 class StripeWebhookEvent(Base):
     """Tracks processed Stripe webhook event IDs to prevent duplicate processing."""
 
