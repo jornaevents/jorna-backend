@@ -269,12 +269,34 @@ def _build_bundle_with_strategy(
       'budget'    — pick the cheapest vendor per category
       'top_rated' — pick the highest rated vendor per category
       'balanced'  — balance rating and price equally
+
+    All three strategies also factor in LLM-scored tag relevance when
+    style/preferences are provided, so cultural or style preferences
+    influence which vendor is picked even within a price/rating sort.
     """
-    from app.db.models import Vendor, Service, User
+    from app.db.models import Vendor, Service, User, Tag
+    from app.services.llm_service import get_relevant_tags_for_preferences
 
     items: list[BundleItem] = []
     total_min = 0.0
     total_max = 0.0
+
+    # Pre-compute LLM tag relevance once for all categories (same as _generate_bundle_from_db)
+    llm_relevant_tags: set[str] | None = None
+    if state.style or state.preferences:
+        user_tag_names = [name for (name,) in db.query(Tag.name).all()]
+        ig_tags: list[str] = []
+        for (ig,) in db.query(Vendor.instagram_tags).filter(Vendor.instagram_tags.isnot(None)).all():
+            if isinstance(ig, list):
+                ig_tags.extend(t.lower() for t in ig)
+        unique_tags = list(set(user_tag_names + ig_tags))
+        if unique_tags:
+            result = get_relevant_tags_for_preferences(
+                preferences=list(state.preferences),
+                style=list(state.style),
+                candidate_tags=unique_tags,
+            )
+            llm_relevant_tags = result or None
 
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
@@ -311,17 +333,27 @@ def _build_bundle_with_strategy(
             svcs = services_by_vendor.get(v.vendor_id, [])
             return sum(s.price for s in svcs) / len(svcs) if svcs else 0.0
 
+        def _tag_bonus(v) -> float:
+            """Small bonus for vendors whose tags match user preferences."""
+            if not llm_relevant_tags:
+                return 0.0
+            v_tags = {t.name.lower() for t in (v.tags or [])} | {t.lower() for t in (v.instagram_tags or [])}
+            return len(v_tags & llm_relevant_tags) * 0.1
+
         if strategy == "budget":
-            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: _avg_price(r[0]))
+            # Primary: lowest price. Tiebreak: tag relevance.
+            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: (_avg_price(r[0]), -_tag_bonus(r[0])))
         elif strategy == "top_rated":
-            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: r[0].rating or 0.0, reverse=True)
-        else:  # balanced
+            # Primary: highest rating. Tiebreak: tag relevance.
+            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: (-(r[0].rating or 0.0), -_tag_bonus(r[0])))
+        else:  # balanced — price + rating + tag relevance
             max_price = max((_avg_price(v) for v, _ in vendor_rows), default=1.0) or 1.0
             max_rating = max((v.rating or 0.0 for v, _ in vendor_rows), default=1.0) or 1.0
             vendor_rows_sorted = sorted(
                 vendor_rows,
-                key=lambda r: (r[0].rating or 0.0) / max_rating * 0.6
-                              + (1 - _avg_price(r[0]) / max_price) * 0.4,
+                key=lambda r: (r[0].rating or 0.0) / max_rating * 0.5
+                              + (1 - _avg_price(r[0]) / max_price) * 0.3
+                              + _tag_bonus(r[0]) * 0.2,
                 reverse=True,
             )
 
@@ -546,11 +578,12 @@ _STYLE_TAG_KEYWORDS: dict[str, list[str]] = {
 
 
 def _score_vendor(
-    vendor,        # Vendor ORM object
-    services,      # list of Service ORM objects
+    vendor,
+    services,
     style: list[str],
     preferences: list[str],
     tier: BudgetTier,
+    llm_relevant_tags: set[str] | None = None,
 ) -> float:
     """Score a vendor for bundle selection.
 
@@ -563,18 +596,23 @@ def _score_vendor(
     # Base: rating out of 5, doubled so it dominates
     score = (vendor.rating or 0.0) * 2.0
 
-    # Tag match bonus — collect all keywords the user cares about
-    wanted_keywords: set[str] = set()
-    for sel in list(style) + list(preferences):
-        wanted_keywords.update(_STYLE_TAG_KEYWORDS.get(sel, []))
+    # Combine user-inputted tags and Instagram-scraped tags
+    user_tag_names = {t.name.lower() for t in (vendor.tags or [])}
+    ig_tag_names = {t.lower() for t in (vendor.instagram_tags or [])}
+    vendor_tag_names = user_tag_names | ig_tag_names
 
-    if wanted_keywords:
-        vendor_tag_names = {t.name.lower() for t in (vendor.tags or [])}
-        matches = sum(
-            1 for kw in wanted_keywords
-            if any(kw in tag for tag in vendor_tag_names)
-        )
+    if llm_relevant_tags is not None:
+        # LLM path: check how many LLM-identified relevant tags this vendor has
+        matches = len(vendor_tag_names & llm_relevant_tags)
         score += matches * 0.5
+    else:
+        # Fallback: hardcoded keyword matching via _STYLE_TAG_KEYWORDS
+        wanted_keywords: set[str] = set()
+        for sel in list(style) + list(preferences):
+            wanted_keywords.update(_STYLE_TAG_KEYWORDS.get(sel, []))
+        if wanted_keywords:
+            matches = sum(1 for kw in wanted_keywords if any(kw in tag for tag in vendor_tag_names))
+            score += matches * 0.5
 
     # Boost for highly-rated preference
     if "pref_highly_rated" in preferences:
@@ -598,11 +636,30 @@ def _score_vendor(
 def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     """Query real vendors from the DB, one per needed category."""
     from app.db.models import Vendor, Service, User
+    from app.services.llm_service import get_relevant_tags_for_preferences
 
     tier = state.budget_tier or BudgetTier.MID_RANGE
     items: list[BundleItem] = []
     total_min = 0.0
     total_max = 0.0
+
+    # Pre-compute LLM tag relevance once for this entire bundle request.
+    # Queries only tag name strings (not full Vendor objects) for efficiency.
+    llm_relevant_tags: set[str] | None = None
+    if state.style or state.preferences:
+        from app.db.models import Tag, vendor_tags as vt
+        user_tag_names = [name for (name,) in db.query(Tag.name).all()]
+        ig_tags: list[str] = []
+        for (ig,) in db.query(Vendor.instagram_tags).filter(Vendor.instagram_tags.isnot(None)).all():
+            if isinstance(ig, list):
+                ig_tags.extend(t.lower() for t in ig)
+        unique_tags = list(set(user_tag_names + ig_tags))
+        if unique_tags:
+            llm_relevant_tags = get_relevant_tags_for_preferences(
+                preferences=list(state.preferences),
+                style=list(state.style),
+                candidate_tags=unique_tags,
+            ) or None  # None triggers keyword fallback in _score_vendor
 
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
@@ -636,7 +693,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
         # Score every vendor and pick the best match
         scored = [
             (
-                _score_vendor(v, services_by_vendor.get(v.vendor_id, []), state.style, state.preferences, tier),
+                _score_vendor(v, services_by_vendor.get(v.vendor_id, []), state.style, state.preferences, tier, llm_relevant_tags),
                 v,
                 u,
                 services_by_vendor.get(v.vendor_id, []),
@@ -724,6 +781,7 @@ def _apply_llm_intent(
     llm_result: LLMResult,
     state: ChatbotState,
     current_step: ChatStep,
+    db: Session | None = None,
 ) -> StepResponse:
     """Map an LLM-extracted intent to a step response, or stay on current step."""
     intent = llm_result.extracted_intent
@@ -791,7 +849,7 @@ def _apply_llm_intent(
             state.preferences = values["preferences"] if isinstance(values["preferences"], list) else [values["preferences"]]
         # Generate bundle if we have enough info
         if state.needed_categories and state.budget_tier:
-            bundle = generate_bundle(state)
+            bundle = generate_bundle(state, db=db)
             state.bundle = bundle
             resp = _step_bundle_action(state)
             resp.bot_message = f"{llm_result.bot_message}\n\nHere's the bundle I built for you."
@@ -890,6 +948,7 @@ async def process_step(
     user_input: Optional[str],
     selected_values: list[str],
     state: ChatbotState,
+    db: Session | None = None,
 ) -> StepResponse:
     """Process user input for *current_step* and return the next step response.
 
@@ -909,7 +968,7 @@ async def process_step(
             user_input=user_input or "",
             conversation_history=state.conversation_history,
         )
-        resp = _apply_llm_intent(llm_result, state, current_step)
+        resp = _apply_llm_intent(llm_result, state, current_step, db=db)
         _append_history(state, user_input, resp.bot_message)
         return resp
 
@@ -1015,7 +1074,7 @@ async def process_step(
         state.preferences = [v for v in selections if v in pref_vals]
 
         # Generate bundle
-        bundle = generate_bundle(state)
+        bundle = generate_bundle(state, db=db)
         state.bundle = bundle
 
         resp = StepResponse(
@@ -1051,11 +1110,11 @@ async def process_step(
             resp = _step_add_category(state)
         elif selection == "cheaper":
             state.budget_tier = BudgetTier.BUDGET_FRIENDLY
-            state.bundle = generate_bundle(state)
+            state.bundle = generate_bundle(state, db=db)
             resp = _step_bundle_action(state)
         elif selection == "premium_bundle":
             state.budget_tier = BudgetTier.PREMIUM
-            state.bundle = generate_bundle(state)
+            state.bundle = generate_bundle(state, db=db)
             resp = _step_bundle_action(state)
         elif selection == "start_over":
             resp = get_initial_step()

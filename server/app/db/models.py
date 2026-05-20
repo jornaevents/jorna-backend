@@ -79,6 +79,11 @@ class Vendor(Base):
     stripe_account_id = Column(String(255), nullable=True)
     stripe_onboarding_complete = Column(Boolean, nullable=False, default=False)
 
+    # Instagram integration
+    instagram_username = Column(String(100), nullable=True, unique=True)
+    # Auto-populated by the scraper — kept separate from user-inputted tags
+    instagram_tags = Column(JSON, nullable=True)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 

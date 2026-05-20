@@ -64,6 +64,8 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "location": u.location,
         "pfp_url": u.pfp_url,
         "tags": sorted(t.name for t in v.tags),
+        "instagram_username": v.instagram_username,
+        "instagram_tags": v.instagram_tags or [],
     }
 
 
@@ -91,6 +93,8 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "location": u.location,
         "pfp_url": u.pfp_url,
         "tags": sorted(t.name for t in v.tags),
+        "instagram_username": v.instagram_username,
+        "instagram_tags": v.instagram_tags or [],
     }
 
 
@@ -114,8 +118,17 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         if not isinstance(radius, int) or radius < 1 or radius > 500:
             raise VendorError(400, "Travel radius must be an integer between 1 and 500 miles")
     
+    if "instagram_username" in update_data:
+        ig = (update_data["instagram_username"] or "").strip().lstrip("@") or None
+        # Check uniqueness if setting a new value
+        if ig and ig != vendor.instagram_username:
+            conflict = db.query(Vendor).filter(Vendor.instagram_username == ig).first()
+            if conflict:
+                raise VendorError(400, "That Instagram account is already linked to another vendor")
+        update_data["instagram_username"] = ig
+
     for field, value in update_data.items():
-        if field in ["bio", "category", "travel_radius_miles"]:
+        if field in ["bio", "category", "travel_radius_miles", "instagram_username"]:
             setattr(vendor, field, value)
     
     db.commit()

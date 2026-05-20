@@ -6,6 +6,7 @@ delegate to the service layer.
 
 import logging
 import re
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -149,6 +150,12 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(
             "STRIPE_WEBHOOK_SECRET environment variable is not set. "
             "Add your Stripe webhook signing secret (whsec_...) to the .env file."
+        )
+
+    if not os.getenv("OPENROUTER_API_KEY"):
+        logger.warning(
+            "OPENROUTER_API_KEY is not set — bundle creator will use keyword matching "
+            "instead of LLM-powered tag scoring. Set it in Railway for full functionality."
         )
 
     if not DATABASE_URL.startswith("sqlite") and any("localhost" in o for o in ALLOWED_ORIGINS):

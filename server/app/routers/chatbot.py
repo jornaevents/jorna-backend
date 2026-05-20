@@ -40,7 +40,7 @@ def chatbot_start():
 
 
 @router.post("/step", response_model=StepResponse, summary="Process a chatbot step")
-async def chatbot_step(body: StepRequest):
+async def chatbot_step(body: StepRequest, db: Session = Depends(get_db)):
     """Accept the current step, user input, and state.
 
     Returns the next step prompt, helper buttons, updated state, and
@@ -52,4 +52,5 @@ async def chatbot_step(body: StepRequest):
         user_input=body.user_input,
         selected_values=body.selected_values,
         state=body.state,
+        db=db,
     )

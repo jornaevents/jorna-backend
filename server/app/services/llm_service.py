@@ -9,10 +9,11 @@ Two main responsibilities:
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from app.models.chatbot_schemas import ChatStep, VENDOR_CATEGORIES, CATEGORY_LABELS
 
@@ -241,3 +242,79 @@ async def get_llm_response(
                 "buttons, or rephrase your question?"
             ),
         )
+
+
+# ── Tag relevance scoring ─────────────────────────────────────────────
+# Used by the bundle creator to score vendor tags against user preferences.
+# One call per bundle request (not per vendor) — results are cached for 1 hour.
+
+_TAG_SCORE_CACHE: dict[str, tuple[float, set[str]]] = {}
+_TAG_SCORE_TTL = 3600  # 1 hour
+
+# Free model on OpenRouter — handles multilingual + niche cultural terms well
+_TAG_SCORE_MODEL = "meta-llama/llama-3.2-3b-instruct:free"
+
+
+def get_relevant_tags_for_preferences(
+    preferences: list[str],
+    style: list[str],
+    candidate_tags: list[str],
+) -> set[str]:
+    """Ask the LLM which candidate tags are relevant to the user's preferences.
+
+    Called once per bundle request before scoring vendors. Returns a set of
+    relevant tag strings. Handles niche South Asian terms (giddha, dandiya,
+    pheras, etc.) that hardcoded keyword lists would miss.
+
+    Falls back to an empty set if OpenRouter is unavailable — the caller
+    falls back to hardcoded _STYLE_TAG_KEYWORDS in that case.
+    """
+    if not candidate_tags or (not preferences and not style):
+        return set()
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key or api_key == "your-openrouter-api-key-here":
+        return set()
+
+    # Cache key — stable regardless of list order
+    cache_key = f"{sorted(preferences)}:{sorted(style)}:{sorted(candidate_tags)}"
+    cached = _TAG_SCORE_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _TAG_SCORE_TTL:
+        return cached[1]
+
+    pref_str = ", ".join(preferences + style) or "general South Asian wedding"
+    tags_str = ", ".join(candidate_tags)
+
+    prompt = (
+        f"You are helping match South Asian wedding vendors to a customer's preferences.\n\n"
+        f"Customer preferences: {pref_str}\n\n"
+        f"Vendor tags to evaluate: {tags_str}\n\n"
+        f"Return ONLY a JSON array of the tags from the list above that are relevant "
+        f"to the customer's preferences. Include cultural, stylistic, and event-type tags "
+        f"that match — even niche South Asian terms (e.g. giddha, dandiya, sangeet). "
+        f"Return an empty array [] if none match. No explanation, just the JSON array."
+    )
+
+    try:
+        sync_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+        response = sync_client.chat.completions.create(
+            model=_TAG_SCORE_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        raw = response.choices[0].message.content or "[]"
+        # Extract JSON array from the response (model may add explanation despite instructions)
+        match = raw[raw.find("["):raw.rfind("]") + 1]
+        relevant = set(json.loads(match)) if match else set()
+        # Only keep tags that were actually in the candidate list
+        relevant = {t for t in relevant if t in set(candidate_tags)}
+        _TAG_SCORE_CACHE[cache_key] = (time.time(), relevant)
+        logger.info("LLM tag scoring: %d/%d tags relevant for prefs=%s", len(relevant), len(candidate_tags), preferences)
+        return relevant
+    except Exception as exc:
+        logger.warning("LLM tag scoring failed, falling back to keywords: %s", exc)
+        return set()
