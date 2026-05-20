@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
 Instagram Vendor Scraper for NJ/NYC South Asian Service Providers
-Uses Apify's instagram-scraper actor to collect public profile data
+Uses Apify's instagram-scraper actor to collect public profile data.
+Output is designed to feed directly into the Desiconnect bundle creator.
 """
 
 import json
 import os
+import re
 import sys
 import time
 from typing import Optional, List, Dict, Any
 from apify_client import ApifyClient
 
 
-# Hardcoded list of Instagram usernames
 INSTAGRAM_USERNAMES = [
     # DJs & Entertainment
     "djsuhel",
@@ -29,383 +30,250 @@ INSTAGRAM_USERNAMES = [
     # Event Planning & Multiservice
     "tumhihoevents",
     "events_by_heena",
-    "partyshartyplanners"
+    "partyshartyplanners",
 ]
 
-# Category keywords for classification
-CATEGORY_KEYWORDS = {
-    "DJ": ["dj", "djing", "music", "beats", "mixing", "turntable"],
-    "Catering": ["catering", "chef", "food", "cuisine", "restaurant", "tandoor", "chaat", "bombay"],
-    "Mehndi": ["mehndi", "henna", "henna art", "mehendi", "bridal"],
-    "Dhol": ["dhol", "dholi", "drummer", "tabla", "percussion", "dholbeats"],
-    "Singer": ["singer", "vocalist", "singing", "singer-songwriter", "live music"],
-    "Dancer": ["dancer", "dancing", "bhangra", "bollywood moves", "dance crew", "garba"],
-    "Decorator": ["decorator", "decor", "decoration", "floral", "event design", "mandap"],
-    "Venue": ["venue", "banquet", "hall", "ballroom", "wedding venue"]
+# Keywords for category classification — keys match DB VendorCategory enum values
+CATEGORY_KEYWORDS: Dict[str, List[str]] = {
+    "dj":          ["dj", "djing", "music", "beats", "mixing", "turntable"],
+    "catering":    ["catering", "chef", "food", "cuisine", "restaurant", "tandoor", "chaat"],
+    "mehndi":      ["mehndi", "henna", "mehendi", "bridal henna"],
+    "dhol":        ["dhol", "dholi", "drummer", "tabla", "percussion"],
+    "decoration":  ["decorator", "decor", "decoration", "floral", "event design", "mandap"],
+    "venue":       ["venue", "banquet", "hall", "ballroom", "wedding venue"],
+    "photography": ["photographer", "photography", "videographer", "videography", "cinematography"],
+    "planning":    ["planner", "planning", "coordinator", "event management"],
+    "mua":         ["makeup", "mua", "beauty", "bridal makeup"],
+    "other":       ["singer", "vocalist", "dancer", "dancing", "bhangra crew"],
+}
+
+# Tags that overlap with _STYLE_TAG_KEYWORDS in chatbot_service.py.
+# Vendors tagged with these will score higher in bundle matching when
+# users select matching style/preference buttons.
+BUNDLE_SCORING_TAGS = {
+    # Style
+    "elegant", "luxury", "premium", "traditional", "modern", "fusion",
+    "cultural", "heritage", "contemporary", "vibrant", "energetic",
+    # Cultural (maps to pref_cultural preference)
+    "bhangra", "bollywood", "desi", "punjabi", "south asian", "gujarati",
+    "sangeet", "baraat", "garba", "navratri",
+    # Event types
+    "wedding", "engagement", "reception", "bridal", "anniversary",
+    # Quality
+    "professional", "experienced",
+    # Location
+    "nj", "nyc", "new jersey", "new york", "tristate",
 }
 
 
 class InstagramVendorScraper:
-    """Handles scraping and processing of Instagram vendor profiles"""
-    
+
     def __init__(self):
-        """Initialize Apify client with API token from environment"""
         self.api_token = os.getenv("APIFY_API_TOKEN")
         if not self.api_token:
-            raise ValueError(
-                "APIFY_API_TOKEN environment variable not set. "
-                "Please set it before running this script."
-            )
+            raise ValueError("APIFY_API_TOKEN environment variable not set.")
         self.client = ApifyClient(self.api_token)
-        self.vendors = []
-        self.failed_usernames = []
-    
+        self.vendors: List[Dict] = []
+        self.failed_usernames: List[str] = []
+
     def scrape_profile(self, username: str) -> Optional[Dict[str, Any]]:
-        """
-        Scrape a single Instagram profile using Apify actor
-        
-        Args:
-            username: Instagram username to scrape
-            
-        Returns:
-            Raw profile data or None if failed
-        """
-        print(f"  Scraping {username}…")
-        
+        print(f"  Scraping {username}...")
         try:
-            # Prepare actor input with directUrls
             run_input = {
                 "directUrls": [f"https://www.instagram.com/{username}/"],
                 "resultsType": "posts",
                 "resultsLimit": 20,
-                "addParentData": True
+                "addParentData": True,
             }
-            
-            # Execute the Apify actor
             run = self.client.actor("apify/instagram-scraper").call(run_input=run_input)
-            
-            # Extract data from actor results
             if run["status"] == "SUCCEEDED":
-                dataset_id = run["defaultDatasetId"]
-                items = []
-                for item in self.client.dataset(dataset_id).iterate_items():
-                    items.append(item)
-                
+                items = list(self.client.dataset(run["defaultDatasetId"]).iterate_items())
                 if items:
-                    # Combine profile data with posts array
-                    # First item should have profile data (from addParentData)
-                    profile_data = items[0].copy() if items else {}
-                    
-                    # Create posts array from all items
-                    posts = []
-                    for item in items:
-                        # Check if this is a post item (has caption or post id)
-                        if item.get("caption") is not None or item.get("id"):
-                            posts.append(item)
-                    
-                    profile_data["posts"] = posts
+                    profile_data = items[0].copy()
+                    profile_data["posts"] = [
+                        i for i in items if i.get("caption") is not None or i.get("id")
+                    ]
                     return profile_data
-            
             return None
-        
         except Exception as e:
-            print(f"    ✗ Failed to scrape {username}: {str(e)}")
+            print(f"    x Failed: {e}")
             return None
-    
+
     @staticmethod
     def classify_vendor(username: str, bio: str, name: str) -> str:
-        """
-        Classify vendor into category based on keyword matching
-        
-        Args:
-            username: Instagram username
-            bio: Profile biography text
-            name: Full name
-            
-        Returns:
-            Category string
-        """
-        combined_text = f"{username} {bio} {name}".lower()
-        
-        # Count keyword matches per category
-        scores = {}
-        for category, keywords in CATEGORY_KEYWORDS.items():
-            score = sum(combined_text.count(keyword) for keyword in keywords)
-            scores[category] = score
-        
-        # Return category with highest score, default to first match
-        best_category = max(scores, key=scores.get)
-        return best_category if scores[best_category] > 0 else "Other"
-    
+        """Return a DB-compatible VendorCategory value."""
+        text = f"{username} {bio} {name}".lower()
+        scores = {
+            cat: sum(text.count(kw) for kw in keywords)
+            for cat, keywords in CATEGORY_KEYWORDS.items()
+        }
+        best = max(scores, key=scores.get)
+        return best if scores[best] > 0 else "other"
+
     @staticmethod
     def extract_images(profile_data: Dict) -> List[str]:
-        """
-        Extract first 6-9 recent post image URLs from profile data
-        
-        Args:
-            profile_data: Raw profile data from Apify
-            
-        Returns:
-            List of image URLs
-        """
+        posts = (
+            profile_data.get("posts", [])
+            or profile_data.get("latestPosts", [])
+            or []
+        )
         images = []
-        
-        # Try multiple possible locations for post data
-        posts = (
-            profile_data.get("posts", []) or
-            profile_data.get("biographyPosts", []) or
-            profile_data.get("latestPosts", []) or
-            []
-        )
-        
-        for post in posts[:9]:  # Limit to 9
-            # Try different field names for image URL
-            image_url = (
-                post.get("imgDisplayUrl") or
-                post.get("displayUrl") or
-                post.get("imageUrl") or
-                post.get("src")
+        for post in posts[:9]:
+            url = (
+                post.get("imgDisplayUrl")
+                or post.get("displayUrl")
+                or post.get("imageUrl")
+                or post.get("src")
             )
-            
-            if image_url and isinstance(image_url, str):
-                images.append(image_url)
-        
-        return images[:9]  # Return max 9 images
-    
+            if url and isinstance(url, str):
+                images.append(url)
+        return images
+
     @staticmethod
-    def extract_hashtags(profile_data: Dict) -> List[str]:
+    def extract_tags(profile_data: Dict, bio: str, username: str) -> List[str]:
         """
-        Extract hashtags from captions in posts (indicates skills/services)
-        
-        Args:
-            profile_data: Raw profile data from Apify
-            
-        Returns:
-            List of unique hashtags used
+        Extract normalized tags for bundle creator scoring.
+
+        Pulls hashtags from captions + scans bio/username for keywords that
+        match BUNDLE_SCORING_TAGS. These become vendor.tags in the DB and
+        directly influence which vendors the chatbot selects when users
+        pick style/preference buttons (e.g. 'Traditional', 'pref_cultural').
         """
-        hashtags_set = set()
-        
-        # Get posts
+        tag_set: set = set()
         posts = (
-            profile_data.get("posts", []) or
-            profile_data.get("biographyPosts", []) or
-            profile_data.get("latestPosts", []) or
-            []
+            profile_data.get("posts", [])
+            or profile_data.get("latestPosts", [])
+            or []
         )
-        
-        # Extract hashtags from all post captions
+
         for post in posts:
-            caption = (
-                post.get("caption") or
-                post.get("text") or
-                post.get("description") or
-                ""
-            )
-            
-            if caption:
-                # Find all words starting with #
-                words = caption.split()
-                for word in words:
-                    if word.startswith("#"):
-                        # Clean hashtag (remove punctuation at end)
-                        hashtag = word.rstrip(".,!?;:)")
-                        hashtags_set.add(hashtag.lower())
-        
-        return sorted(list(hashtags_set))
-    
+            caption = post.get("caption") or post.get("text") or ""
+            for word in caption.split():
+                if word.startswith("#"):
+                    tag = re.sub(r"[^a-z0-9 ]", "", word[1:].lower()).strip()
+                    if tag:
+                        tag_set.add(tag)
+
+        # Add bundle scoring tags found in bio or username
+        combined = f"{bio} {username}".lower()
+        for keyword in BUNDLE_SCORING_TAGS:
+            if keyword in combined:
+                tag_set.add(keyword)
+
+        # Keep only meaningful tags (not pure numbers, reasonable length)
+        filtered = {
+            t for t in tag_set
+            if t in BUNDLE_SCORING_TAGS or (3 <= len(t) <= 30 and not t.isdigit())
+        }
+        return sorted(filtered)[:20]
+
     @staticmethod
     def extract_top_posts(profile_data: Dict) -> List[Dict[str, Any]]:
-        """
-        Extract most-liked posts with engagement metrics
-        
-        Args:
-            profile_data: Raw profile data from Apify
-            
-        Returns:
-            List of top posts with image, likes, caption, date
-        """
         posts = (
-            profile_data.get("posts", []) or
-            profile_data.get("biographyPosts", []) or
-            profile_data.get("latestPosts", []) or
-            []
+            profile_data.get("posts", [])
+            or profile_data.get("latestPosts", [])
+            or []
         )
-        
-        # Sort by likes (descending)
-        posts_with_likes = []
-        for post in posts:
-            likes = post.get("likeCount") or post.get("likesCount") or post.get("likes") or 0
-            posts_with_likes.append((post, likes))
-        
-        posts_with_likes.sort(key=lambda x: x[1], reverse=True)
-        
-        # Extract top 3 posts
-        top_posts = []
-        for post, likes in posts_with_likes[:3]:
-            image_url = (
-                post.get("imgDisplayUrl") or
-                post.get("displayUrl") or
-                post.get("imageUrl") or
-                post.get("src") or
-                ""
+        ranked = sorted(
+            posts,
+            key=lambda p: p.get("likeCount") or p.get("likesCount") or 0,
+            reverse=True,
+        )
+        result = []
+        for post in ranked[:3]:
+            image = (
+                post.get("imgDisplayUrl") or post.get("displayUrl")
+                or post.get("imageUrl") or post.get("src") or ""
             )
-            
-            caption = (
-                post.get("caption") or
-                post.get("text") or
-                post.get("description") or
-                ""
-            )
-            
-            top_posts.append({
-                "image": image_url,
-                "likes": likes,
-                "caption": caption[:200] if caption else "",  # First 200 chars
-                "timestamp": post.get("timestamp") or post.get("date") or ""
+            caption = post.get("caption") or post.get("text") or ""
+            result.append({
+                "image": image,
+                "likes": post.get("likeCount") or post.get("likesCount") or 0,
+                "caption": caption[:200],
+                "timestamp": post.get("timestamp") or post.get("date") or "",
             })
-        
-        return top_posts
-    
+        return result
+
     def normalize_vendor(self, username: str, raw_data: Dict) -> Dict[str, Any]:
-        """
-        Normalize raw profile data into vendor JSON schema
-        
-        Args:
-            username: Instagram username
-            raw_data: Raw profile data from Apify
-            
-        Returns:
-            Normalized vendor data
-        """
-        bio = (
-            raw_data.get("biography") or 
-            raw_data.get("bio") or 
-            ""
-        )
-        
+        bio = raw_data.get("biography") or raw_data.get("bio") or ""
         name = (
-            raw_data.get("fullName") or
-            raw_data.get("full_name") or
-            raw_data.get("name") or
-            username
+            raw_data.get("fullName") or raw_data.get("full_name")
+            or raw_data.get("name") or username
         )
-        
-        followers = (
-            raw_data.get("followersCount") or
-            raw_data.get("followers_count") or
-            0
-        )
-        
-        website = (
-            raw_data.get("website") or
-            raw_data.get("external_url") or
-            ""
-        )
-        
-        profile_pic = (
-            raw_data.get("profilePictureUrl") or
-            raw_data.get("profile_pic_url") or
-            ""
-        )
-        
+        followers = raw_data.get("followersCount") or raw_data.get("followers_count") or 0
+        profile_pic = raw_data.get("profilePictureUrl") or raw_data.get("profile_pic_url") or ""
+        website = raw_data.get("website") or raw_data.get("external_url") or ""
+
         return {
             "business_name": name,
             "instagram_username": username,
+            # DB-compatible category (dj, dhol, mehndi, catering, decoration, venue, etc.)
             "category": self.classify_vendor(username, bio, name),
-            "location": {
-                "city": "New Jersey",
-                "state": "NJ",
-                "country": "USA"
-            },
+            "location": {"city": "New Jersey", "state": "NJ", "country": "USA"},
             "bio": bio,
             "profile_picture": profile_pic,
             "images": self.extract_images(raw_data),
-            "hashtags": self.extract_hashtags(raw_data),
+            # Normalized tags that feed directly into bundle creator scoring
+            "tags": self.extract_tags(raw_data, bio, username),
             "top_posts": self.extract_top_posts(raw_data),
             "website": website,
             "followers": int(followers) if followers else 0,
             "claimed": False,
             "status": "draft",
-            "data_sources": ["instagram"]
+            "data_sources": ["instagram"],
         }
-    
+
     def scrape_all(self) -> None:
-        """Scrape all usernames and save results"""
-        print(f"\n🚀 Starting scrape of {len(INSTAGRAM_USERNAMES)} Instagram profiles…\n")
-        
+        print(f"\nStarting scrape of {len(INSTAGRAM_USERNAMES)} profiles...\n")
         for idx, username in enumerate(INSTAGRAM_USERNAMES, 1):
             print(f"[{idx}/{len(INSTAGRAM_USERNAMES)}] {username}")
-            
-            raw_data = self.scrape_profile(username)
-            
-            if raw_data:
-                vendor = self.normalize_vendor(username, raw_data)
+            raw = self.scrape_profile(username)
+            if raw:
+                vendor = self.normalize_vendor(username, raw)
                 self.vendors.append(vendor)
-                print(f"    ✓ Classified as {vendor['category']}")
+                print(f"    OK  category={vendor['category']}  tags={len(vendor['tags'])}")
             else:
                 self.failed_usernames.append(username)
-                print(f"    ✗ Skipped")
-            
-            # Rate limiting between requests
+                print(f"    SKIP")
             if idx < len(INSTAGRAM_USERNAMES):
                 time.sleep(1)
-        
         self._print_summary()
-    
+
     def _print_summary(self) -> None:
-        """Print scraping summary"""
         print(f"\n{'='*60}")
-        print(f"✓ Successfully scraped: {len(self.vendors)} profiles")
-        print(f"✗ Failed: {len(self.failed_usernames)} profiles")
-        
+        print(f"Scraped: {len(self.vendors)}  Failed: {len(self.failed_usernames)}")
         if self.failed_usernames:
-            print(f"\nFailed usernames:")
-            for username in self.failed_usernames:
-                print(f"  - {username}")
-        
+            for u in self.failed_usernames:
+                print(f"  - {u}")
         print(f"{'='*60}\n")
-    
+
     def save_vendors(self, filename: str = "vendors.json") -> None:
-        """
-        Save vendor data to JSON file
-        
-        Args:
-            filename: Output filename
-        """
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(self.vendors, f, indent=2, ensure_ascii=False)
-        
-        print(f"💾 Saved {len(self.vendors)} vendors to {filename}")
-    
+        print(f"Saved {len(self.vendors)} vendors to {filename}")
+
     def get_category_summary(self) -> Dict[str, int]:
-        """Get count of vendors by category"""
-        summary = {}
-        for vendor in self.vendors:
-            category = vendor["category"]
-            summary[category] = summary.get(category, 0) + 1
+        summary: Dict[str, int] = {}
+        for v in self.vendors:
+            cat = v["category"]
+            summary[cat] = summary.get(cat, 0) + 1
         return summary
 
 
-def main():
-    """Main entry point"""
+def main() -> int:
     try:
         scraper = InstagramVendorScraper()
         scraper.scrape_all()
         scraper.save_vendors()
-        
-        # Print category distribution
-        summary = scraper.get_category_summary()
-        print("📊 Vendor Distribution by Category:")
-        for category, count in sorted(summary.items(), key=lambda x: x[1], reverse=True):
-            print(f"  {category}: {count}")
-        
+        print("\nCategory breakdown:")
+        for cat, count in sorted(scraper.get_category_summary().items(), key=lambda x: -x[1]):
+            print(f"  {cat}: {count}")
         return 0
-    
     except KeyboardInterrupt:
-        print("\n\n⚠️  Scraping interrupted by user")
+        print("\nInterrupted")
         return 1
     except Exception as e:
-        print(f"\n\n❌ Fatal error: {str(e)}", file=sys.stderr)
+        print(f"\nFatal error: {e}", file=sys.stderr)
         return 1
 
 

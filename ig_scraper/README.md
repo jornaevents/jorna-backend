@@ -2,11 +2,22 @@
 
 A Python script to scrape public Instagram profiles of South Asian service vendors in the NJ/NYC metro area. Uses the specialized Apify Instagram scraper for reliable profile and post data extraction.
 
+## Full workflow
+
+```
+scraper.py  →  vendors.json  →  import_to_db.py  →  Desiconnect DB  →  Bundle creator
+```
+
+1. `scraper.py` — scrapes Instagram profiles via Apify and outputs `vendors.json`
+2. `import_to_db.py` — reads `vendors.json` and registers each vendor in the backend API so they appear in the AI bundle creator
+
 ## Features
 
 ✅ **No Instagram login required** - Uses only publicly available data  
 ✅ **Robust error handling** - Continues if individual profiles fail  
-✅ **Category classification** - Auto-categorizes vendors (DJ, Catering, Mehndi, etc.)  
+✅ **Category classification** - Categories map directly to DB VendorCategory enum  
+✅ **Bundle-ready tags** - Extracted tags align with chatbot bundle scoring keywords  
+✅ **DB import script** - `import_to_db.py` registers vendors so the bundle creator can find them  
 ✅ **Progress tracking** - Real-time feedback on scraping status  
 ✅ **Normalized output** - Standardized JSON schema for vendor profiles  
 ✅ **Post image extraction** - Captures recent post images for portfolios  
