@@ -93,6 +93,8 @@ class ChatbotState(BaseModel):
     event_date: Optional[str] = None
     date_range: Optional[DateRange] = None
     location: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     guest_count: Optional[int] = None
     booked_categories: list[str] = Field(default_factory=list)
     needed_categories: list[str] = Field(default_factory=list)
@@ -163,6 +165,8 @@ class BundleRequest(BaseModel):
     date_range: Optional[DateRange] = Field(None, description="Date range when the exact date is unknown")
     guest_count: Optional[int] = Field(None, description="Approximate number of guests")
     location: Optional[str] = Field(None, description="City or venue location")
+    latitude: Optional[float] = Field(None, description="Event location latitude (for vendor travel-radius filtering)")
+    longitude: Optional[float] = Field(None, description="Event location longitude (for vendor travel-radius filtering)")
     style: list[str] = Field(default_factory=list, description="Style preferences e.g. ['elegant', 'traditional']")
     preferences: list[str] = Field(default_factory=list, description="Vendor preferences e.g. ['pref_highly_rated', 'pref_local']")
 

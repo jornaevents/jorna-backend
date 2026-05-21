@@ -276,6 +276,7 @@ def _build_bundle_with_strategy(
     """
     from app.db.models import Vendor, Service, User, Tag
     from app.services.llm_service import get_relevant_tags_for_preferences
+    from app.utils.location import calculate_distance_miles
 
     items: list[BundleItem] = []
     total_min = 0.0
@@ -309,6 +310,14 @@ def _build_bundle_with_strategy(
             .filter(Vendor.category == db_category)
             .all()
         )
+
+        # Filter by travel radius if event coordinates are provided
+        if state.latitude is not None and state.longitude is not None:
+            vendor_rows = [
+                (v, u) for v, u in vendor_rows
+                if u.latitude is None or u.longitude is None or
+                calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
+            ]
 
         if not vendor_rows:
             mock_tier = {
@@ -415,6 +424,8 @@ def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> Mult
             event_date=req.event_date,
             date_range=req.date_range,
             location=req.location,
+            latitude=req.latitude,
+            longitude=req.longitude,
             guest_count=req.guest_count,
             booked_categories=req.booked_categories,
             needed_categories=needed,
@@ -455,6 +466,8 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
         event_date=req.event_date,
         date_range=req.date_range,
         location=req.location,
+        latitude=req.latitude,
+        longitude=req.longitude,
         guest_count=req.guest_count,
         booked_categories=req.booked_categories,
         needed_categories=req.needed_categories or [
@@ -637,6 +650,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     """Query real vendors from the DB, one per needed category."""
     from app.db.models import Vendor, Service, User
     from app.services.llm_service import get_relevant_tags_for_preferences
+    from app.utils.location import calculate_distance_miles
 
     tier = state.budget_tier or BudgetTier.MID_RANGE
     items: list[BundleItem] = []
@@ -673,6 +687,14 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
             .filter(Vendor.category == db_category)
             .all()
         )
+
+        # Filter by travel radius if event coordinates are provided
+        if state.latitude is not None and state.longitude is not None:
+            vendor_rows = [
+                (v, u) for v, u in vendor_rows
+                if u.latitude is None or u.longitude is None or
+                calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
+            ]
 
         if not vendor_rows:
             # No real vendors — fall back to mock for this category
