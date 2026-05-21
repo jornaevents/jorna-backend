@@ -138,15 +138,43 @@ def list_admins(
     return [{"user_id": u.user_id, "email": u.email, "f_name": u.f_name, "l_name": u.l_name} for u in admins]
 
 
+def _require_scraper_auth(
+    api_key: str | None = Query(None, description="SCRAPER_API_KEY value for cron job access"),
+    credentials=Depends(__import__("fastapi.security", fromlist=["HTTPBearer"]).HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db),
+):
+    """Accept either a valid SCRAPER_API_KEY query param or an admin JWT token."""
+    scraper_key = os.getenv("SCRAPER_API_KEY")
+    if api_key and scraper_key and api_key == scraper_key:
+        return  # authenticated via static API key
+
+    # Try JWT admin auth
+    if credentials:
+        import jwt
+        from app.config import ALGORITHM, SECRET_KEY
+        try:
+            payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+            user = db.query(User).filter(User.user_id == payload.get("sub")).first()
+            if user and user.is_admin and payload.get("tv") == user.token_version:
+                return  # authenticated via admin JWT
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=401, detail="Provide a valid api_key or an admin Bearer token")
+
+
 @router.post("/scraper/run", summary="Run Instagram enrichment scraper (admin only)")
 def run_scraper(
     dry_run: bool = Query(False, description="Preview without writing to the database"),
     delay: float = Query(1.0, description="Seconds to wait between vendor scrapes"),
     db: Session = Depends(get_db),
-    current_admin: User = Depends(get_current_admin),
+    _auth=Depends(_require_scraper_auth),
 ):
     """Scrape Instagram profiles for all vendors who have linked their account
     and enrich their profiles with tags and images.
+
+    Authenticate with either a Bearer admin JWT or an api_key query param
+    matching the SCRAPER_API_KEY environment variable (for cron jobs).
 
     Requires APIFY_API_TOKEN to be set as an environment variable.
     Use dry_run=true to preview results without writing anything.
