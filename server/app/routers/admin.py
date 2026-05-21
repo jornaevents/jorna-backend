@@ -28,23 +28,36 @@ _BUNDLE_SCORING_TAGS = {
 }
 
 
-def _scrape_profile(apify_client, username: str) -> tuple[dict | None, str | None]:
-    """Returns (profile, error_message). error_message is None on success."""
+def _scrape_profile(apify_token: str, username: str) -> tuple[dict | None, str | None]:
+    """Scrape an Instagram profile via the Apify HTTP API directly.
+
+    Uses run-sync-get-dataset-items to avoid the apify_client Pydantic
+    validation bug on ActorResponse pricing fields.
+    Returns (profile, error_message). error_message is None on success.
+    """
+    import httpx
+
+    url = (
+        "https://api.apify.com/v2/acts/apify~instagram-scraper"
+        "/run-sync-get-dataset-items"
+        f"?token={apify_token}&timeout=120&memory=256"
+    )
+    payload = {
+        "directUrls": [f"https://www.instagram.com/{username}/"],
+        "resultsType": "posts",
+        "resultsLimit": 20,
+        "addParentData": True,
+    }
     try:
-        run = apify_client.actor("apify/instagram-scraper").call(run_input={
-            "directUrls": [f"https://www.instagram.com/{username}/"],
-            "resultsType": "posts",
-            "resultsLimit": 20,
-            "addParentData": True,
-        })
-        if run["status"] == "SUCCEEDED":
-            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
-            if items:
-                profile = items[0].copy()
-                profile["posts"] = [i for i in items if i.get("caption") is not None or i.get("id")]
-                return profile, None
-            return None, "Apify run succeeded but returned no items — account may be private or empty"
-        return None, f"Apify run status: {run['status']}"
+        resp = httpx.post(url, json=payload, timeout=150.0)
+        if resp.status_code != 201:
+            return None, f"Apify returned HTTP {resp.status_code}: {resp.text[:200]}"
+        items = resp.json()
+        if not items:
+            return None, "Apify returned no items — account may be private or empty"
+        profile = items[0].copy()
+        profile["posts"] = [i for i in items if i.get("caption") is not None or i.get("id")]
+        return profile, None
     except Exception as exc:
         logger.warning("Apify scrape failed for @%s: %s", username, exc)
         return None, str(exc)
@@ -142,11 +155,6 @@ def run_scraper(
     if not apify_token:
         raise HTTPException(status_code=400, detail="APIFY_API_TOKEN is not configured on the server")
 
-    try:
-        from apify_client import ApifyClient
-    except ImportError:
-        raise HTTPException(status_code=500, detail="apify_client package is not installed on the server")
-
     rows = (
         db.query(Vendor, User)
         .join(User, Vendor.user_id == User.user_id)
@@ -157,7 +165,6 @@ def run_scraper(
     if not rows:
         return {"message": "No vendors have linked their Instagram account.", "results": []}
 
-    apify_client = ApifyClient(apify_token)
     results = []
 
     for i, (vendor, user) in enumerate(rows):
@@ -168,7 +175,7 @@ def run_scraper(
             "name": f"{user.f_name} {user.l_name}",
         }
 
-        profile, error = _scrape_profile(apify_client, username)
+        profile, error = _scrape_profile(apify_token, username)
         if not profile:
             entry["status"] = "failed"
             entry["error"] = error
