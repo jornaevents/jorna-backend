@@ -28,7 +28,8 @@ _BUNDLE_SCORING_TAGS = {
 }
 
 
-def _scrape_profile(apify_client, username: str):
+def _scrape_profile(apify_client, username: str) -> tuple[dict | None, str | None]:
+    """Returns (profile, error_message). error_message is None on success."""
     try:
         run = apify_client.actor("apify/instagram-scraper").call(run_input={
             "directUrls": [f"https://www.instagram.com/{username}/"],
@@ -41,11 +42,12 @@ def _scrape_profile(apify_client, username: str):
             if items:
                 profile = items[0].copy()
                 profile["posts"] = [i for i in items if i.get("caption") is not None or i.get("id")]
-                return profile
-        return None
+                return profile, None
+            return None, "Apify run succeeded but returned no items — account may be private or empty"
+        return None, f"Apify run status: {run['status']}"
     except Exception as exc:
         logger.warning("Apify scrape failed for @%s: %s", username, exc)
-        return None
+        return None, str(exc)
 
 
 def _extract_images(profile: dict) -> list[str]:
@@ -166,9 +168,10 @@ def run_scraper(
             "name": f"{user.f_name} {user.l_name}",
         }
 
-        profile = _scrape_profile(apify_client, username)
+        profile, error = _scrape_profile(apify_client, username)
         if not profile:
             entry["status"] = "failed"
+            entry["error"] = error
             entry["tags"] = []
             entry["images"] = 0
             results.append(entry)

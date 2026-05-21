@@ -96,6 +96,24 @@ def get_vendor_reviews(
     }
 
 
+def delete_review(*, review_id: str, caller_user_id: str, is_admin: bool, db: Session) -> dict:
+    """Delete a review. The author or an admin may delete."""
+    review = db.query(Review).filter(Review.review_id == review_id).first()
+    if not review:
+        raise ReviewError(404, "Review not found")
+    if not is_admin and review.user_id != caller_user_id:
+        raise ReviewError(403, "You can only delete your own reviews")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == review.vendor_id).first()
+    db.delete(review)
+    db.flush()
+
+    if vendor:
+        _recalculate_vendor_rating(vendor, db)
+
+    return {"message": "Review deleted", "review_id": review_id}
+
+
 def get_booking_review(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     """Return the review for a specific booking. Caller must be the client or vendor."""
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()

@@ -10,6 +10,7 @@ from app.dependencies import get_current_user
 from app.services.review_service import (
     ReviewError,
     create_review,
+    delete_review,
     get_vendor_reviews,
     get_booking_review,
 )
@@ -52,6 +53,25 @@ def get_vendor_reviews_route(
 ):
     """Return paginated reviews for a vendor. No auth required."""
     return get_vendor_reviews(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+
+
+@router.delete("/{review_id}", summary="Delete a review", status_code=200)
+def delete_review_route(
+    review_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a review. The author or an admin may delete.
+    Automatically recalculates the vendor's rating after deletion."""
+    try:
+        return delete_review(
+            review_id=review_id,
+            caller_user_id=current_user.user_id,
+            is_admin=current_user.is_admin,
+            db=db,
+        )
+    except ReviewError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.get("/booking/{booking_id}", summary="Get the review for a specific booking")
