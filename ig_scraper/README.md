@@ -25,7 +25,7 @@ Bundle creator uses instagram_tags in scoring
 ```bash
 export APIFY_API_TOKEN=apify_api_xxxxx
 export API_BASE_URL=https://your-railway-domain.railway.app
-export ADMIN_EMAIL=admin@desiconnect.com
+export ADMIN_USERNAME=youradminusername
 export ADMIN_PASSWORD=YourAdminPassword1
 
 pip install -r requirements.txt
@@ -73,5 +73,5 @@ selects "Cultural experience" in the bundle builder.
 |---|---|
 | `APIFY_API_TOKEN` | Apify personal API token |
 | `API_BASE_URL` | Backend URL (default: http://localhost:8000) |
-| `ADMIN_EMAIL` | Email of an admin account in Desiconnect |
+| `ADMIN_USERNAME` | Username of an admin account in Desiconnect (or use `ADMIN_EMAIL`) |
 | `ADMIN_PASSWORD` | Password for that admin account |

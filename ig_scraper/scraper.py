@@ -160,17 +160,17 @@ def main() -> int:
         print("Error: APIFY_API_TOKEN not set")
         return 1
 
-    admin_email = os.getenv("ADMIN_EMAIL")
+    admin_identifier = os.getenv("ADMIN_USERNAME") or os.getenv("ADMIN_EMAIL")
     admin_password = os.getenv("ADMIN_PASSWORD")
-    if not admin_email or not admin_password:
-        print("Error: ADMIN_EMAIL and ADMIN_PASSWORD must be set")
+    if not admin_identifier or not admin_password:
+        print("Error: ADMIN_USERNAME (or ADMIN_EMAIL) and ADMIN_PASSWORD must be set")
         return 1
 
     apify_client = ApifyClient(apify_token)
 
     print(f"Logging in to {API_BASE_URL}...")
     try:
-        token = login(admin_email, admin_password)
+        token = login(admin_identifier, admin_password)
         print("Logged in.")
     except Exception as e:
         print(f"Login failed: {e}")
