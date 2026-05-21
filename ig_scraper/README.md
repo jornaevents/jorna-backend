@@ -67,6 +67,16 @@ The chatbot bundle scoring checks both `tags` (user-inputted) and
 A vendor tagged `bhangra` from Instagram will score higher when a user
 selects "Cultural experience" in the bundle builder.
 
+## Automated scheduling
+
+The scraper runs automatically every **Sunday at 3am** via a cron-job.org job that calls:
+
+```
+POST https://your-railway-domain.railway.app/admin/scraper/run?api_key=<SCRAPER_API_KEY>
+```
+
+The `SCRAPER_API_KEY` environment variable must be set in Railway. The cron job is configured at cron-job.org with schedule `0 3 * * 0`.
+
 ## Environment variables
 
 | Variable | Description |
