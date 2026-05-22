@@ -412,14 +412,26 @@ def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> Mult
     ]
 
     _PRESETS = [
-        ("budget",    BudgetTier.BUDGET_FRIENDLY, "Budget Bundle",    "Best value — quality vendors at the lowest prices"),
-        ("top_rated", BudgetTier.PREMIUM,          "Top Rated Bundle", "The best of the best — highest rated vendors regardless of price"),
-        ("balanced",  BudgetTier.MID_RANGE,        "Balanced Bundle",  "The sweet spot — great quality at a reasonable price"),
+        (
+            "budget", BudgetTier.BUDGET_FRIENDLY, "Budget Bundle",
+            "Best value — quality vendors at the lowest prices",
+            ["Lowest price (primary)", "Style match (tiebreaker)"],
+        ),
+        (
+            "top_rated", BudgetTier.PREMIUM, "Top Rated Bundle",
+            "The best of the best — highest rated vendors regardless of price",
+            ["Highest rating (primary)", "Style match (tiebreaker)"],
+        ),
+        (
+            "balanced", BudgetTier.MID_RANGE, "Balanced Bundle",
+            "The sweet spot — great quality at a reasonable price",
+            ["Rating 50%", "Price 30%", "Style match 20%"],
+        ),
     ]
 
     options: list[BundleOption] = []
 
-    for strategy, tier, label, description in _PRESETS:
+    for strategy, tier, label, description, factors in _PRESETS:
         state = ChatbotState(
             event_date=req.event_date,
             date_range=req.date_range,
@@ -445,6 +457,7 @@ def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> Mult
         options.append(BundleOption(
             label=label,
             description=description,
+            factors=factors,
             bundle=bundle,
             state=state,
         ))

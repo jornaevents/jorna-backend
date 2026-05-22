@@ -126,6 +126,10 @@ def _split_categories(v: list[str]) -> list[str]:
 class BundleOption(BaseModel):
     label: str
     description: str
+    factors: list[str] = Field(
+        default_factory=list,
+        description="Ordered priority factors used to select vendors for this bundle",
+    )
     bundle: Bundle
     state: "ChatbotState"
 
