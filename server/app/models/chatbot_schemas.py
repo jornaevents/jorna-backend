@@ -196,3 +196,7 @@ class StepResponse(BaseModel):
         default_factory=list,
         description="DB booking IDs created when the user books vendors from a bundle",
     )
+    is_complete: bool = Field(
+        default=False,
+        description="True when the flow is done and bookings have been created — frontend should navigate to the bundle page",
+    )

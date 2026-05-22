@@ -246,7 +246,7 @@ POST /chatbot/step
 ```
 
 **Checklist:**
-- [ ] Detect when response contains `bundle_id` (booking was created)
+- [ ] Check `is_complete === true` to detect that bookings were created (single unambiguous signal)
 - [ ] Show success screen with summary
 - [ ] Navigate to bundle detail page using `bundle_id`
 - [ ] Each booking starts in `pending` status — vendors must approve
@@ -309,4 +309,4 @@ Each card has a **Select** button. Selecting one loads that bundle's `state` int
 - [ ] Show loading indicator while waiting for step responses (LLM calls can take 2–4s)
 - [ ] Handle network errors gracefully — allow retry without losing state
 - [ ] On mobile, keep the button area fixed at the bottom with the chat scrolling above
-- [ ] `bundle_id` in the response means bookings were created — always navigate away at this point
+- [ ] `is_complete === true` in the response means bookings were created — always navigate to `/bundles/{bundle_id}` at this point

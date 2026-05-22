@@ -1307,6 +1307,7 @@ async def process_step(
                     bundle=state.bundle,
                     bundle_id=bundle_id,
                     booking_ids=booking_ids,
+                    is_complete=True,
                 )
             else:
                 resp = _step_results_booking(state)
@@ -1331,6 +1332,7 @@ async def process_step(
                 bundle=state.bundle,
                 bundle_id=bundle_id,
                 booking_ids=booking_ids,
+                is_complete=True,
             )
         else:
             resp = _step_results_booking(state)
