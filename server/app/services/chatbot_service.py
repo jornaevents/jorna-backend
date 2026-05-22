@@ -965,12 +965,68 @@ def _apply_llm_intent(
 # ── Main step processor ──────────────────────────────────────────────
 
 
+def _create_bundle_from_chatbot(
+    state: ChatbotState,
+    user_id: str,
+    categories: list[str] | None,
+    db: Session,
+) -> tuple[str, list[str]]:
+    """Create a Bundle and Bookings in the DB from the chatbot state.
+
+    categories: list of category keys to book, or None to book all items.
+    Returns (bundle_id, [booking_id, ...]).
+    """
+    from datetime import datetime, timezone
+    from app.db.models import Bundle, Booking
+
+    items_to_book = [
+        item for item in (state.bundle.items if state.bundle else [])
+        if item.vendor_id and item.service_id
+        and (categories is None or item.category in categories)
+    ]
+
+    event_name = state.location or "My Event"
+    date_iso = state.event_date or "TBD"
+    location = state.location or "TBD"
+
+    bundle = Bundle(
+        user_id=user_id,
+        name=f"{event_name} Bundle",
+        status="draft",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(bundle)
+    db.flush()
+
+    booking_ids: list[str] = []
+    for item in items_to_book:
+        booking = Booking(
+            user_id=user_id,
+            vendor_id=item.vendor_id,
+            service_id=item.service_id,
+            event_name=event_name,
+            date_iso=date_iso,
+            time_start="TBD",
+            time_end="TBD",
+            location=location,
+            status="pending",
+            bundle_id=bundle.bundle_id,
+        )
+        db.add(booking)
+        db.flush()
+        booking_ids.append(booking.booking_id)
+
+    db.commit()
+    return bundle.bundle_id, booking_ids
+
+
 async def process_step(
     current_step: ChatStep,
     user_input: Optional[str],
     selected_values: list[str],
     state: ChatbotState,
     db: Session | None = None,
+    user_id: str | None = None,
 ) -> StepResponse:
     """Process user input for *current_step* and return the next step response.
 
@@ -1235,8 +1291,25 @@ async def process_step(
     if current_step == ChatStep.RESULTS_BOOKING:
         if selection == "book_some":
             resp = _step_partial_booking(state)
-        elif selection in ("go_back",):
+        elif selection == "go_back":
             resp = _step_bundle_action(state)
+        elif selection == "book_all":
+            if db and user_id and state.bundle:
+                bundle_id, booking_ids = _create_bundle_from_chatbot(state, user_id, None, db)
+                resp = StepResponse(
+                    next_step=ChatStep.RESULTS_BOOKING,
+                    bot_message=(
+                        f"Your bundle has been created with {len(booking_ids)} booking(s) submitted. "
+                        "Each vendor will review and confirm your request."
+                    ),
+                    helper_buttons=[],
+                    state=state,
+                    bundle=state.bundle,
+                    bundle_id=bundle_id,
+                    booking_ids=booking_ids,
+                )
+            else:
+                resp = _step_results_booking(state)
         else:
             resp = _step_results_booking(state)
         _append_history(state, user_input, resp.bot_message)
@@ -1244,7 +1317,23 @@ async def process_step(
 
     # ── STEP 7b: PARTIAL BOOKING ─────────────────────────────────────
     if current_step == ChatStep.PARTIAL_BOOKING:
-        resp = _step_results_booking(state)
+        chosen_cats = [v for v in selections if v in VENDOR_CATEGORIES]
+        if chosen_cats and db and user_id and state.bundle:
+            bundle_id, booking_ids = _create_bundle_from_chatbot(state, user_id, chosen_cats, db)
+            resp = StepResponse(
+                next_step=ChatStep.RESULTS_BOOKING,
+                bot_message=(
+                    f"Booked {len(booking_ids)} vendor(s) from your bundle. "
+                    "Each vendor will review and confirm your request."
+                ),
+                helper_buttons=[],
+                state=state,
+                bundle=state.bundle,
+                bundle_id=bundle_id,
+                booking_ids=booking_ids,
+            )
+        else:
+            resp = _step_results_booking(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
 

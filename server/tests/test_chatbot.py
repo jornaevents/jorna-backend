@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from main import app
+from app.db.models import User
+from tests.test_api import TestingSessionLocal, make_auth_headers
 from app.models.chatbot_schemas import (
     BudgetTier,
     Bundle,
@@ -694,6 +696,25 @@ class TestLLMFallback:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _step_auth_headers():
+    """Create a test user and return auth headers for chatbot step tests."""
+    import uuid
+    db = TestingSessionLocal()
+    uid = str(uuid.uuid4())[:8]
+    user = User(
+        email=f"chatbot_step_{uid}@test.com",
+        username=f"chatbot_step_{uid}",
+        password="pw", phone="1", f_name="A", l_name="B",
+        age=25, location="NJ", gender="M", language="EN", token_version=0,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    headers = make_auth_headers(user)
+    db.close()
+    return headers
+
+
 class TestChatbotEndpoints:
     def test_start_endpoint(self):
         response = client.post("/chatbot/start")
@@ -705,11 +726,11 @@ class TestChatbotEndpoints:
         assert data["state"]["booked_categories"] == []
 
     def test_step_endpoint_event_details(self):
-        # First get initial state
+        headers = _step_auth_headers()
         start_resp = client.post("/chatbot/start")
         state = start_resp.json()["state"]
 
-        response = client.post("/chatbot/step", json={
+        response = client.post("/chatbot/step", headers=headers, json={
             "current_step": "event_details",
             "user_input": "Summer 2026, 150 guests in NJ",
             "selected_values": [],
@@ -720,12 +741,14 @@ class TestChatbotEndpoints:
         assert data["next_step"] == "already_booked"
 
     def test_step_endpoint_full_flow(self):
+        headers = _step_auth_headers()
+
         # Start
         resp = client.post("/chatbot/start").json()
         state = resp["state"]
 
         # Event details
-        resp = client.post("/chatbot/step", json={
+        resp = client.post("/chatbot/step", headers=headers, json={
             "current_step": "event_details",
             "user_input": "August 2026",
             "state": state,
@@ -733,7 +756,7 @@ class TestChatbotEndpoints:
         state = resp["state"]
 
         # Nothing booked
-        resp = client.post("/chatbot/step", json={
+        resp = client.post("/chatbot/step", headers=headers, json={
             "current_step": "already_booked",
             "selected_values": ["nothing_yet"],
             "state": state,
@@ -742,7 +765,7 @@ class TestChatbotEndpoints:
         state = resp["state"]
 
         # Mid-range budget
-        resp = client.post("/chatbot/step", json={
+        resp = client.post("/chatbot/step", headers=headers, json={
             "current_step": "budget",
             "selected_values": ["mid-range"],
             "state": state,
@@ -751,7 +774,7 @@ class TestChatbotEndpoints:
         state = resp["state"]
 
         # Style
-        resp = client.post("/chatbot/step", json={
+        resp = client.post("/chatbot/step", headers=headers, json={
             "current_step": "style_preferences",
             "selected_values": ["elegant"],
             "state": state,
@@ -762,7 +785,8 @@ class TestChatbotEndpoints:
 
     def test_step_endpoint_invalid_step(self):
         """Sending an unknown step value should return 422."""
-        response = client.post("/chatbot/step", json={
+        headers = _step_auth_headers()
+        response = client.post("/chatbot/step", headers=headers, json={
             "current_step": "non_existent_step",
             "state": {},
         })

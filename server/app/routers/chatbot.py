@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
+from app.dependencies import get_current_user
 from app.models.chatbot_schemas import BundleRequest, MultiBundleResponse, StepRequest, StepResponse
 from app.services.chatbot_service import generate_bundle_from_request, generate_multi_bundle, get_initial_step, process_step
 
@@ -40,12 +41,19 @@ def chatbot_start():
 
 
 @router.post("/step", response_model=StepResponse, summary="Process a chatbot step")
-async def chatbot_step(body: StepRequest, db: Session = Depends(get_db)):
+async def chatbot_step(
+    body: StepRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Accept the current step, user input, and state.
 
     Returns the next step prompt, helper buttons, updated state, and
     optionally a generated bundle.  Off-script inputs are handled by
     Llama 3.3 via the LLM fallback service.
+
+    When the user confirms a bundle, bundle_id and booking_ids are returned
+    so the frontend can redirect to the bundle page.
     """
     return await process_step(
         current_step=body.current_step,
@@ -53,4 +61,5 @@ async def chatbot_step(body: StepRequest, db: Session = Depends(get_db)):
         selected_values=body.selected_values,
         state=body.state,
         db=db,
+        user_id=current_user.user_id,
     )
