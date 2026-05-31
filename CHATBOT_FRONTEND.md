@@ -294,9 +294,20 @@ Instead of the step-by-step flow, the frontend can show 3 bundles at once using 
 
 Each card has a **Select** button. Selecting one loads that bundle's `state` into the step-by-step flow at `bundle_action` so the user can refine it.
 
+Each bundle option includes a `factors` array showing what was prioritised:
+```json
+{
+  "label": "Budget Bundle",
+  "factors": ["Lowest price (primary)", "Style match (tiebreaker)"],
+  "bundle": { ... },
+  "state": { ... }
+}
+```
+
 **Checklist:**
 - [ ] 3-column card layout (or horizontal scroll on mobile)
-- [ ] Each card shows estimated total and top vendors
+- [ ] Each card shows `label`, estimated total, and top vendors
+- [ ] Display `factors` as small tags/chips under the card title so users understand what's prioritised
 - [ ] Selecting a card sets the active state and navigates to Screen 6
 - [ ] All inputs optional — send whatever the user has provided
 
