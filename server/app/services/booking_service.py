@@ -139,10 +139,18 @@ def update_booking_status(
         raise BookingError(403, "You are not a party to this booking")
 
     # Business rules
+    _negotiable = {BookingStatus.PENDING.value, BookingStatus.NEGOTIATION_ONGOING.value}
+
+    if status_str == BookingStatus.NEGOTIATION_ONGOING.value:
+        if booking.status not in _negotiable:
+            raise BookingError(
+                400, f"Cannot move to negotiation from {booking.status}"
+            )
+
     if status_str in [BookingStatus.APPROVED.value, BookingStatus.REJECTED.value]:
         if not is_vendor:
             raise BookingError(403, "Only vendors can approve or reject a booking")
-        if booking.status != BookingStatus.PENDING.value:
+        if booking.status not in _negotiable:
             raise BookingError(
                 400, f"Cannot change status from {booking.status} to {status_str}"
             )

@@ -3,6 +3,7 @@ from enum import Enum
 
 class BookingStatus(str, Enum):
     PENDING = "pending"
+    NEGOTIATION_ONGOING = "negotiation_ongoing"
     APPROVED = "approved"
     REJECTED = "rejected"
     PAYMENT_CONFIRMED = "payment_confirmed"
