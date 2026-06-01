@@ -43,6 +43,7 @@ class UpdateVendorRequest(BaseModel):
     bio: Optional[str] = None
     category: Optional[VendorCategory] = None
     travel_radius_miles: Optional[int] = None
+    open_to_long_distance: Optional[bool] = None
     instagram_username: Optional[str] = None
 
 

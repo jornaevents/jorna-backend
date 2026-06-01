@@ -71,6 +71,7 @@ class Vendor(Base):
     num_events = Column(Integer, nullable=False)
 
     travel_radius_miles = Column(Integer, default=30)
+    open_to_long_distance = Column(Boolean, nullable=False, default=False)
     google_access_token = Column(String(512), nullable=True)
     google_refresh_token = Column(String(512), nullable=True)
     calendar_id = Column(String(255), nullable=True)

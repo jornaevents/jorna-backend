@@ -319,6 +319,7 @@ def _build_bundle_with_strategy(
             vendor_rows = [
                 (v, u) for v, u in vendor_rows
                 if u.latitude is None or u.longitude is None or
+                v.open_to_long_distance or
                 calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
             ]
 
@@ -756,6 +757,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
             vendor_rows = [
                 (v, u) for v, u in vendor_rows
                 if u.latitude is None or u.longitude is None or
+                v.open_to_long_distance or
                 calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
             ]
 

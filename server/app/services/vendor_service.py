@@ -59,6 +59,7 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
+        "open_to_long_distance": v.open_to_long_distance,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
@@ -88,6 +89,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
+        "open_to_long_distance": v.open_to_long_distance,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
@@ -128,7 +130,7 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         update_data["instagram_username"] = ig
 
     for field, value in update_data.items():
-        if field in ["bio", "category", "travel_radius_miles", "instagram_username"]:
+        if field in ["bio", "category", "travel_radius_miles", "open_to_long_distance", "instagram_username"]:
             setattr(vendor, field, value)
     
     db.commit()
@@ -227,7 +229,7 @@ def search_vendors(
         distance_miles = calculate_distance_miles(
             latitude, longitude, user.latitude, user.longitude
         )
-        if distance_miles <= vendor.travel_radius_miles:
+        if vendor.open_to_long_distance or distance_miles <= vendor.travel_radius_miles:
             nearby_vendors.append(
                 {
                     "vendor_id": vendor.vendor_id,
@@ -240,6 +242,7 @@ def search_vendors(
                     "distance_miles": round(distance_miles, 2),
                     "rating": vendor.rating,
                     "travel_radius_miles": vendor.travel_radius_miles,
+                    "open_to_long_distance": vendor.open_to_long_distance,
                     "tags": [t.name for t in vendor.tags],
                 }
             )
