@@ -42,6 +42,9 @@ The backend generates a bundle from real DB vendors and returns it. The user can
 ### Step 7 — Booking Confirmation (`results_booking`)
 The user chooses to book the whole bundle or select specific categories.
 
+### Step 7b — Partial Booking (`partial_booking`)
+If the user chose "Book only some categories", they multi-select which categories to book now. Unselected categories are skipped — no booking is created for them.
+
 ### Step 8 — Done
 Real `Bundle` and `Booking` records are created in the database. The response returns `is_complete: true`, `bundle_id`, and `booking_ids`. The frontend navigates to the bundle page. Each vendor is notified and must approve individually.
 
