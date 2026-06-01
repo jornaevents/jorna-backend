@@ -611,31 +611,43 @@ _STYLE_TAG_KEYWORDS: dict[str, list[str]] = {
 
 
 def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
-    """Return vendor IDs with a pending or confirmed booking on the event date.
+    """Return vendor IDs with a pending or confirmed booking overlapping the event dates.
 
-    Uses event_date for an exact match, or date_range for an inclusive range.
+    Uses interval overlap logic: existing booking overlaps the request when
+        existing.date_iso <= requested_end AND existing.date_end_or_start >= requested_start
+
     Returns an empty set when no date information is available.
     """
     from app.db.models import Booking
 
-    query = db.query(Booking.vendor_id).filter(
-        Booking.status.in_(["pending", "confirmed"])
-    )
-
-    event_date = state.event_date
-    date_range = state.date_range
-
-    if event_date and event_date not in ("TBD", ""):
-        query = query.filter(Booking.date_iso == event_date)
-    elif date_range and (date_range.start or date_range.end):
-        if date_range.start:
-            query = query.filter(Booking.date_iso >= date_range.start)
-        if date_range.end:
-            query = query.filter(Booking.date_iso <= date_range.end)
+    # Determine the requested start and end dates
+    if state.date_range and (state.date_range.start or state.date_range.end):
+        req_start = state.date_range.start or state.date_range.end
+        req_end = state.date_range.end or state.date_range.start
+    elif state.event_date and state.event_date not in ("TBD", ""):
+        req_start = req_end = state.event_date
     else:
         return set()
 
-    return {row.vendor_id for row in query.all()}
+    # Overlap condition:
+    #   booking starts on or before our end AND booking ends on or after our start
+    # date_end is null for single-day bookings — treat null date_end as same as date_iso
+    from sqlalchemy import func, case
+    booking_end = case(
+        (Booking.date_end.isnot(None), Booking.date_end),
+        else_=Booking.date_iso,
+    )
+
+    rows = (
+        db.query(Booking.vendor_id)
+        .filter(
+            Booking.status.in_(["pending", "confirmed"]),
+            Booking.date_iso <= req_end,
+            booking_end >= req_start,
+        )
+        .all()
+    )
+    return {row.vendor_id for row in rows}
 
 
 def _score_vendor(
@@ -1041,8 +1053,14 @@ def _create_bundle_from_chatbot(
     ]
 
     event_name = state.location or "My Event"
-    date_iso = state.event_date or "TBD"
     location = state.location or "TBD"
+
+    if state.date_range and state.date_range.start:
+        date_iso = state.date_range.start
+        date_end = state.date_range.end or None
+    else:
+        date_iso = state.event_date or "TBD"
+        date_end = None
 
     bundle = Bundle(
         user_id=user_id,
@@ -1061,6 +1079,7 @@ def _create_bundle_from_chatbot(
             service_id=item.service_id,
             event_name=event_name,
             date_iso=date_iso,
+            date_end=date_end,
             time_start="TBD",
             time_end="TBD",
             location=location,
