@@ -69,13 +69,14 @@ Each option includes a `factors` array so the frontend can display what's being 
 When generating a bundle the backend:
 
 1. Queries real vendors from the DB for each needed category
-2. If `latitude`/`longitude` are provided, filters out vendors whose travel radius doesn't cover the event location
-3. Makes one LLM call (OpenRouter, free Llama model) to identify which tags in the DB are relevant to the user's style and preferences — handles niche South Asian terms (bhangra, sangeet, garba) that hardcoded keyword lists would miss
-4. Caches the LLM result for 1 hour — only one API call per bundle request regardless of vendor count
-5. Falls back to hardcoded keyword matching if `OPENROUTER_API_KEY` is not set
-6. Scores each vendor using rating + tag overlap (user tags + Instagram tags) + price alignment
-7. Picks the highest-scoring vendor per category
-8. Falls back to mock placeholder data if no real vendors exist for a category
+2. Filters out vendors with a `pending` or `confirmed` booking on the event date (or within the date range if only a range was given)
+3. If `latitude`/`longitude` are provided, filters out vendors whose travel radius doesn't cover the event location
+4. Makes one LLM call (OpenRouter, free Llama model) to identify which tags in the DB are relevant to the user's style and preferences — handles niche South Asian terms (bhangra, sangeet, garba) that hardcoded keyword lists would miss
+5. Caches the LLM result for 1 hour — only one API call per bundle request regardless of vendor count
+6. Falls back to hardcoded keyword matching if `OPENROUTER_API_KEY` is not set
+7. Scores each vendor using rating + tag overlap (user tags + Instagram tags) + price alignment
+8. Picks the highest-scoring vendor per category
+9. Falls back to mock placeholder data if no real vendors exist for a category
 
 ---
 

@@ -299,6 +299,9 @@ def _build_bundle_with_strategy(
             )
             llm_relevant_tags = result or None
 
+    # Pre-compute once — same set applies to every category in this bundle
+    booked_vendor_ids = _get_booked_vendor_ids(state, db)
+
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
         if not db_category:
@@ -318,6 +321,10 @@ def _build_bundle_with_strategy(
                 if u.latitude is None or u.longitude is None or
                 calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
             ]
+
+        # Filter out vendors already booked on the event date
+        if booked_vendor_ids:
+            vendor_rows = [(v, u) for v, u in vendor_rows if v.vendor_id not in booked_vendor_ids]
 
         if not vendor_rows:
             mock_tier = {
@@ -603,6 +610,34 @@ _STYLE_TAG_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
+    """Return vendor IDs with a pending or confirmed booking on the event date.
+
+    Uses event_date for an exact match, or date_range for an inclusive range.
+    Returns an empty set when no date information is available.
+    """
+    from app.db.models import Booking
+
+    query = db.query(Booking.vendor_id).filter(
+        Booking.status.in_(["pending", "confirmed"])
+    )
+
+    event_date = state.event_date
+    date_range = state.date_range
+
+    if event_date and event_date not in ("TBD", ""):
+        query = query.filter(Booking.date_iso == event_date)
+    elif date_range and (date_range.start or date_range.end):
+        if date_range.start:
+            query = query.filter(Booking.date_iso >= date_range.start)
+        if date_range.end:
+            query = query.filter(Booking.date_iso <= date_range.end)
+    else:
+        return set()
+
+    return {row.vendor_id for row in query.all()}
+
+
 def _score_vendor(
     vendor,
     services,
@@ -688,6 +723,9 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
                 candidate_tags=unique_tags,
             ) or None  # None triggers keyword fallback in _score_vendor
 
+    # Pre-compute once — same set applies to every category in this bundle
+    booked_vendor_ids = _get_booked_vendor_ids(state, db)
+
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
         if not db_category:
@@ -708,6 +746,10 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
                 if u.latitude is None or u.longitude is None or
                 calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
             ]
+
+        # Filter out vendors already booked on the event date
+        if booked_vendor_ids:
+            vendor_rows = [(v, u) for v, u in vendor_rows if v.vendor_id not in booked_vendor_ids]
 
         if not vendor_rows:
             # No real vendors — fall back to mock for this category
