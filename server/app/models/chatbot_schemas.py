@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class ChatStep(str, Enum):
     EVENT_DETAILS = "event_details"
+    EVENT_TIME = "event_time"
     ALREADY_BOOKED = "already_booked"
     STILL_NEED = "still_need"
     BUDGET = "budget"
@@ -96,6 +97,8 @@ class ChatbotState(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     guest_count: Optional[int] = None
+    time_start: Optional[str] = None
+    time_end: Optional[str] = None
     booked_categories: list[str] = Field(default_factory=list)
     needed_categories: list[str] = Field(default_factory=list)
     budget_tier: Optional[BudgetTier] = None

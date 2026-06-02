@@ -53,6 +53,26 @@ POST /chatbot/step
 
 ---
 
+### Screen 1b — Event Time (`event_time`)
+
+**Bot message:** "What time does your event start and end?"
+
+**UI elements:**
+- Single-select buttons: **Morning (8am – 1pm)** / **Afternoon (12pm – 6pm)** / **Evening (5pm – 11pm)** / **Full day (8am – 11pm)** / **Not sure yet**
+- Optional free-text input for custom times (e.g. "3pm to 9pm")
+
+**Notes:**
+- Presets send their value in `selected_values` (e.g. `["morning"]`)
+- Free text sends the user's input as `user_input`
+- "Not sure yet" stores `time_start: "TBD"` — the booking is created with TBD and can be updated later
+
+**Checklist:**
+- [ ] Single-select card/chip UI for presets
+- [ ] Optional free-text field for custom times
+- [ ] Store returned `state` for next request
+
+---
+
 ### Screen 2 — Already Booked (`already_booked`)
 
 **Bot message:** "Before I build your bundle, what do you already have booked?"

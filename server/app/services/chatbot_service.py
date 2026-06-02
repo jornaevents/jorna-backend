@@ -81,6 +81,21 @@ def get_initial_step() -> StepResponse:
     )
 
 
+def _step_event_time(state: ChatbotState) -> StepResponse:
+    return StepResponse(
+        next_step=ChatStep.EVENT_TIME,
+        bot_message="What time does your event start and end?",
+        helper_buttons=[
+            HelperButton(label="Morning (8am – 1pm)", value="morning"),
+            HelperButton(label="Afternoon (12pm – 6pm)", value="afternoon"),
+            HelperButton(label="Evening (5pm – 11pm)", value="evening"),
+            HelperButton(label="Full day (8am – 11pm)", value="full_day"),
+            HelperButton(label="Not sure yet", value="not_sure"),
+        ],
+        state=state,
+    )
+
+
 def _step_already_booked(state: ChatbotState) -> StepResponse:
     return StepResponse(
         next_step=ChatStep.ALREADY_BOOKED,
@@ -980,6 +995,7 @@ def _apply_llm_intent(
             # Build the appropriate step response
             step_builders = {
                 ChatStep.EVENT_DETAILS: lambda: get_initial_step(),
+                ChatStep.EVENT_TIME: lambda: _step_event_time(state),
                 ChatStep.ALREADY_BOOKED: lambda: _step_already_booked(state),
                 ChatStep.STILL_NEED: lambda: _step_still_need(state),
                 ChatStep.BUDGET: lambda: _step_budget(state),
@@ -1082,8 +1098,8 @@ def _create_bundle_from_chatbot(
             event_name=event_name,
             date_iso=date_iso,
             date_end=date_end,
-            time_start="TBD",
-            time_end="TBD",
+            time_start=state.time_start or "TBD",
+            time_end=state.time_end or "TBD",
             location=location,
             status="pending",
             bundle_id=bundle.bundle_id,
@@ -1153,6 +1169,26 @@ async def process_step(
                 state.event_date = date_match.group(0).strip()
         if selection == "no_date":
             state.event_date = "TBD"
+
+        resp = _step_event_time(state)
+        _append_history(state, user_input, resp.bot_message)
+        return resp
+
+    # ── STEP 0b: EVENT TIME ──────────────────────────────────────────
+    if current_step == ChatStep.EVENT_TIME:
+        _TIME_PRESETS = {
+            "morning":   ("8:00 AM",  "1:00 PM"),
+            "afternoon": ("12:00 PM", "6:00 PM"),
+            "evening":   ("5:00 PM",  "11:00 PM"),
+            "full_day":  ("8:00 AM",  "11:00 PM"),
+            "not_sure":  ("TBD",      "TBD"),
+        }
+        if selection in _TIME_PRESETS:
+            state.time_start, state.time_end = _TIME_PRESETS[selection]
+        elif user_input:
+            # Accept free text like "3pm to 9pm" — store as-is
+            state.time_start = user_input
+            state.time_end = "TBD"
 
         resp = _step_already_booked(state)
         _append_history(state, user_input, resp.bot_message)
