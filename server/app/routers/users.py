@@ -27,6 +27,8 @@ class UpdateMeRequest(BaseModel):
     gender: Optional[str] = None
     language: Optional[str] = None
     pfp_url: Optional[str] = None
+    open_to_price_negotiation: Optional[bool] = None
+    flexible_on_location: Optional[bool] = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────

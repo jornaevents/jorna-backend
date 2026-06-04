@@ -28,6 +28,8 @@ def _user_dict(user: User) -> dict:
         "gender": user.gender,
         "language": user.language,
         "pfp_url": user.pfp_url,
+        "open_to_price_negotiation": user.open_to_price_negotiation,
+        "flexible_on_location": user.flexible_on_location,
     }
 
 

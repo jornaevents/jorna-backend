@@ -44,6 +44,8 @@ class UpdateVendorRequest(BaseModel):
     category: Optional[VendorCategory] = None
     travel_radius_miles: Optional[int] = None
     open_to_long_distance: Optional[bool] = None
+    open_to_price_negotiation: Optional[bool] = None
+    open_to_location_negotiation: Optional[bool] = None
     instagram_username: Optional[str] = None
 
 

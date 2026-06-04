@@ -41,6 +41,8 @@ class User(Base):
     token_version = Column(Integer, nullable=False, default=0)
 
     is_admin = Column(Boolean, nullable=False, default=False)
+    open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
+    flexible_on_location = Column(Boolean, nullable=False, default=False)
 
 
 # Many-to-many join table: one vendor has many tags, one tag belongs to many vendors.
@@ -72,6 +74,8 @@ class Vendor(Base):
 
     travel_radius_miles = Column(Integer, default=30)
     open_to_long_distance = Column(Boolean, nullable=False, default=False)
+    open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
+    open_to_location_negotiation = Column(Boolean, nullable=False, default=False)
     google_access_token = Column(String(512), nullable=True)
     google_refresh_token = Column(String(512), nullable=True)
     calendar_id = Column(String(255), nullable=True)

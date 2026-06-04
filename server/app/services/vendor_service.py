@@ -60,6 +60,8 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
         "open_to_long_distance": v.open_to_long_distance,
+        "open_to_price_negotiation": v.open_to_price_negotiation,
+        "open_to_location_negotiation": v.open_to_location_negotiation,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
@@ -90,6 +92,8 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
         "open_to_long_distance": v.open_to_long_distance,
+        "open_to_price_negotiation": v.open_to_price_negotiation,
+        "open_to_location_negotiation": v.open_to_location_negotiation,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
@@ -130,7 +134,8 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         update_data["instagram_username"] = ig
 
     for field, value in update_data.items():
-        if field in ["bio", "category", "travel_radius_miles", "open_to_long_distance", "instagram_username"]:
+        if field in ["bio", "category", "travel_radius_miles", "open_to_long_distance",
+                     "open_to_price_negotiation", "open_to_location_negotiation", "instagram_username"]:
             setattr(vendor, field, value)
     
     db.commit()
