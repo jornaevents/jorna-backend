@@ -26,7 +26,6 @@ def _booking_summary(booking: Booking, db: Session) -> dict:
     price = (booking.amount_cents / 100) if booking.amount_cents else (service.price if service else 0.0)
     return {
         "booking_id": booking.booking_id,
-        "event_name": booking.event_name,
         "status": booking.status,
         "payment_status": booking.payment_status,
         "date_iso": booking.date_iso,
@@ -56,6 +55,7 @@ def _bundle_dict(bundle: Bundle, bookings: list[Booking], db: Session) -> dict:
         "bundle_id": bundle.bundle_id,
         "user_id": bundle.user_id,
         "name": bundle.name,
+        "event_name": bundle.event_name,
         "status": bundle.status,
         "event_id": bundle.event_id,
         "event": {
@@ -93,7 +93,8 @@ def create_bundle(
     *,
     user_id: str,
     name: str,
-    event_id: str | None,
+    event_name: str | None = None,
+    event_id: str | None = None,
     booking_ids: list[str],
     db: Session,
 ) -> dict:
@@ -110,6 +111,7 @@ def create_bundle(
         user_id=user_id,
         event_id=event_id,
         name=name,
+        event_name=event_name,
         status="draft",
         created_at=now,
         updated_at=now,

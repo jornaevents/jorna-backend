@@ -114,7 +114,6 @@ class Booking(Base):
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
     service_id = Column(String(36), ForeignKey("services.service_id"), nullable=False, index=True)
-    event_name = Column(String(255), nullable=False)
     time_start = Column(String(50), nullable=False)
     time_end = Column(String(50), nullable=False)
     location = Column(String(255), nullable=False)
@@ -150,6 +149,7 @@ class Bundle(Base):
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     event_id = Column(String(36), ForeignKey("events.event_id"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
+    event_name = Column(String(255), nullable=True)
     # draft | active | completed | cancelled
     status = Column(String(20), nullable=False, default="draft")
     created_at = Column(DateTime, nullable=False)

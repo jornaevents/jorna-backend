@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Booking, User, Vendor, Service
+from app.db.models import Booking, Bundle, User, Vendor, Service
 from app.models.schemas import BookingStatus
 from app.utils.location import calculate_distance_miles
 from app.utils.notifications import notify_booking_status_change, notify_check_in
@@ -47,10 +47,11 @@ def _dispatch_status_notification(
     service: Service | None,
 ) -> dict:
     """Send push notifications for a booking status change."""
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     result = notify_booking_status_change(
         status=status,
         booking_id=booking.booking_id,
-        event_name=booking.event_name,
+        event_name=(bundle.event_name if bundle else None) or "Event",
         service_name=service.name if service else "Service",
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
@@ -74,19 +75,48 @@ def create_booking(
     date_iso: str,
     venue_latitude: float | None,
     venue_longitude: float | None,
+    bundle_id: str | None = None,
     db: Session,
 ) -> dict:
-    """Create a new booking and notify the vendor."""
+    """Create a new booking and notify the vendor.
+
+    If bundle_id is provided the booking is added to that bundle (event_name
+    on the bundle is updated if not already set). Otherwise a new single-booking
+    bundle is auto-created to store the event_name.
+    """
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise BookingError(404, "Service not found")
+
+    now = datetime.now(timezone.utc)
+
+    if bundle_id:
+        bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+        if not bundle:
+            raise BookingError(404, "Bundle not found")
+        if bundle.user_id != user_id:
+            raise BookingError(403, "You do not own this bundle")
+        if not bundle.event_name:
+            bundle.event_name = event_name
+            bundle.updated_at = now
+    else:
+        bundle = Bundle(
+            user_id=user_id,
+            name=f"{event_name} Bundle",
+            event_name=event_name,
+            status="draft",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(bundle)
+        db.flush()
+        bundle_id = bundle.bundle_id
 
     booking = Booking(
         booking_id=str(uuid.uuid4()),
         user_id=user_id,
         vendor_id=service.vendor_id,
         service_id=service_id,
-        event_name=event_name,
         time_start=time_start,
         time_end=time_end,
         location=location,
@@ -94,6 +124,7 @@ def create_booking(
         venue_latitude=venue_latitude,
         venue_longitude=venue_longitude,
         status=BookingStatus.PENDING.value,
+        bundle_id=bundle_id,
     )
     db.add(booking)
     db.commit()
@@ -111,6 +142,7 @@ def create_booking(
     return {
         "message": "Booking requested successfully",
         "booking_id": booking.booking_id,
+        "bundle_id": bundle_id,
         "status": booking.status,
         "notification": notification,
     }
@@ -251,6 +283,8 @@ def check_in(
     if not booking:
         raise BookingError(404, "Booking not found")
 
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
+
     if booking.venue_latitude is None or booking.venue_longitude is None:
         raise BookingError(400, "Booking has no venue coordinates set")
 
@@ -289,7 +323,7 @@ def check_in(
     )
     checkin_notification = notify_check_in(
         booking_id=booking.booking_id,
-        event_name=booking.event_name,
+        event_name=(bundle.event_name if bundle else None) or "Event",
         is_vendor=is_vendor,
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",

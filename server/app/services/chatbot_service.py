@@ -648,7 +648,7 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
     # Overlap condition:
     #   booking starts on or before our end AND booking ends on or after our start
     # date_end is null for single-day bookings — treat null date_end as same as date_iso
-    from sqlalchemy import func, case
+    from sqlalchemy import case
     booking_end = case(
         (Booking.date_end.isnot(None), Booking.date_end),
         else_=Booking.date_iso,
@@ -737,7 +737,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     # Queries only tag name strings (not full Vendor objects) for efficiency.
     llm_relevant_tags: set[str] | None = None
     if state.style or state.preferences:
-        from app.db.models import Tag, vendor_tags as vt
+        from app.db.models import Tag
         user_tag_names = [name for (name,) in db.query(Tag.name).all()]
         ig_tags: list[str] = []
         for (ig,) in db.query(Vendor.instagram_tags).filter(Vendor.instagram_tags.isnot(None)).all():
@@ -1070,7 +1070,7 @@ def _create_bundle_from_chatbot(
         and (categories is None or item.category in categories)
     ]
 
-    event_name = state.location or "My Event"
+    event_name = state.event_date or state.location or "My Event"
     location = state.location or "TBD"
 
     if state.date_range and state.date_range.start:

@@ -35,6 +35,7 @@ class BookingCreate(BaseModel):
     date_iso: str    # e.g. "2026-03-01"
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
+    bundle_id: Optional[str] = None  # add to existing bundle, or auto-create one
 
 
 class BookingStatusUpdate(BaseModel):
@@ -69,6 +70,7 @@ def create_booking(
             date_iso=body.date_iso,
             venue_latitude=body.venue_latitude,
             venue_longitude=body.venue_longitude,
+            bundle_id=body.bundle_id,
             db=db,
         )
     except BookingError as e:
