@@ -239,6 +239,49 @@ def update_booking_status(
     }
 
 
+def update_booking(
+    *,
+    booking_id: str,
+    caller_user_id: str,
+    update_data: dict,
+    db: Session,
+) -> dict:
+    """Update mutable fields on a booking. Only the client can call this,
+    and only while the booking is still pending or under negotiation."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise BookingError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise BookingError(403, "Only the client who made this booking can update it")
+
+    allowed_statuses = {BookingStatus.PENDING.value, BookingStatus.NEGOTIATION_ONGOING.value}
+    if booking.status not in allowed_statuses:
+        raise BookingError(
+            400,
+            f"Booking cannot be edited in '{booking.status}' status. "
+            "Changes are only allowed while the booking is pending or under negotiation.",
+        )
+
+    allowed_fields = {"date_iso", "date_end", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
+    for field, value in update_data.items():
+        if field in allowed_fields:
+            setattr(booking, field, value)
+
+    db.commit()
+    db.refresh(booking)
+    return {
+        "booking_id": booking.booking_id,
+        "date_iso": booking.date_iso,
+        "date_end": booking.date_end,
+        "time_start": booking.time_start,
+        "time_end": booking.time_end,
+        "location": booking.location,
+        "venue_latitude": booking.venue_latitude,
+        "venue_longitude": booking.venue_longitude,
+        "status": booking.status,
+    }
+
+
 def get_booking(*, booking_id: str, caller_user_id: str, db: Session) -> Booking:
     """Return a single booking. Caller must be the client or the vendor."""
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()

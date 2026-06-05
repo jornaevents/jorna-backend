@@ -14,6 +14,7 @@ from app.services.booking_service import (
     BookingError,
     create_booking as svc_create_booking,
     get_booking as svc_get_booking,
+    update_booking as svc_update_booking,
     update_booking_status as svc_update_booking_status,
     get_user_bookings as svc_get_user_bookings,
     get_vendor_bookings as svc_get_vendor_bookings,
@@ -36,6 +37,16 @@ class BookingCreate(BaseModel):
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
     bundle_id: Optional[str] = None  # add to existing bundle, or auto-create one
+
+
+class BookingUpdate(BaseModel):
+    date_iso: Optional[str] = None
+    date_end: Optional[str] = None
+    time_start: Optional[str] = None
+    time_end: Optional[str] = None
+    location: Optional[str] = None
+    venue_latitude: Optional[float] = None
+    venue_longitude: Optional[float] = None
 
 
 class BookingStatusUpdate(BaseModel):
@@ -86,6 +97,27 @@ def get_booking_route(
     """Fetch a single booking by ID. Caller must be the client or the vendor."""
     try:
         return svc_get_booking(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except BookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.patch("/{booking_id}", summary="Update booking date, time, or location")
+def update_booking_route(
+    booking_id: str,
+    body: BookingUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Update mutable fields on a booking (date, time, location, venue coordinates).
+    Only the client who created the booking can call this, and only while the
+    booking is pending or under negotiation."""
+    try:
+        return svc_update_booking(
+            booking_id=booking_id,
+            caller_user_id=current_user.user_id,
+            update_data=body.model_dump(exclude_unset=True),
+            db=db,
+        )
     except BookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
