@@ -48,8 +48,7 @@ def seeded_db():
 
     paid_booking = Booking(
         user_id=regular.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Dispute Event",
-        time_start="12:00", time_end="18:00", location="Hall",
+        service_id=service.service_id,        time_start="12:00", time_end="18:00", location="Hall",
         date_iso="2026-09-01", status="approved",
         payment_status="paid", payment_intent_id="pi_test_123",
         amount_cents=100000, platform_fee_cents=5000,
@@ -169,8 +168,7 @@ def test_cannot_dispute_unpaid_booking(seeded_db):
 
     unpaid = Booking(
         user_id=regular.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Unpaid Event",
-        time_start="10:00", time_end="12:00", location="Venue",
+        service_id=service.service_id,        time_start="10:00", time_end="12:00", location="Venue",
         date_iso="2026-10-01", status="approved", payment_status="unpaid",
     )
     db.add(unpaid)

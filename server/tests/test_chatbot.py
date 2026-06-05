@@ -73,7 +73,7 @@ class TestEventDetailsStep:
     async def test_advances_to_already_booked(self):
         state = ChatbotState()
         resp = await process_step(ChatStep.EVENT_DETAILS, "August 2026, NJ, 300 guests", [], state)
-        assert resp.next_step == ChatStep.ALREADY_BOOKED
+        assert resp.next_step == ChatStep.EVENT_TIME
 
     async def test_extracts_guest_count(self):
         state = ChatbotState()
@@ -90,7 +90,7 @@ class TestEventDetailsStep:
         state = ChatbotState()
         resp = await process_step(ChatStep.EVENT_DETAILS, None, ["no_date"], state)
         assert resp.state.event_date == "TBD"
-        assert resp.next_step == ChatStep.ALREADY_BOOKED
+        assert resp.next_step == ChatStep.EVENT_TIME
 
     async def test_guest_count_not_confused_with_year(self):
         state = ChatbotState()
@@ -446,8 +446,12 @@ class TestFullFlowNothingBooked:
         resp = get_initial_step()
         assert resp.next_step == ChatStep.EVENT_DETAILS
 
-        # Step 0 → 1: Event details
+        # Step 0 → 0b: Event details
         resp = await process_step(ChatStep.EVENT_DETAILS, "August 2026, NJ, 200 people", [], resp.state)
+        assert resp.next_step == ChatStep.EVENT_TIME
+
+        # Step 0b → 1: Event time
+        resp = await process_step(ChatStep.EVENT_TIME, None, ["evening"], resp.state)
         assert resp.next_step == ChatStep.ALREADY_BOOKED
 
         # Step 1 → 3: Nothing booked (skip step 2)
@@ -481,6 +485,8 @@ class TestFullFlowWithBooked:
     async def test_complete_flow(self):
         resp = get_initial_step()
         resp = await process_step(ChatStep.EVENT_DETAILS, "Wedding in NJ", [], resp.state)
+        assert resp.next_step == ChatStep.EVENT_TIME
+        resp = await process_step(ChatStep.EVENT_TIME, None, ["full_day"], resp.state)
         assert resp.next_step == ChatStep.ALREADY_BOOKED
 
         # Has venue and photographer
@@ -517,6 +523,7 @@ class TestCustomBudgetFlow:
     async def test_custom_budget_path(self):
         resp = get_initial_step()
         resp = await process_step(ChatStep.EVENT_DETAILS, "Party in NYC", [], resp.state)
+        resp = await process_step(ChatStep.EVENT_TIME, None, ["not_sure"], resp.state)
         resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["nothing_yet"], resp.state)
 
         # Custom budget
@@ -738,7 +745,7 @@ class TestChatbotEndpoints:
         })
         assert response.status_code == 200
         data = response.json()
-        assert data["next_step"] == "already_booked"
+        assert data["next_step"] == "event_time"
 
     def test_step_endpoint_full_flow(self):
         headers = _step_auth_headers()
@@ -751,6 +758,14 @@ class TestChatbotEndpoints:
         resp = client.post("/chatbot/step", headers=headers, json={
             "current_step": "event_details",
             "user_input": "August 2026",
+            "state": state,
+        }).json()
+        state = resp["state"]
+
+        # Event time
+        resp = client.post("/chatbot/step", headers=headers, json={
+            "current_step": "event_time",
+            "selected_values": ["evening"],
             "state": state,
         }).json()
         state = resp["state"]

@@ -229,7 +229,7 @@ def test_booking_check_in():
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Wedding", time_start="10:00", time_end="12:00",
+        time_start="10:00", time_end="12:00",
         location="123 Main St", date_iso="2026-03-01",
         venue_latitude=40.0, venue_longitude=-70.0,
     )

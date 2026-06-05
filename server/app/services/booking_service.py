@@ -45,13 +45,13 @@ def _dispatch_status_notification(
     client: User | None,
     vendor_user: User | None,
     service: Service | None,
+    event_name: str = "Event",
 ) -> dict:
     """Send push notifications for a booking status change."""
-    bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     result = notify_booking_status_change(
         status=status,
         booking_id=booking.booking_id,
-        event_name=(bundle.event_name if bundle else None) or "Event",
+        event_name=event_name,
         service_name=service.name if service else "Service",
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
@@ -133,7 +133,8 @@ def create_booking(
     client, vendor_obj, vendor_user, _ = _get_booking_parties(db, booking)
     try:
         notification = _dispatch_status_notification(
-            BookingStatus.PENDING.value, booking, client, vendor_user, service
+            BookingStatus.PENDING.value, booking, client, vendor_user, service,
+            event_name=event_name,
         )
     except Exception as exc:
         logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
@@ -221,9 +222,11 @@ def update_booking_status(
             logger.warning("Failed to auto-create bundle for booking %s: %s", booking.booking_id, exc)
 
     client, vendor_obj, vendor_user, service = _get_booking_parties(db, booking)
+    _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
+    _event_name = (_bundle.event_name if _bundle else None) or "Event"
     try:
         notification = _dispatch_status_notification(
-            status_str, booking, client, vendor_user, service
+            status_str, booking, client, vendor_user, service, event_name=_event_name,
         )
     except Exception as exc:
         logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
@@ -283,8 +286,6 @@ def check_in(
     if not booking:
         raise BookingError(404, "Booking not found")
 
-    bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
-
     if booking.venue_latitude is None or booking.venue_longitude is None:
         raise BookingError(400, "Booking has no venue coordinates set")
 
@@ -321,9 +322,10 @@ def check_in(
         if (is_vendor and client)
         else (vendor_user.fcm_token if vendor_user else None)
     )
+    _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     checkin_notification = notify_check_in(
         booking_id=booking.booking_id,
-        event_name=(bundle.event_name if bundle else None) or "Event",
+        event_name=(_bundle.event_name if _bundle else None) or "Event",
         is_vendor=is_vendor,
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",

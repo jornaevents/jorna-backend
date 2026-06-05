@@ -77,7 +77,7 @@ def test_approve_booking(seeded_db):
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Auth Event Test", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="145 Main St", date_iso="2026-03-02",
         venue_latitude=40.0, venue_longitude=-70.0, status="pending",
     )
@@ -107,7 +107,7 @@ def test_client_cannot_approve(seeded_db):
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Client Try Approve", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="145 Main St", date_iso="2026-03-02",
         venue_latitude=40.0, venue_longitude=-70.0, status="pending",
     )
@@ -133,7 +133,7 @@ def test_get_user_bookings(seeded_db):
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Fetch Event", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="145 Main St", date_iso="2026-03-02", status="pending",
     )
     db.add(booking)
@@ -167,7 +167,7 @@ def test_get_vendor_bookings(seeded_db):
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Fetch Event", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="145 Main St", date_iso="2026-03-02", status="pending",
     )
     db.add(booking)

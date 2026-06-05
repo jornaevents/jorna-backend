@@ -202,7 +202,7 @@ def notify_booking_status_change(
     *,
     status: str,
     booking_id: str,
-    event_name: str,
+    event_name: str = "Event",
     service_name: str,
     client_name: str,
     vendor_name: str,
@@ -274,7 +274,7 @@ def notify_booking_status_change(
 def notify_check_in(
     *,
     booking_id: str,
-    event_name: str,
+    event_name: str = "Event",
     is_vendor: bool,
     client_name: str,
     vendor_name: str,

@@ -39,13 +39,13 @@ def seeded_db():
 
     booking1 = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Wedding",
+        service_id=service.service_id,
         time_start="18:00", time_end="23:00", location="Hall",
         date_iso="2026-10-01", status="approved",
     )
     booking2 = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Wedding",
+        service_id=service.service_id,
         time_start="12:00", time_end="16:00", location="Hall",
         date_iso="2026-10-01", status="pending",
     )

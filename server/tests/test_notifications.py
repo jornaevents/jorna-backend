@@ -178,7 +178,6 @@ class TestNotificationUtils:
         result = notify_booking_status_change(
             status="pending",
             booking_id="test-booking-id",
-            event_name="Wedding",
             service_name="DJ",
             client_name="Priya Patel",
             vendor_name="Raj Kumar",
@@ -195,7 +194,6 @@ class TestNotificationUtils:
         result = notify_booking_status_change(
             status="approved",
             booking_id="test-id",
-            event_name="Event",
             service_name="Photo",
             client_name="A",
             vendor_name="B",
@@ -210,7 +208,6 @@ class TestNotificationUtils:
         result = notify_booking_status_change(
             status="some_unknown_status",
             booking_id="id",
-            event_name="E",
             service_name="S",
             client_name="C",
             vendor_name="V",
@@ -222,7 +219,6 @@ class TestNotificationUtils:
         from app.utils.notifications import notify_check_in
         result = notify_check_in(
             booking_id="bid",
-            event_name="Wedding",
             is_vendor=True,
             client_name="C",
             vendor_name="V",
@@ -240,7 +236,6 @@ class TestNotificationUtils:
         result = notify_booking_status_change(
             status="pending",
             booking_id="b1",
-            event_name="Sangeet",
             service_name="DJ Services",
             client_name="Priya Patel",
             vendor_name="Raj Kumar",
@@ -268,7 +263,6 @@ class TestNotificationUtils:
         notify_booking_status_change(
             status="approved",
             booking_id="b2",
-            event_name="Reception",
             service_name="Photography",
             client_name="Alice",
             vendor_name="Bob",
@@ -288,7 +282,6 @@ class TestNotificationUtils:
         notify_booking_status_change(
             status="rejected",
             booking_id="b3",
-            event_name="Party",
             service_name="Catering",
             client_name="X",
             vendor_name="Y",
@@ -307,7 +300,6 @@ class TestNotificationUtils:
         notify_booking_status_change(
             status="payment_confirmed",
             booking_id="b4",
-            event_name="Garba Night",
             service_name="Sound System",
             client_name="P",
             vendor_name="Q",
@@ -360,8 +352,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id, event_name="Navratri",
-            time_start="19:00", time_end="23:00", location="Park",
+            service_id=service.service_id,            time_start="19:00", time_end="23:00", location="Park",
             date_iso="2026-10-15", status="pending",
         )
         db.add(booking)
@@ -388,8 +379,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id, event_name="Reject Test",
-            time_start="09:00", time_end="11:00", location="Venue",
+            service_id=service.service_id,            time_start="09:00", time_end="11:00", location="Venue",
             date_iso="2026-04-01", status="pending",
         )
         db.add(booking)
@@ -415,8 +405,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id, event_name="Check-In Test",
-            time_start="10:00", time_end="12:00", location="Hall",
+            service_id=service.service_id,            time_start="10:00", time_end="12:00", location="Hall",
             date_iso="2026-06-01",
             venue_latitude=34.05, venue_longitude=-118.24,
             status="approved",

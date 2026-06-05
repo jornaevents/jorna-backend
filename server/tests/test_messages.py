@@ -39,8 +39,7 @@ def seeded_db():
 
     booking = Booking(
         user_id=client_user.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Party",
-        time_start="18:00", time_end="22:00", location="Venue",
+        service_id=service.service_id,        time_start="18:00", time_end="22:00", location="Venue",
         date_iso="2026-08-01", status="approved",
     )
     db.add(booking)

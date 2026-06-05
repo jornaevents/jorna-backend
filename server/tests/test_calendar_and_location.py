@@ -111,7 +111,7 @@ def test_calendar_availability_aggregation(mocker):
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Event", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="123 Main St", date_iso="2026-03-02",
     )
     db.add(booking)
@@ -151,7 +151,7 @@ def test_check_in_no_coordinates():
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Event No Coords", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="123 Main St", date_iso="2026-03-02",
     )
     db.add(booking)
@@ -182,7 +182,7 @@ def test_check_in_unauthorized_user():
 
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
-        event_name="Auth Event", time_start="10:00", time_end="11:30",
+        time_start="10:00", time_end="11:30",
         location="145 Main St", date_iso="2026-03-02",
         venue_latitude=40.0, venue_longitude=-70.0,
     )

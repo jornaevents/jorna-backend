@@ -125,7 +125,6 @@ class TestFirebaseCredentials:
         result = notif_module.notify_booking_status_change(
             status="pending",
             booking_id="integration-test-booking",
-            event_name="Integration Test Event",
             service_name="Test DJ",
             client_name="Test Client",
             vendor_name="Test Vendor",
@@ -147,7 +146,6 @@ class TestFirebaseCredentials:
 
         result = notif_module.notify_check_in(
             booking_id="integration-checkin",
-            event_name="Test Wedding",
             is_vendor=True,
             client_name="Test Client",
             vendor_name="Test Vendor",

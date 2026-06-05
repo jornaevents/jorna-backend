@@ -135,7 +135,7 @@ def start_negotiation(
     _notify(
         other_party_id,
         title="New Price Offer",
-        body=f"{caller_name} offered ${amount_cents / 100:.2f} for booking '{booking.event_name}'.",
+        body=f"{caller_name} offered ${amount_cents / 100:.2f} for your booking.",
         data={"booking_id": booking_id, "negotiation_id": neg.negotiation_id, "type": "negotiation_offer"},
         db=db,
     )

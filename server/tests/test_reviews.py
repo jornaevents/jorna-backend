@@ -39,7 +39,7 @@ def seeded_db():
 
     booking = Booking(
         user_id=client_user.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Wedding",
+        service_id=service.service_id,
         time_start="10:00", time_end="14:00", location="Hall",
         date_iso="2026-06-01", status="approved",
     )
@@ -128,7 +128,7 @@ def test_pending_booking_cannot_be_reviewed(seeded_db):
 
     pending_booking = Booking(
         user_id=client_user.user_id, vendor_id=vendor.vendor_id,
-        service_id=service.service_id, event_name="Pending Event",
+        service_id=service.service_id,
         time_start="10:00", time_end="12:00", location="Hall",
         date_iso="2026-07-01", status="pending",
     )
