@@ -316,6 +316,7 @@ def _build_bundle_with_strategy(
 
     # Pre-compute once — same set applies to every category in this bundle
     booked_vendor_ids = _get_booked_vendor_ids(state, db)
+    price_cap = _per_category_cap(state)
 
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
@@ -361,9 +362,21 @@ def _build_bundle_with_strategy(
         for svc in all_services:
             services_by_vendor.setdefault(svc.vendor_id, []).append(svc)
 
+        # Budget enforcement: keep vendors with at least one service within cap.
+        if price_cap < float("inf"):
+            within_budget = [
+                (v, u) for v, u in vendor_rows
+                if any(s.price <= price_cap for s in services_by_vendor.get(v.vendor_id, []))
+                or not services_by_vendor.get(v.vendor_id)
+            ]
+            if within_budget:
+                vendor_rows = within_budget
+
         def _avg_price(v) -> float:
             svcs = services_by_vendor.get(v.vendor_id, [])
-            return sum(s.price for s in svcs) / len(svcs) if svcs else 0.0
+            within = [s for s in svcs if s.price <= price_cap] if price_cap < float("inf") else svcs
+            pool = within if within else svcs
+            return sum(s.price for s in pool) / len(pool) if pool else 0.0
 
         def _tag_bonus(v) -> float:
             """Small bonus for vendors whose tags match user preferences."""
@@ -373,12 +386,10 @@ def _build_bundle_with_strategy(
             return len(v_tags & llm_relevant_tags) * 0.1
 
         if strategy == "budget":
-            # Primary: lowest price. Tiebreak: tag relevance.
             vendor_rows_sorted = sorted(vendor_rows, key=lambda r: (_avg_price(r[0]), -_tag_bonus(r[0])))
         elif strategy == "top_rated":
-            # Primary: highest rating. Tiebreak: tag relevance.
             vendor_rows_sorted = sorted(vendor_rows, key=lambda r: (-(r[0].rating or 0.0), -_tag_bonus(r[0])))
-        else:  # balanced — price + rating + tag relevance
+        else:  # balanced
             max_price = max((_avg_price(v) for v, _ in vendor_rows), default=1.0) or 1.0
             max_rating = max((v.rating or 0.0 for v, _ in vendor_rows), default=1.0) or 1.0
             vendor_rows_sorted = sorted(
@@ -393,9 +404,11 @@ def _build_bundle_with_strategy(
         services = services_by_vendor.get(vendor.vendor_id, [])
 
         if services:
-            prices = [s.price for s in services]
+            within_cap = [s for s in services if s.price <= price_cap]
+            candidate_services = within_cap if within_cap else services
+            prices = [s.price for s in candidate_services]
             p_min, p_max = min(prices), max(prices)
-            best = sorted(services, key=lambda s: s.price)[0]
+            best = min(candidate_services, key=lambda s: s.price)
             service_id = best.service_id
             match_reason = best.description or best.experience or vendor.bio or ""
         else:
@@ -609,6 +622,53 @@ _CATEGORY_MAP = {
     "dhol": "dhol",
 }
 
+# Max price per vendor per category for each preset tier (inf = no cap)
+_PRESET_TIER_CAPS: dict[BudgetTier, float] = {
+    BudgetTier.BUDGET_FRIENDLY: 1500.0,
+    BudgetTier.MID_RANGE:       4000.0,
+    BudgetTier.PREMIUM:         float("inf"),
+    BudgetTier.UNKNOWN:         float("inf"),
+    BudgetTier.CUSTOM:          float("inf"),  # overridden by budget_amount
+}
+
+
+def _parse_budget_amount(budget_amount: str | None) -> float | None:
+    """Convert a budget_amount string to a total dollar figure.
+
+    Handles preset keys from the CUSTOM_BUDGET step buttons, plain dollar
+    strings like '$10,000', and bare numerics like '10000'.
+    """
+    if not budget_amount:
+        return None
+    _PRESETS = {
+        "under_3000":   3000.0,
+        "3000_7000":    7000.0,
+        "7000_12000":  12000.0,
+    }
+    if budget_amount in _PRESETS:
+        return _PRESETS[budget_amount]
+    cleaned = re.sub(r"[^\d.]", "", budget_amount)
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def _per_category_cap(state: ChatbotState) -> float:
+    """Return the max price per vendor category given the user's budget.
+
+    For custom budgets the total is split evenly across all needed categories.
+    Returns inf when no cap applies.
+    """
+    tier = state.budget_tier or BudgetTier.UNKNOWN
+    if tier == BudgetTier.CUSTOM:
+        total = _parse_budget_amount(state.budget_amount)
+        if total:
+            n = len(state.needed_categories) or 1
+            return total / n
+        return float("inf")
+    return _PRESET_TIER_CAPS.get(tier, float("inf"))
+
 # User style/preference selections → tag keywords to match against vendor tags
 _STYLE_TAG_KEYWORDS: dict[str, list[str]] = {
     "elegant":     ["elegant", "luxury", "premium", "sophisticated", "upscale"],
@@ -753,6 +813,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
 
     # Pre-compute once — same set applies to every category in this bundle
     booked_vendor_ids = _get_booked_vendor_ids(state, db)
+    price_cap = _per_category_cap(state)
 
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
@@ -796,6 +857,17 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
         for svc in all_services:
             services_by_vendor.setdefault(svc.vendor_id, []).append(svc)
 
+        # Budget enforcement: keep vendors that have at least one service within the cap.
+        # If none qualify, fall back to all vendors (show cheapest available over budget).
+        if price_cap < float("inf"):
+            within_budget = [
+                (v, u) for v, u in vendor_rows
+                if any(s.price <= price_cap for s in services_by_vendor.get(v.vendor_id, []))
+                or not services_by_vendor.get(v.vendor_id)
+            ]
+            if within_budget:
+                vendor_rows = within_budget
+
         # Score every vendor and pick the best match
         scored = [
             (
@@ -810,10 +882,13 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
         _, vendor, user, services = scored[0]
 
         if services:
-            prices = [s.price for s in services]
+            # Prefer services within the budget cap; fall back to all if none qualify.
+            within_cap = [s for s in services if s.price <= price_cap]
+            candidate_services = within_cap if within_cap else services
+            prices = [s.price for s in candidate_services]
             p_min = min(prices)
             p_max = max(prices)
-            best_service = sorted(services, key=lambda s: s.price)[0]
+            best_service = min(candidate_services, key=lambda s: s.price)
             service_id = best_service.service_id
             match_reason = best_service.description or best_service.experience or vendor.bio or ""
         else:
@@ -1080,11 +1155,14 @@ def _create_bundle_from_chatbot(
         date_iso = state.event_date or "TBD"
         date_end = None
 
+    now = datetime.now(timezone.utc)
     bundle = Bundle(
         user_id=user_id,
         name=f"{event_name} Bundle",
+        event_name=event_name,
         status="draft",
-        created_at=datetime.now(timezone.utc),
+        created_at=now,
+        updated_at=now,
     )
     db.add(bundle)
     db.flush()
@@ -1095,7 +1173,6 @@ def _create_bundle_from_chatbot(
             user_id=user_id,
             vendor_id=item.vendor_id,
             service_id=item.service_id,
-            event_name=event_name,
             date_iso=date_iso,
             date_end=date_end,
             time_start=state.time_start or "TBD",
@@ -1267,9 +1344,20 @@ async def process_step(
         bundle = generate_bundle(state, db=db)
         state.bundle = bundle
 
+        budget_note = ""
+        if state.budget_tier == BudgetTier.CUSTOM:
+            total_budget = _parse_budget_amount(state.budget_amount)
+            if total_budget and bundle.estimated_total_max > total_budget:
+                budget_note = (
+                    f" The best available vendors for your categories come in at "
+                    f"${bundle.estimated_total_min:,.0f}–${bundle.estimated_total_max:,.0f}, "
+                    f"which may exceed your ${total_budget:,.0f} budget — "
+                    "you can remove categories or swap vendors to bring it down."
+                )
+
         resp = StepResponse(
             next_step=ChatStep.BUNDLE_ACTION,
-            bot_message="Here's the bundle I built for you.",
+            bot_message=f"Here's the bundle I built for you.{budget_note}",
             helper_buttons=[
                 HelperButton(label="Keep this bundle", value="keep"),
                 HelperButton(label="Customize manually", value="customize"),
