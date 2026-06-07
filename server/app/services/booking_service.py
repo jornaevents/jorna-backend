@@ -229,33 +229,6 @@ def update_booking_status(
     db.commit()
     db.refresh(booking)
 
-    # Auto-create a draft bundle when a booking is first approved
-    if status_str == BookingStatus.APPROVED.value:
-        try:
-            from app.db.models import Bundle
-            existing_draft = db.query(Bundle).filter(
-                Bundle.user_id == booking.user_id,
-                Bundle.status == "draft",
-            ).first()
-            if not existing_draft:
-                from app.services.bundle_service import create_bundle
-                service_name = service.name if service else "Booking"
-                create_bundle(
-                    user_id=booking.user_id,
-                    name=f"{booking.event_name} Bundle",
-                    event_id=None,
-                    booking_ids=[booking.booking_id],
-                    db=db,
-                )
-                logger.info("Auto-created draft bundle for booking %s", booking.booking_id)
-            elif not booking.bundle_id:
-                booking.bundle_id = existing_draft.bundle_id
-                existing_draft.updated_at = datetime.now(timezone.utc)
-                db.commit()
-                logger.info("Added booking %s to existing draft bundle", booking.booking_id)
-        except Exception as exc:
-            logger.warning("Failed to auto-create bundle for booking %s: %s", booking.booking_id, exc)
-
     client, vendor_obj, vendor_user, service = _get_booking_parties(db, booking)
     _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     _event_name = (_bundle.event_name if _bundle else None) or "Event"
