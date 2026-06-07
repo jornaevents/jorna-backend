@@ -62,6 +62,41 @@ def _dispatch_status_notification(
     return result
 
 
+# ── Response serialization ────────────────────────────────────────────
+
+def _booking_dict(booking: Booking, db: Session) -> dict:
+    """Return a booking as a dict, including negotiation preference flags from both parties."""
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    client = db.query(User).filter(User.user_id == booking.user_id).first()
+    return {
+        "booking_id": booking.booking_id,
+        "user_id": booking.user_id,
+        "vendor_id": booking.vendor_id,
+        "service_id": booking.service_id,
+        "bundle_id": booking.bundle_id,
+        "date_iso": booking.date_iso,
+        "date_end": booking.date_end,
+        "time_start": booking.time_start,
+        "time_end": booking.time_end,
+        "location": booking.location,
+        "venue_latitude": booking.venue_latitude,
+        "venue_longitude": booking.venue_longitude,
+        "status": booking.status,
+        "payment_status": booking.payment_status,
+        "amount_cents": booking.amount_cents,
+        "currency": booking.currency,
+        "client_checked_in_at": booking.client_checked_in_at,
+        "vendor_checked_in_at": booking.vendor_checked_in_at,
+        "confirmed_at": booking.confirmed_at,
+        "paid_at": booking.paid_at,
+        "funds_released_at": booking.funds_released_at,
+        "vendor_open_to_price_negotiation": vendor.open_to_price_negotiation if vendor else False,
+        "vendor_open_to_location_negotiation": vendor.open_to_location_negotiation if vendor else False,
+        "client_open_to_price_negotiation": client.open_to_price_negotiation if client else False,
+        "client_flexible_on_location": client.flexible_on_location if client else False,
+    }
+
+
 # ── Service functions ─────────────────────────────────────────────────
 
 def create_booking(
@@ -282,7 +317,7 @@ def update_booking(
     }
 
 
-def get_booking(*, booking_id: str, caller_user_id: str, db: Session) -> Booking:
+def get_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     """Return a single booking. Caller must be the client or the vendor."""
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
@@ -292,7 +327,7 @@ def get_booking(*, booking_id: str, caller_user_id: str, db: Session) -> Booking
     is_customer = booking.user_id == caller_user_id
     if not is_vendor and not is_customer:
         raise BookingError(403, "You are not a party to this booking")
-    return booking
+    return _booking_dict(booking, db)
 
 
 def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
@@ -300,7 +335,7 @@ def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Ses
     query = db.query(Booking).filter(Booking.user_id == user_id)
     total = query.count()
     items = query.offset(offset).limit(limit).all()
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
 
 
 def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
@@ -313,7 +348,7 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
     query = db.query(Booking).filter(Booking.vendor_id == vendor_id)
     total = query.count()
     items = query.offset(offset).limit(limit).all()
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
 
 
 def check_in(
