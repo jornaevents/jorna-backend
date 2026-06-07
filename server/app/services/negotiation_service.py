@@ -127,6 +127,10 @@ def start_negotiation(
         created_at=now,
     )
     db.add(offer)
+
+    # Flip booking into negotiation_ongoing so both parties know the price is under discussion.
+    booking.status = "negotiation_ongoing"
+
     db.commit()
     db.refresh(neg)
 

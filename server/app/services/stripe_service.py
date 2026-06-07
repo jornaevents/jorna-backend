@@ -131,8 +131,8 @@ def create_payment_intent(*, booking_id: str, caller_user_id: str, db: Session) 
             "This vendor has not completed Stripe onboarding and cannot accept payments yet.",
         )
 
-    # Convert price to cents (never use floats for money arithmetic)
-    amount_cents = round(service.price * 100)
+    # Use the negotiated price if one was agreed, otherwise fall back to the listed service price.
+    amount_cents = booking.amount_cents if booking.amount_cents else round(service.price * 100)
     platform_fee_cents = round(amount_cents * PLATFORM_FEE_PERCENT / 100)
 
     try:
@@ -234,6 +234,7 @@ def _on_payment_succeeded(intent: dict, db: Session) -> None:
         return
 
     booking.payment_status = "paid"
+    booking.status = "payment_confirmed"
     booking.paid_at = datetime.now(timezone.utc)
     db.commit()
     logger.info("Booking %s marked as paid (intent %s)", booking_id, intent["id"])
