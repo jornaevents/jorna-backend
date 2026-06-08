@@ -244,6 +244,77 @@ async def get_llm_response(
         )
 
 
+# ── Match reason generation ───────────────────────────────────────────
+
+_MATCH_REASON_MODEL = "meta-llama/llama-3.2-3b-instruct:free"
+
+
+def get_match_reasons_for_bundle(
+    vendors: list[dict],
+    style: list[str],
+    preferences: list[str],
+    budget_tier: str,
+) -> list[str]:
+    """Generate one personalised match reason per vendor for a bundle.
+
+    vendors: list of {name, category, rating, bio} dicts, one per bundle item.
+    Returns a list of reason strings in the same order. Falls back to an empty
+    list on failure so the caller keeps the existing bio-based reasons.
+
+    Uses the free OpenRouter model — one call per bundle regardless of how
+    many vendors are in it.
+    """
+    if not vendors:
+        return []
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key or api_key == "your-openrouter-api-key-here":
+        return []
+
+    style_str = ", ".join(style + preferences) or "general South Asian wedding"
+    vendor_lines = "\n".join(
+        f"{i + 1}. {v['name']} ({v['category']}, {v['rating']}★): {v['bio']}"
+        for i, v in enumerate(vendors)
+    )
+
+    prompt = (
+        f"You are helping explain why vendors were selected for a South Asian event bundle.\n\n"
+        f"Customer preferences: {style_str}\n"
+        f"Budget tier: {budget_tier}\n\n"
+        f"For each vendor below, write ONE short sentence (under 100 characters) explaining "
+        f"why they are a good match for this customer. Focus on how they match the customer's "
+        f"style or preferences — not just what the vendor does.\n\n"
+        f"Vendors:\n{vendor_lines}\n\n"
+        f"Respond with ONLY a JSON array of strings, one per vendor, in the same order: "
+        f'["reason1", "reason2", ...]'
+    )
+
+    try:
+        sync_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+        response = sync_client.chat.completions.create(
+            model=_MATCH_REASON_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=512,
+        )
+        raw = response.choices[0].message.content or "[]"
+        match = raw[raw.find("["):raw.rfind("]") + 1]
+        reasons: list[str] = json.loads(match) if match else []
+        if len(reasons) != len(vendors):
+            logger.warning(
+                "Match reason count mismatch: got %d, expected %d", len(reasons), len(vendors)
+            )
+            return []
+        logger.info("LLM match reasons generated for %d vendors", len(reasons))
+        return [str(r)[:120] for r in reasons]
+    except Exception as exc:
+        logger.warning("Match reason generation failed, keeping bio-based reasons: %s", exc)
+        return []
+
+
 # ── Tag relevance scoring ─────────────────────────────────────────────
 # Used by the bundle creator to score vendor tags against user preferences.
 # One call per bundle request (not per vendor) — results are cached for 1 hour.

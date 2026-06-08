@@ -15,8 +15,10 @@ if DATABASE_URL.startswith("postgres://"):
 # Intentionally no default — the app will refuse to start without this.
 SECRET_KEY: str = os.getenv("SECRET_KEY", "")
 ALGORITHM: str = "HS256"
-# Access token lifetime in minutes (default 30 days).
-ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "43200"))
+# Access token lifetime in minutes (default 60 minutes). Short-lived; rotate via refresh token.
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+# Refresh token lifetime in days (default 30 days).
+REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
 # ── Google Calendar OAuth ─────────────────────────────────────────────
 # Where Google redirects after the vendor grants access.

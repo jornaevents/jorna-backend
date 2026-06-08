@@ -38,6 +38,7 @@ from app.services.auth_service import (
     change_password,
     google_sign_in_or_create,
     complete_profile,
+    refresh_access_token,
 )
 
 
@@ -126,6 +127,14 @@ class ChangePasswordRequest(BaseModel):
     @classmethod
     def new_password_strength(cls, v: str) -> str:
         return _validate_password(v)
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
 
 
 # ── App setup ─────────────────────────────────────────────────────────
@@ -356,12 +365,32 @@ def change_password_route(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+@app.post("/auth/refresh")
+@limiter.limit("20/minute")
+def refresh_route(request: Request, body: RefreshRequest, db: Session = Depends(get_db)):
+    """Exchange a valid refresh token for a new access token + rotated refresh token."""
+    try:
+        return refresh_access_token(refresh_token=body.refresh_token, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 @app.post("/auth/logout")
 @limiter.limit("10/minute")
-def logout_route(request: Request, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """Invalidate all tokens for the current user. The caller must re-authenticate."""
+def logout_route(
+    request: Request,
+    body: LogoutRequest = LogoutRequest(),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Invalidate all access tokens. If refresh_token is supplied, only that device's
+    refresh token is removed; otherwise all refresh tokens for the user are wiped."""
     try:
-        return logout_user(user_id=current_user.user_id, db=db)
+        return logout_user(
+            user_id=current_user.user_id,
+            db=db,
+            refresh_token=body.refresh_token,
+        )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

@@ -1,5 +1,6 @@
 """Business logic for user authentication (register & login)."""
 
+import hashlib
 import os
 import re as _re
 import secrets
@@ -10,8 +11,8 @@ import bcrypt
 import jwt
 from sqlalchemy.orm import Session
 
-from app.config import ALGORITHM, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
-from app.db.models import User
+from app.config import ALGORITHM, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
+from app.db.models import User, RefreshToken
 
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -36,6 +37,34 @@ def _make_token(user_id: str, email: str, token_version: int) -> str:
     )
 
 
+def _make_refresh_token(user_id: str, db: Session, family: Optional[str] = None) -> str:
+    """Create, persist, and return a new opaque refresh token.
+
+    Token format: "{family}.{secret}" — the family UUID lets us detect replay attacks
+    without scanning the entire table.
+    """
+    if family is None:
+        family = str(secrets.token_hex(16))  # 16-byte random family ID
+    secret = secrets.token_urlsafe(32)
+    raw_token = f"{family}.{secret}"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+    record = RefreshToken(
+        user_id=user_id,
+        token_hash=token_hash,
+        family=family,
+        expires_at=now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        created_at=now,
+    )
+    db.add(record)
+    db.flush()
+    return raw_token
+
+
+def _hash_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
 class AuthError(Exception):
     """Raised when an auth operation fails."""
 
@@ -43,6 +72,56 @@ class AuthError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(detail)
+
+
+def refresh_access_token(*, refresh_token: str, db: Session) -> dict:
+    """Validate a refresh token, rotate it, and return a new token pair.
+
+    Reuse detection: if a family is presented but the hash doesn't match any
+    live record, a previously-rotated token is being replayed — wipe all refresh
+    tokens for that user immediately.
+    """
+    if "." not in refresh_token:
+        raise AuthError(401, "Invalid refresh token")
+
+    family, _ = refresh_token.split(".", 1)
+    token_hash = _hash_token(refresh_token)
+    now = datetime.now(timezone.utc)
+
+    # Look up all live tokens in this family
+    family_tokens = db.query(RefreshToken).filter(RefreshToken.family == family).all()
+
+    if not family_tokens:
+        # Family doesn't exist — could be expired/deleted or completely bogus
+        raise AuthError(401, "Refresh token not found or expired")
+
+    # Find the one that matches our hash
+    matched = next((t for t in family_tokens if t.token_hash == token_hash), None)
+
+    if matched is None:
+        # Family exists but hash doesn't match → replay attack: a rotated token was reused.
+        # Wipe ALL refresh tokens for this user to force re-login.
+        user_id = family_tokens[0].user_id
+        db.query(RefreshToken).filter(RefreshToken.user_id == user_id).delete()
+        db.commit()
+        raise AuthError(401, "Refresh token already used — please log in again")
+
+    if matched.expires_at.replace(tzinfo=timezone.utc) < now:
+        db.delete(matched)
+        db.commit()
+        raise AuthError(401, "Refresh token expired — please log in again")
+
+    user = db.query(User).filter(User.user_id == matched.user_id).first()
+    if not user:
+        raise AuthError(401, "User not found")
+
+    # Rotate: delete old token, issue new one in same family
+    db.delete(matched)
+    new_refresh = _make_refresh_token(user.user_id, db, family=family)
+    db.commit()
+
+    access = _make_token(user.user_id, user.email, user.token_version)
+    return {"access_token": access, "refresh_token": new_refresh, "token_type": "bearer"}
 
 
 def _decode_supabase_access_token(access_token: str) -> dict:
@@ -103,10 +182,12 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
         google_picture = meta.get("avatar_url") or meta.get("picture") or None
         if google_picture and user.pfp_url != google_picture:
             user.pfp_url = google_picture
-            db.commit()
-        token = _make_token(user.user_id, user.email, user.token_version)
+        access = _make_token(user.user_id, user.email, user.token_version)
+        refresh = _make_refresh_token(user.user_id, db)
+        db.commit()
         return {
-            "access_token": token,
+            "access_token": access,
+            "refresh_token": refresh,
             "token_type": "bearer",
             "user_id": user.user_id,
             "email": user.email,
@@ -127,10 +208,12 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
             existing.supabase_user_id = sub
         if pfp_url and not existing.pfp_url:
             existing.pfp_url = pfp_url
+        access = _make_token(existing.user_id, existing.email, existing.token_version)
+        refresh = _make_refresh_token(existing.user_id, db)
         db.commit()
-        token = _make_token(existing.user_id, existing.email, existing.token_version)
         return {
-            "access_token": token,
+            "access_token": access,
+            "refresh_token": refresh,
             "token_type": "bearer",
             "user_id": existing.user_id,
             "email": existing.email,
@@ -240,18 +323,31 @@ def change_password(*, user_id: str, current_password: str, new_password: str, d
     return {"message": "Password updated successfully"}
 
 
-def logout_user(*, user_id: str, db: Session) -> dict:
-    """Invalidate all tokens for this user by bumping token_version."""
+def logout_user(*, user_id: str, db: Session, refresh_token: Optional[str] = None) -> dict:
+    """Invalidate all access tokens and optionally a specific refresh token.
+
+    Bumping token_version kills all outstanding access tokens immediately.
+    If refresh_token is supplied, only that device's refresh token is removed;
+    otherwise all refresh tokens for the user are wiped.
+    """
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise AuthError(404, "User not found")
     user.token_version = (user.token_version or 0) + 1
+    if refresh_token:
+        token_hash = _hash_token(refresh_token)
+        db.query(RefreshToken).filter(
+            RefreshToken.user_id == user_id,
+            RefreshToken.token_hash == token_hash,
+        ).delete()
+    else:
+        db.query(RefreshToken).filter(RefreshToken.user_id == user_id).delete()
     db.commit()
     return {"message": "Logged out successfully"}
 
 
 def login_user(*, identifier: str, password: str, db: Session) -> dict:
-    """Verify credentials and return a JWT.  Returns ``{access_token, token_type}``.
+    """Verify credentials and return an access + refresh token pair.
 
     ``identifier`` may be either an email address or a username.
     """
@@ -264,5 +360,7 @@ def login_user(*, identifier: str, password: str, db: Session) -> dict:
     if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
         raise AuthError(401, "Invalid credentials")
 
-    token = _make_token(user.user_id, user.email, user.token_version)
-    return {"access_token": token, "token_type": "bearer"}
+    access = _make_token(user.user_id, user.email, user.token_version)
+    refresh = _make_refresh_token(user.user_id, db)
+    db.commit()
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}

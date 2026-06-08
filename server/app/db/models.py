@@ -267,6 +267,21 @@ class Review(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    token_id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # SHA-256 hex digest of the raw token — never store the raw value
+    token_hash = Column(String(64), unique=True, nullable=False)
+    # Rotation family UUID — all tokens in a chain share the same family.
+    # Used to detect replay attacks: if a family exists but the hash is wrong,
+    # someone is replaying a rotated token → wipe all tokens for the user.
+    family = Column(String(36), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
 class Event(Base):
     __tablename__ = "events"
 
