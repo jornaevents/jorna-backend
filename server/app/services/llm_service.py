@@ -301,15 +301,23 @@ def get_match_reasons_for_bundle(
             max_tokens=512,
         )
         raw = response.choices[0].message.content or "[]"
-        match = raw[raw.find("["):raw.rfind("]") + 1]
+        logger.debug("Match reason raw response: %s", raw)
+        start = raw.find("[")
+        end = raw.rfind("]")
+        match = raw[start:end + 1] if start != -1 and end != -1 and end >= start else ""
         reasons: list[str] = json.loads(match) if match else []
+        if not isinstance(reasons, list):
+            logger.warning("Match reason response was not a list: %r", reasons)
+            return []
         if len(reasons) != len(vendors):
             logger.warning(
-                "Match reason count mismatch: got %d, expected %d", len(reasons), len(vendors)
+                "Match reason count mismatch: got %d, expected %d — using partial results",
+                len(reasons), len(vendors),
             )
-            return []
-        logger.info("LLM match reasons generated for %d vendors", len(reasons))
-        return [str(r)[:120] for r in reasons]
+        # Use whatever reasons we got; skip enrichment for any vendors beyond the returned count
+        result = [str(r)[:120] for r in reasons[:len(vendors)]]
+        logger.info("LLM match reasons applied for %d/%d vendors", len(result), len(vendors))
+        return result
     except Exception as exc:
         logger.warning("Match reason generation failed, keeping bio-based reasons: %s", exc)
         return []
