@@ -30,6 +30,7 @@ from app.models.chatbot_schemas import (
 from app.services.llm_service import (
     LLMResult,
     get_llm_response,
+    get_match_reasons_for_bundle,
     is_off_script,
 )
 
@@ -814,6 +815,8 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     # Pre-compute once — same set applies to every category in this bundle
     booked_vendor_ids = _get_booked_vendor_ids(state, db)
     price_cap = _per_category_cap(state)
+    # Collect bio strings alongside items so we can enrich reasons in one LLM call
+    item_bios: list[str] = []
 
     for cat in state.needed_categories:
         db_category = _CATEGORY_MAP.get(cat)
@@ -846,6 +849,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
             mock_item = _mock_item_for_category(cat, tier)
             if mock_item:
                 items.append(mock_item)
+                item_bios.append(mock_item.match_reason)
                 total_min += mock_item.price_min
                 total_max += mock_item.price_max
             continue
@@ -897,6 +901,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
             service_id = None
             match_reason = vendor.bio or ""
 
+        truncated = (match_reason[:120] + "…") if len(match_reason) > 120 else match_reason
         items.append(BundleItem(
             category=cat,
             vendor_id=vendor.vendor_id,
@@ -906,10 +911,33 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
             price_min=round(p_min, 2),
             price_max=round(p_max, 2),
             rating=vendor.rating or 0.0,
-            match_reason=(match_reason[:120] + "…") if len(match_reason) > 120 else match_reason,
+            match_reason=truncated,
         ))
+        item_bios.append(match_reason[:200])
         total_min += p_min
         total_max += p_max
+
+    # Enrich match reasons with a single free LLM call when the user gave style/preference input.
+    # Falls back silently to the bio-based reasons already set above.
+    if items and (state.style or state.preferences):
+        vendor_info = [
+            {
+                "name": item.vendor_name,
+                "category": CATEGORY_LABELS.get(item.category, item.category),
+                "rating": item.rating,
+                "bio": item_bios[i],
+            }
+            for i, item in enumerate(items)
+        ]
+        reasons = get_match_reasons_for_bundle(
+            vendors=vendor_info,
+            style=list(state.style),
+            preferences=list(state.preferences),
+            budget_tier=(state.budget_tier or BudgetTier.MID_RANGE).value,
+        )
+        for i, reason in enumerate(reasons):
+            if reason:
+                items[i].match_reason = reason
 
     return Bundle(
         items=items,
