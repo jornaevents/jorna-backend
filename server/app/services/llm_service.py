@@ -187,14 +187,33 @@ def _build_messages(
 # ── OpenRouter / Llama 3.3 call ──────────────────────────────────────
 
 
+def _openrouter_key() -> str | None:
+    """Return the stripped OpenRouter API key, or None if unset/placeholder."""
+    key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    return key if key and key != "your-openrouter-api-key-here" else None
+
+
+def _openrouter_headers(api_key: str) -> dict:
+    """Return headers required by OpenRouter, including explicit Authorization.
+
+    Some OpenAI SDK versions don't forward the auth header to non-OpenAI
+    base URLs — setting it explicitly in default_headers guarantees delivery.
+    """
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://desiconnect.com",
+        "X-Title": "Desiconnect",
+    }
+
+
 async def get_llm_response(
     current_step: ChatStep,
     user_input: str,
     conversation_history: list[dict],
 ) -> LLMResult:
     """Send the user's off-script input to Llama 3.3 via OpenRouter and parse the response."""
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key or api_key == "your-openrouter-api-key-here":
+    api_key = _openrouter_key()
+    if not api_key:
         logger.warning("OPENROUTER_API_KEY not configured — returning generic fallback")
         return LLMResult(
             bot_message=(
@@ -206,6 +225,7 @@ async def get_llm_response(
     client = AsyncOpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
+        default_headers=_openrouter_headers(api_key),
     )
     messages = _build_messages(current_step, user_input, conversation_history)
 
@@ -267,8 +287,8 @@ def get_match_reasons_for_bundle(
     if not vendors:
         return []
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key or api_key == "your-openrouter-api-key-here":
+    api_key = _openrouter_key()
+    if not api_key:
         return []
 
     style_str = ", ".join(style + preferences) or "general South Asian wedding"
@@ -293,6 +313,7 @@ def get_match_reasons_for_bundle(
         sync_client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
+            default_headers=_openrouter_headers(api_key),
         )
         response = sync_client.chat.completions.create(
             model=_MATCH_REASON_MODEL,
@@ -351,8 +372,8 @@ def get_relevant_tags_for_preferences(
     if not candidate_tags or (not preferences and not style):
         return set()
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key or api_key == "your-openrouter-api-key-here":
+    api_key = _openrouter_key()
+    if not api_key:
         return set()
 
     # Cache key — stable regardless of list order
@@ -378,6 +399,7 @@ def get_relevant_tags_for_preferences(
         sync_client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
+            default_headers=_openrouter_headers(api_key),
         )
         response = sync_client.chat.completions.create(
             model=_TAG_SCORE_MODEL,
