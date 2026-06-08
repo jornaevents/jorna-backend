@@ -8,7 +8,7 @@ import stripe
 from sqlalchemy.orm import Session
 
 from app.config import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, FRONTEND_URL, PLATFORM_FEE_PERCENT
-from app.db.models import Vendor, Booking, Service, StripeWebhookEvent
+from app.db.models import Vendor, Booking, Service, StripeWebhookEvent, User
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -43,7 +43,15 @@ def create_vendor_onboarding_url(*, vendor_id: str, caller_user_id: str, db: Ses
 
     try:
         if not vendor.stripe_account_id:
-            account = stripe.Account.create(type="express")
+            user = db.query(User).filter(User.user_id == vendor.user_id).first()
+            account = stripe.Account.create(
+                type="express",
+                email=user.email if user else None,
+                capabilities={
+                    "card_payments": {"requested": True},
+                    "transfers": {"requested": True},
+                },
+            )
             vendor.stripe_account_id = account.id
             db.commit()
             logger.info("Created Stripe Connect account %s for vendor %s", account.id, vendor_id)
@@ -213,6 +221,8 @@ def handle_stripe_webhook(*, payload: bytes, signature: str, db: Session) -> dic
         _on_payment_succeeded(data, db)
     elif event_type == "payment_intent.payment_failed":
         _on_payment_failed(data, db)
+    elif event_type == "account.updated":
+        _on_account_updated(data, db)
     else:
         logger.debug("Unhandled Stripe event type: %s", event_type)
 
@@ -252,6 +262,35 @@ def _on_payment_failed(intent: dict, db: Session) -> None:
     booking.payment_status = "unpaid"
     db.commit()
     logger.warning("Payment failed for booking %s (intent %s)", booking_id, intent["id"])
+
+
+def _on_account_updated(account: dict, db: Session) -> None:
+    """Sync stripe_onboarding_complete when Stripe fires account.updated.
+
+    Stripe sends this event whenever any field on the Connect account changes,
+    including when the vendor finishes filling in KYC details. We check
+    details_submitted so the vendor can accept payments without having to
+    manually call the status endpoint.
+    """
+    stripe_account_id = account.get("id")
+    if not stripe_account_id:
+        return
+
+    vendor = db.query(Vendor).filter(Vendor.stripe_account_id == stripe_account_id).first()
+    if not vendor:
+        logger.debug("account.updated: no vendor found for Stripe account %s", stripe_account_id)
+        return
+
+    complete = bool(account.get("details_submitted"))
+    if complete != vendor.stripe_onboarding_complete:
+        vendor.stripe_onboarding_complete = complete
+        db.commit()
+        logger.info(
+            "Stripe onboarding %s for vendor %s (account %s)",
+            "completed" if complete else "reverted",
+            vendor.vendor_id,
+            stripe_account_id,
+        )
 
 
 # ── Event confirmation & fund release ────────────────────────────────
