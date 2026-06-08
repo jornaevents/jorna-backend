@@ -236,6 +236,7 @@ async def get_llm_response(
             temperature=0.3,
             max_tokens=512,
             response_format={"type": "json_object"},
+            extra_headers={"Authorization": f"Bearer {api_key}"},
         )
 
         raw = chat_completion.choices[0].message.content
@@ -320,6 +321,7 @@ def get_match_reasons_for_bundle(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
             max_tokens=512,
+            extra_headers={"Authorization": f"Bearer {api_key}"},
         )
         raw = response.choices[0].message.content or "[]"
         logger.debug("Match reason raw response: %s", raw)
@@ -406,6 +408,7 @@ def get_relevant_tags_for_preferences(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=256,
+            extra_headers={"Authorization": f"Bearer {api_key}"},
         )
         raw = response.choices[0].message.content or "[]"
         # Extract JSON array from the response (model may add explanation despite instructions)
