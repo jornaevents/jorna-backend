@@ -36,7 +36,7 @@ class BookingCreate(BaseModel):
     date_iso: str    # e.g. "2026-03-01"
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
-    bundle_id: Optional[str] = None  # add to existing bundle, or auto-create one
+    bundle_id: Optional[str] = Field(default=None, examples=[None])
 
 
 class BookingUpdate(BaseModel):
