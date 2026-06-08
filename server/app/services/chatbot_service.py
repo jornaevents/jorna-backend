@@ -1168,6 +1168,7 @@ def _create_bundle_from_chatbot(
     db.flush()
 
     booking_ids: list[str] = []
+    created_bookings: list[Booking] = []
     for item in items_to_book:
         booking = Booking(
             user_id=user_id,
@@ -1184,8 +1185,19 @@ def _create_bundle_from_chatbot(
         db.add(booking)
         db.flush()
         booking_ids.append(booking.booking_id)
+        created_bookings.append(booking)
 
     db.commit()
+
+    # Notify each vendor of their new pending booking request
+    from app.services.booking_service import _get_booking_parties, _dispatch_status_notification
+    for booking in created_bookings:
+        try:
+            client, _, vendor_user, service = _get_booking_parties(db, booking)
+            _dispatch_status_notification("pending", booking, client, vendor_user, service, event_name=event_name)
+        except Exception as exc:
+            logger.warning("Chatbot booking notification failed for %s: %s", booking.booking_id, exc)
+
     return bundle.bundle_id, booking_ids
 
 
