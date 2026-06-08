@@ -295,6 +295,7 @@ def _build_bundle_with_strategy(
     from app.utils.location import calculate_distance_miles
 
     items: list[BundleItem] = []
+    item_bios: list[str] = []
     total_min = 0.0
     total_max = 0.0
 
@@ -353,6 +354,7 @@ def _build_bundle_with_strategy(
             item = _mock_item_for_category(cat, mock_tier)
             if item:
                 items.append(item)
+                item_bios.append(item.match_reason)
                 total_min += item.price_min
                 total_max += item.price_max
             continue
@@ -417,6 +419,7 @@ def _build_bundle_with_strategy(
             service_id = None
             match_reason = vendor.bio or ""
 
+        truncated = (match_reason[:120] + "…") if len(match_reason) > 120 else match_reason
         items.append(BundleItem(
             category=cat,
             vendor_id=vendor.vendor_id,
@@ -426,10 +429,32 @@ def _build_bundle_with_strategy(
             price_min=round(p_min, 2),
             price_max=round(p_max, 2),
             rating=vendor.rating or 0.0,
-            match_reason=(match_reason[:120] + "…") if len(match_reason) > 120 else match_reason,
+            match_reason=truncated,
         ))
+        item_bios.append(match_reason[:200])
         total_min += p_min
         total_max += p_max
+
+    # Enrich match reasons with LLM when user gave style/preference input.
+    if items and (state.style or state.preferences):
+        vendor_info = [
+            {
+                "name": item.vendor_name,
+                "category": CATEGORY_LABELS.get(item.category, item.category),
+                "rating": item.rating,
+                "bio": item_bios[i],
+            }
+            for i, item in enumerate(items)
+        ]
+        reasons = get_match_reasons_for_bundle(
+            vendors=vendor_info,
+            style=list(state.style),
+            preferences=list(state.preferences),
+            budget_tier=(state.budget_tier or BudgetTier.MID_RANGE).value,
+        )
+        for i, reason in enumerate(reasons):
+            if reason:
+                items[i].match_reason = reason
 
     return Bundle(
         items=items,
