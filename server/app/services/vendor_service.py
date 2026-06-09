@@ -20,12 +20,12 @@ class VendorError(Exception):
         super().__init__(detail)
 
 
-def create_vendor(*, user_id: str, bio: str, category: str, db: Session) -> dict:
+def create_vendor(*, user_id: str, bio: str, category: str, subcategory: str | None = None, db: Session) -> dict:
     """Create a vendor profile for *user_id*. Raises 400 if one already exists."""
     existing = db.query(Vendor).filter(Vendor.user_id == user_id).first()
     if existing:
         raise VendorError(400, "You already have a vendor profile")
-    vendor = Vendor(user_id=user_id, bio=bio, category=category, rating=0.0, num_events=0)
+    vendor = Vendor(user_id=user_id, bio=bio, category=category, subcategory=subcategory, rating=0.0, num_events=0)
     db.add(vendor)
     db.commit()
     db.refresh(vendor)
@@ -34,6 +34,7 @@ def create_vendor(*, user_id: str, bio: str, category: str, db: Session) -> dict
         "user_id": vendor.user_id,
         "bio": vendor.bio,
         "category": vendor.category,
+        "subcategory": vendor.subcategory,
         "rating": vendor.rating,
         "num_events": vendor.num_events,
         "tags": [],
@@ -56,6 +57,7 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "user_id": v.user_id,
         "bio": v.bio,
         "category": v.category,
+        "subcategory": v.subcategory,
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
@@ -88,6 +90,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "user_id": v.user_id,
         "bio": v.bio,
         "category": v.category,
+        "subcategory": v.subcategory,
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
@@ -117,6 +120,14 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
             VendorCategory(update_data["category"])
         except ValueError:
             raise VendorError(400, f"Invalid category: {update_data['category']}")
+
+    # Validate subcategory against the (possibly updated) category
+    if "subcategory" in update_data and update_data["subcategory"] is not None:
+        from app.models.schemas import VENDOR_SUBCATEGORIES
+        cat = update_data.get("category") or vendor.category
+        valid = VENDOR_SUBCATEGORIES.get(cat, [])
+        if valid and update_data["subcategory"] not in valid:
+            raise VendorError(400, f"Invalid subcategory '{update_data['subcategory']}' for category '{cat}'. Valid: {valid}")
     
     # Validate travel_radius_miles if provided
     if "travel_radius_miles" in update_data:
@@ -134,7 +145,7 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         update_data["instagram_username"] = ig
 
     for field, value in update_data.items():
-        if field in ["bio", "category", "travel_radius_miles", "open_to_long_distance",
+        if field in ["bio", "category", "subcategory", "travel_radius_miles", "open_to_long_distance",
                      "open_to_price_negotiation", "open_to_location_negotiation", "instagram_username"]:
             setattr(vendor, field, value)
     
@@ -148,6 +159,7 @@ def list_vendors(
     *,
     db: Session,
     category: str | None = None,
+    subcategory: str | None = None,
     tag: str | None = None,
     limit: int = 20,
     offset: int = 0,
@@ -156,6 +168,8 @@ def list_vendors(
     query = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id)
     if category:
         query = query.filter(Vendor.category == category)
+    if subcategory:
+        query = query.filter(Vendor.subcategory == subcategory)
     if tag:
         normalized = _normalize_tag(tag)
         query = (
@@ -171,6 +185,7 @@ def list_vendors(
             "user_id": v.user_id,
             "bio": v.bio,
             "category": v.category,
+            "subcategory": v.subcategory,
             "rating": v.rating,
             "num_events": v.num_events,
             "f_name": u.f_name,

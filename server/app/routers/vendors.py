@@ -3,14 +3,14 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import User, Vendor, Service
 from app.dependencies import get_current_user, get_current_admin
 from app.limiter import limiter
-from app.models.schemas import VendorCategory
+from app.models.schemas import VendorCategory, VENDOR_SUBCATEGORIES
 from app.services.vendor_service import (
     VendorError,
     create_vendor,
@@ -37,11 +37,25 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 class CreateVendorRequest(BaseModel):
     bio: str
     category: VendorCategory
+    subcategory: Optional[str] = None
+
+    @field_validator("subcategory")
+    @classmethod
+    def validate_subcategory(cls, v, info):
+        if v is None:
+            return v
+        category = info.data.get("category")
+        cat_key = category.value if isinstance(category, VendorCategory) else category
+        valid = VENDOR_SUBCATEGORIES.get(cat_key, [])
+        if valid and v not in valid:
+            raise ValueError(f"Invalid subcategory '{v}' for category '{cat_key}'. Valid: {valid}")
+        return v
 
 
 class UpdateVendorRequest(BaseModel):
     bio: Optional[str] = None
     category: Optional[VendorCategory] = None
+    subcategory: Optional[str] = None
     travel_radius_miles: Optional[int] = None
     open_to_long_distance: Optional[bool] = None
     open_to_price_negotiation: Optional[bool] = None
@@ -86,6 +100,7 @@ def create_vendor_route(
             user_id=current_user.user_id,
             bio=body.bio,
             category=body.category.value,
+            subcategory=body.subcategory,
             db=db,
         )
     except VendorError as e:
@@ -95,15 +110,17 @@ def create_vendor_route(
 @router.get("", summary="List all vendors")
 def list_vendors_route(
     category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
+    subcategory: Optional[str] = Query(None, description="Filter by subcategory (e.g. 'dj', 'mehndi_artist')"),
     tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return a list of vendor profiles. Optionally filter by category and/or tag."""
+    """Return a list of vendor profiles. Optionally filter by category, subcategory, and/or tag."""
     response = list_vendors(
         db=db,
         category=category.value if category else None,
+        subcategory=subcategory,
         tag=tag,
         limit=limit,
         offset=offset,

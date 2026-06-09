@@ -69,6 +69,7 @@ class Vendor(Base):
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     bio = Column(Text, nullable=False)
     category = Column(String(50), nullable=False, default="other")
+    subcategory = Column(String(100), nullable=True)
     rating = Column(Float, nullable=False)
     num_events = Column(Integer, nullable=False)
 

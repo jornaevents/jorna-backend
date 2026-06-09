@@ -32,3 +32,80 @@ class VendorCategory(str, Enum):
     POST_WEDDING = "post_wedding"
     OTHER = "other"
 
+
+# Valid subcategories per category. Categories not listed here have no subcategories.
+VENDOR_SUBCATEGORIES: dict[str, list[str]] = {
+    "music_entertainment": [
+        "dj", "dhol", "tabla", "sitar", "veena", "bansuri",
+        "shehnai", "harmonium", "sarangi", "vocalist",
+        "live_band", "brass_band", "mc",
+    ],
+    "beauty": [
+        "bridal_makeup", "hair_stylist", "mehndi_artist", "nail_artist",
+    ],
+    "floral_decor": [
+        "floral", "decor",
+    ],
+    "officiants": [
+        "hindu_pandit", "muslim_qazi", "sikh_granthi",
+        "christian_officiant", "civil_officiant",
+    ],
+    "cultural_services": [
+        "bhangra_troupe", "giddha_troupe", "baraat_dancers",
+        "turban_tying", "doli_palki", "fire_act",
+    ],
+    "cakes_desserts": [
+        "wedding_cake", "general_desserts",
+    ],
+    "attire": [
+        "bridal", "groom", "bridal_party", "groomsmen", "general",
+    ],
+}
+
+SUBCATEGORY_LABELS: dict[str, str] = {
+    # Music & Entertainment
+    "dj": "DJ",
+    "dhol": "Dhol",
+    "tabla": "Tabla",
+    "sitar": "Sitar",
+    "veena": "Veena",
+    "bansuri": "Bansuri / Flute",
+    "shehnai": "Shehnai",
+    "harmonium": "Harmonium",
+    "sarangi": "Sarangi",
+    "vocalist": "Vocalist / Singer",
+    "live_band": "Live Band",
+    "brass_band": "Brass Band / Baraat Band",
+    "mc": "MC / Emcee",
+    # Beauty
+    "bridal_makeup": "Bridal Makeup",
+    "hair_stylist": "Hair Stylist",
+    "mehndi_artist": "Mehndi Artist",
+    "nail_artist": "Nail Artist",
+    # Floral & Decor
+    "floral": "Floral",
+    "decor": "Decor",
+    # Officiants
+    "hindu_pandit": "Hindu Pandit / Priest",
+    "muslim_qazi": "Muslim Qazi / Imam",
+    "sikh_granthi": "Sikh Granthi",
+    "christian_officiant": "Christian Officiant",
+    "civil_officiant": "Civil / Non-denominational Officiant",
+    # Cultural Services
+    "bhangra_troupe": "Bhangra Troupe",
+    "giddha_troupe": "Giddha Troupe",
+    "baraat_dancers": "Baraat Dancers",
+    "turban_tying": "Turban Tying",
+    "doli_palki": "Doli / Palki Service",
+    "fire_act": "Fire Act / Specialty Performance",
+    # Cakes & Desserts
+    "wedding_cake": "Wedding Cake",
+    "general_desserts": "General Desserts",
+    # Attire
+    "bridal": "Bridal",
+    "groom": "Groom",
+    "bridal_party": "Bridal Party",
+    "groomsmen": "Groomsmen",
+    "general": "General",
+}
+
