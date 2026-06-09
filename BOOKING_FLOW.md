@@ -14,9 +14,44 @@ There are three ways to create bookings:
 |---|---|---|
 | Direct booking | `POST /bookings` | Client books a single vendor directly |
 | Chatbot flow | `POST /chatbot/step` | Guided multi-step flow, builds a full bundle |
-| 3-bundle compare | `POST /chatbot/bundles` | Skip the chat — compare 3 pre-built bundles side by side |
+| 3-bundle compare | `POST /chatbot/bundles` → `POST /bundles/{bundle_id}/select` | Compare 3 pre-built bundles, then pick one |
 
 All three auto-create a `Bundle` record. The chatbot can create multiple bookings in one bundle; the direct endpoint creates a single-booking bundle unless a `bundle_id` is provided.
+
+---
+
+## 3-Bundle Comparison Flow
+
+`POST /chatbot/bundles` (requires auth) generates three bundles — Budget, Top Rated, and Balanced — and immediately **persists all three to the DB** as drafts. All bookings are created in `pending` status but vendor notifications are held.
+
+Each option in the response includes a `bundle_id`:
+
+```json
+{
+  "options": [
+    { "label": "Budget Bundle",    "bundle_id": "uuid-1", "bundle": {...} },
+    { "label": "Top Rated Bundle", "bundle_id": "uuid-2", "bundle": {...} },
+    { "label": "Balanced Bundle",  "bundle_id": "uuid-3", "bundle": {...} }
+  ]
+}
+```
+
+Once the user picks one, call `POST /bundles/{bundle_id}/select`. This:
+
+1. Deletes the other two bundles and their bookings
+2. Clears the comparison group from the chosen bundle
+3. Fires `pending` push notifications to each vendor in the chosen bundle
+4. Returns the chosen bundle as a normal draft ready to modify
+
+After selection, use the standard booking endpoints to edit individual bookings before confirming.
+
+```
+POST /chatbot/bundles               → 3 draft bundles created in DB (no vendor notifications yet)
+POST /bundles/{bundle_id}/select    → pick one, delete others, notify vendors
+PATCH /bookings/{booking_id}        → edit date / time / location per vendor
+DELETE /bundles/{id}/bookings/{id}  → drop a vendor from the bundle
+PATCH /bundles/{bundle_id}/status   → { "status": "confirmed" } to lock in and create group chats
+```
 
 ---
 

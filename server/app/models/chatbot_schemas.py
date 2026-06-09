@@ -135,6 +135,10 @@ class BundleOption(BaseModel):
     )
     bundle: Bundle
     state: "ChatbotState"
+    bundle_id: Optional[str] = Field(
+        default=None,
+        description="DB bundle_id when the bundle was persisted — call POST /bundles/{bundle_id}/select to pick this one",
+    )
 
 
 class MultiBundleResponse(BaseModel):

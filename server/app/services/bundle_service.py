@@ -297,6 +297,55 @@ def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db
     return _bundle_dict(bundle, bookings, db)
 
 
+def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
+    """Pick one bundle from a comparison group, delete the other two, and notify vendors.
+
+    The chosen bundle has its bundle_group_id cleared so it behaves like a normal
+    draft bundle going forward.
+    """
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+    if not bundle:
+        raise BundleError(404, "Bundle not found")
+    _assert_owns_bundle(bundle, caller_user_id)
+
+    if not bundle.bundle_group_id:
+        raise BundleError(400, "This bundle is not part of a comparison group")
+
+    # Delete the unchosen bundles and their bookings
+    others = (
+        db.query(Bundle)
+        .filter(
+            Bundle.bundle_group_id == bundle.bundle_group_id,
+            Bundle.bundle_id != bundle_id,
+            Bundle.user_id == caller_user_id,
+        )
+        .all()
+    )
+    for other in others:
+        db.query(Booking).filter(Booking.bundle_id == other.bundle_id).delete()
+        db.delete(other)
+
+    bundle.bundle_group_id = None
+    bundle.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    # Now notify vendors for the chosen bundle's bookings
+    chosen_bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    event_name = bundle.event_name or bundle.name
+    try:
+        from app.services.booking_service import _get_booking_parties, _dispatch_status_notification
+        for booking in chosen_bookings:
+            try:
+                client, _, vendor_user, service = _get_booking_parties(db, booking)
+                _dispatch_status_notification("pending", booking, client, vendor_user, service, event_name=event_name)
+            except Exception as exc:
+                logger.warning("select_bundle notification failed for %s: %s", booking.booking_id, exc)
+    except Exception as exc:
+        logger.warning("select_bundle: could not import notification helpers: %s", exc)
+
+    return _bundle_dict(bundle, chosen_bookings, db)
+
+
 def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
     bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
     if not bundle:

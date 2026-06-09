@@ -9,6 +9,7 @@ Off-script user inputs are routed to Llama 3.3 via the llm_service module.
 
 import logging
 import re
+import uuid
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -478,11 +479,17 @@ def _build_bundle_with_strategy(
     )
 
 
-def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> MultiBundleResponse:
+def generate_multi_bundle(
+    req: BundleRequest,
+    db: Session | None = None,
+    user_id: str | None = None,
+) -> MultiBundleResponse:
     """Generate 3 bundle options for users who aren't sure what they want.
 
-    Returns Budget, Top Rated, and Balanced bundles so the user can compare
-    and pick one to refine further using the /chatbot/step flow.
+    When user_id is provided, all 3 bundles and their bookings are persisted
+    to the DB as drafts with a shared bundle_group_id.  The user then calls
+    POST /bundles/{bundle_id}/select to keep one and discard the others.
+    Vendor notifications are NOT sent until the user selects a bundle.
     """
     needed = req.needed_categories or [
         c for c in VENDOR_CATEGORIES if c not in req.booked_categories
@@ -507,6 +514,7 @@ def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> Mult
     ]
 
     options: list[BundleOption] = []
+    group_id = str(uuid.uuid4()) if (db is not None and user_id) else None
 
     for strategy, tier, label, description, factors in _PRESETS:
         state = ChatbotState(
@@ -531,12 +539,21 @@ def generate_multi_bundle(req: BundleRequest, db: Session | None = None) -> Mult
         )
         state.bundle = bundle
 
+        db_bundle_id: str | None = None
+        if db is not None and user_id and group_id:
+            db_bundle_id, _ = _create_bundle_from_chatbot(
+                state, user_id, None, db,
+                bundle_group_id=group_id,
+                notify_vendors=False,
+            )
+
         options.append(BundleOption(
             label=label,
             description=description,
             factors=factors,
             bundle=bundle,
             state=state,
+            bundle_id=db_bundle_id,
         ))
 
     return MultiBundleResponse(options=options)
@@ -1174,6 +1191,8 @@ def _create_bundle_from_chatbot(
     user_id: str,
     categories: list[str] | None,
     db: Session,
+    bundle_group_id: str | None = None,
+    notify_vendors: bool = True,
 ) -> tuple[str, list[str]]:
     """Create a Bundle and Bookings in the DB from the chatbot state.
 
@@ -1205,6 +1224,7 @@ def _create_bundle_from_chatbot(
         name=f"{event_name} Bundle",
         event_name=event_name,
         status="draft",
+        bundle_group_id=bundle_group_id,
         created_at=now,
         updated_at=now,
     )
@@ -1233,14 +1253,14 @@ def _create_bundle_from_chatbot(
 
     db.commit()
 
-    # Notify each vendor of their new pending booking request
-    from app.services.booking_service import _get_booking_parties, _dispatch_status_notification
-    for booking in created_bookings:
-        try:
-            client, _, vendor_user, service = _get_booking_parties(db, booking)
-            _dispatch_status_notification("pending", booking, client, vendor_user, service, event_name=event_name)
-        except Exception as exc:
-            logger.warning("Chatbot booking notification failed for %s: %s", booking.booking_id, exc)
+    if notify_vendors:
+        from app.services.booking_service import _get_booking_parties, _dispatch_status_notification
+        for booking in created_bookings:
+            try:
+                client, _, vendor_user, service = _get_booking_parties(db, booking)
+                _dispatch_status_notification("pending", booking, client, vendor_user, service, event_name=event_name)
+            except Exception as exc:
+                logger.warning("Chatbot booking notification failed for %s: %s", booking.booking_id, exc)
 
     return bundle.bundle_id, booking_ids
 

@@ -17,12 +17,16 @@ router = APIRouter(prefix="/chatbot", tags=["chatbot"])
 
 
 @router.post("/bundles", response_model=MultiBundleResponse, summary="Generate 3 bundle options to compare")
-def chatbot_multi_bundle(body: BundleRequest, db: Session = Depends(get_db)):
-    """Returns 3 bundle options (Budget, Top Rated, Balanced) for users who
-    aren't sure what they want. All inputs are optional — omit anything you
-    don't know yet. Pick an option and pass its state to POST /chatbot/step
-    to keep refining."""
-    return generate_multi_bundle(body, db=db)
+def chatbot_multi_bundle(
+    body: BundleRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Returns 3 bundle options (Budget, Top Rated, Balanced) persisted as draft
+    bundles in the DB.  Each option includes a bundle_id — call
+    POST /bundles/{bundle_id}/select to keep one and discard the other two.
+    Vendor notifications are held until the user selects a bundle."""
+    return generate_multi_bundle(body, db=db, user_id=current_user.user_id)
 
 
 @router.post("/bundle", response_model=StepResponse, summary="Generate a bundle from user selections in one shot")

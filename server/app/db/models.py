@@ -152,6 +152,8 @@ class Bundle(Base):
     event_name = Column(String(255), nullable=True)
     # draft | active | completed | cancelled
     status = Column(String(20), nullable=False, default="draft")
+    # Set when 3 comparison bundles are generated together — used to delete the unchosen ones
+    bundle_group_id = Column(String(36), nullable=True, index=True)
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)
 
