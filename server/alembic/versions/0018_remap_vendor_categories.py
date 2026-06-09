@@ -37,6 +37,7 @@ _VALID_NEW_CATEGORIES = {
     "cultural_services", "post_wedding", "other",
 }
 
+
 _DOWNGRADES = [
     ("music_entertainment", "dj"),
     ("floral_decor",        "decoration"),
