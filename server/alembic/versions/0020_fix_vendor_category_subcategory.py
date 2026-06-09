@@ -23,6 +23,11 @@ For cultural_services vendors, tag-based inference is used:
 """
 from alembic import op
 
+revision = "0020_fix_vendor_category_subcategory"
+down_revision = "0019_vendor_subcategory"
+branch_labels = None
+depends_on = None
+
 
 def upgrade():
     # ── Back-fill unambiguous subcategories ──────────────────────────────
