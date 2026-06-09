@@ -27,6 +27,16 @@ _UPGRADES = [
     ("mua",        "beauty"),
 ]
 
+# All values that are valid in the new taxonomy — anything not in this set
+# after the remaps above gets moved to 'other' so no vendor is left stranded.
+_VALID_NEW_CATEGORIES = {
+    "venue", "planning", "catering", "bar_beverage", "cakes_desserts",
+    "photography", "videography", "music_entertainment", "floral_decor",
+    "rentals", "lighting_av", "beauty", "attire", "jewelry", "stationery",
+    "transportation", "officiants", "guest_hospitality", "favors_gifts",
+    "cultural_services", "post_wedding", "other",
+}
+
 _DOWNGRADES = [
     ("music_entertainment", "dj"),
     ("floral_decor",        "decoration"),
@@ -42,6 +52,13 @@ def upgrade():
         op.execute(
             f"UPDATE vendors SET category = '{new}' WHERE category = '{old}'"
         )
+
+    # Catch-all: any category value not in the new taxonomy → 'other'
+    # Builds a SQL NOT IN clause so unrecognised values are never left stranded
+    valid_list = ", ".join(f"'{v}'" for v in sorted(_VALID_NEW_CATEGORIES))
+    op.execute(
+        f"UPDATE vendors SET category = 'other' WHERE category NOT IN ({valid_list})"
+    )
 
 
 def downgrade():
