@@ -23,10 +23,11 @@ from app.models.chatbot_schemas import (
     ChatbotState,
     ChatStep,
     CATEGORY_LABELS,
+    CHATBOT_CATEGORIES,
+    CHATBOT_SLOTS,
     HelperButton,
     MultiBundleResponse,
     StepResponse,
-    VENDOR_CATEGORIES,
 )
 from app.services.llm_service import (
     LLMResult,
@@ -42,6 +43,14 @@ MAX_HISTORY = 6  # keep conversation_history compact
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _slot_label(slot_key: str) -> str:
+    """Display label for a chatbot bundle slot key (falls back gracefully)."""
+    slot = CHATBOT_SLOTS.get(slot_key)
+    if slot:
+        return slot["label"]
+    return CATEGORY_LABELS.get(slot_key, slot_key.title())
+
+
 def _rule_based_match_reason(
     category: str,
     rating: float,
@@ -51,7 +60,7 @@ def _rule_based_match_reason(
     budget_tier: "BudgetTier | None",
 ) -> str:
     """Return a short match reason based on user preferences and vendor attributes."""
-    cat = CATEGORY_LABELS.get(category, category.title()).lower()
+    cat = _slot_label(category).lower()
     tier_val = budget_tier.value if budget_tier else ""
 
     if "pref_highly_rated" in preferences and rating >= 4.5:
@@ -81,11 +90,11 @@ def _rule_based_match_reason(
 
 
 def _cat_buttons(exclude: list[str] | None = None) -> list[HelperButton]:
-    """Return helper buttons for every vendor category, optionally excluding some."""
+    """Return helper buttons for every chatbot bundle slot, optionally excluding some."""
     excluded = set(exclude or [])
     return [
-        HelperButton(label=CATEGORY_LABELS[c], value=c)
-        for c in VENDOR_CATEGORIES
+        HelperButton(label=CHATBOT_SLOTS[c]["label"], value=c)
+        for c in CHATBOT_CATEGORIES
         if c not in excluded
     ]
 
@@ -152,9 +161,7 @@ def _step_still_need(state: ChatbotState) -> StepResponse:
         bot_message="What do you want included in your bundle?",
         helper_buttons=[
             HelperButton(label="Recommend everything I still need", value="recommend_all"),
-        ] + _cat_buttons(exclude=state.booked_categories) + [
-            HelperButton(label="Other", value="other"),
-        ],
+        ] + _cat_buttons(exclude=state.booked_categories),
         state=state,
     )
 
@@ -260,7 +267,7 @@ def _step_remove_category(state: ChatbotState) -> StepResponse:
         next_step=ChatStep.REMOVE_CATEGORY,
         bot_message="Which category do you want to remove from the bundle?",
         helper_buttons=[
-            HelperButton(label=CATEGORY_LABELS.get(c, c.title()), value=c)
+            HelperButton(label=_slot_label(c), value=c)
             for c in bundle_cats
         ],
         state=state,
@@ -273,9 +280,7 @@ def _step_add_category(state: ChatbotState) -> StepResponse:
     return StepResponse(
         next_step=ChatStep.ADD_CATEGORY,
         bot_message="What would you like to add to the bundle?",
-        helper_buttons=_cat_buttons(exclude=list(bundle_cats)) + [
-            HelperButton(label="Other", value="other"),
-        ],
+        helper_buttons=_cat_buttons(exclude=list(bundle_cats)),
         state=state,
         bundle=state.bundle,
     )
@@ -301,7 +306,7 @@ def _step_partial_booking(state: ChatbotState) -> StepResponse:
         next_step=ChatStep.PARTIAL_BOOKING,
         bot_message="Which categories do you want to book now?",
         helper_buttons=[
-            HelperButton(label=CATEGORY_LABELS.get(c, c.title()), value=c)
+            HelperButton(label=_slot_label(c), value=c)
             for c in bundle_cats
         ],
         state=state,
@@ -358,16 +363,19 @@ def _build_bundle_with_strategy(
     price_cap = _per_category_cap(state)
 
     for cat in state.needed_categories:
-        db_category = _CATEGORY_MAP.get(cat)
-        if not db_category:
+        flt = _slot_db_filter(cat)
+        if not flt:
             continue
+        db_category, db_subcategory = flt
 
-        vendor_rows = (
+        q = (
             db.query(Vendor, User)
             .join(User, Vendor.user_id == User.user_id)
             .filter(Vendor.category == db_category)
-            .all()
         )
+        if db_subcategory:
+            q = q.filter(Vendor.subcategory == db_subcategory)
+        vendor_rows = q.all()
 
         # Filter by travel radius if event coordinates are provided
         if state.latitude is not None and state.longitude is not None:
@@ -492,7 +500,7 @@ def generate_multi_bundle(
     Vendor notifications are NOT sent until the user selects a bundle.
     """
     needed = req.needed_categories or [
-        c for c in VENDOR_CATEGORIES if c not in req.booked_categories
+        c for c in CHATBOT_CATEGORIES if c not in req.booked_categories
     ]
 
     _PRESETS = [
@@ -578,7 +586,7 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
         guest_count=req.guest_count,
         booked_categories=req.booked_categories,
         needed_categories=req.needed_categories or [
-            c for c in VENDOR_CATEGORIES if c not in req.booked_categories
+            c for c in CHATBOT_CATEGORIES if c not in req.booked_categories
         ],
         budget_tier=req.budget_tier or BudgetTier.MID_RANGE,
         budget_amount=req.budget_amount,
@@ -620,23 +628,16 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
 # ── Mock bundle generation ───────────────────────────────────────────
 
 
-# Mock vendor pool keyed by category
+# Mock vendor pool keyed by chatbot slot key (see CHATBOT_SLOTS). Used as a
+# fallback when no real vendor exists for a slot. Every slot must have an entry.
 _MOCK_VENDORS: dict[str, list[dict]] = {
     "venue": [
         {"name": "The Grand Mahal Banquet", "price_min": 3000, "price_max": 8000, "rating": 4.8, "reason": "Spacious traditional venue"},
         {"name": "Sapphire Gardens", "price_min": 5000, "price_max": 12000, "rating": 4.9, "reason": "Elegant outdoor setting"},
     ],
-    "planning": [
-        {"name": "Celebrate with Priya", "price_min": 1500, "price_max": 5000, "rating": 4.9, "reason": "Full-service South Asian wedding planning"},
-        {"name": "Perfect Day Coordination", "price_min": 800, "price_max": 2500, "rating": 4.7, "reason": "Day-of coordination specialist"},
-    ],
     "catering": [
         {"name": "Spice & Soul Catering", "price_min": 2000, "price_max": 5000, "rating": 5.0, "reason": "Award-winning South Asian cuisine"},
         {"name": "Royal Feast Kitchen", "price_min": 1500, "price_max": 3500, "rating": 4.7, "reason": "Vegetarian-friendly menu"},
-    ],
-    "cakes_desserts": [
-        {"name": "Mithai & More Bakery", "price_min": 300, "price_max": 1500, "rating": 4.9, "reason": "Custom wedding cakes and Indian sweets"},
-        {"name": "The Sweet Mandap", "price_min": 200, "price_max": 1000, "rating": 4.7, "reason": "Fusion dessert bars and mithai"},
     ],
     "photography": [
         {"name": "Moments in Motion Photography", "price_min": 2000, "price_max": 5000, "rating": 4.9, "reason": "Cinematic storytelling"},
@@ -646,37 +647,29 @@ _MOCK_VENDORS: dict[str, list[dict]] = {
         {"name": "Golden Hour Films", "price_min": 2000, "price_max": 5000, "rating": 4.9, "reason": "Cinematic wedding films"},
         {"name": "Reel Shaadi Productions", "price_min": 1200, "price_max": 3000, "rating": 4.7, "reason": "Highlight reels and full-length films"},
     ],
-    "music_entertainment": [
+    "dj": [
         {"name": "Beats & Bhangra DJ", "price_min": 800, "price_max": 2000, "rating": 4.9, "reason": "Bollywood & Bhangra specialist"},
         {"name": "DJ NaachLe", "price_min": 600, "price_max": 1500, "rating": 4.6, "reason": "High energy Punjabi sets"},
+    ],
+    "dhol": [
+        {"name": "BollyDhol Beats", "price_min": 400, "price_max": 1000, "rating": 4.8, "reason": "High-energy baraat dhol performances"},
+        {"name": "Rhythm & Dhol", "price_min": 300, "price_max": 800, "rating": 4.7, "reason": "Traditional Punjabi dhol players"},
     ],
     "floral_decor": [
         {"name": "Marigold Dreams Decor", "price_min": 1500, "price_max": 4000, "rating": 4.9, "reason": "Stunning floral and mandap setups"},
         {"name": "Desi Glam Décor", "price_min": 800, "price_max": 2500, "rating": 4.6, "reason": "Modern fusion designs"},
     ],
-    "lighting_av": [
-        {"name": "Luminary Events AV", "price_min": 1000, "price_max": 3500, "rating": 4.8, "reason": "LED uplighting and stage production"},
-        {"name": "Spotlight Productions", "price_min": 700, "price_max": 2000, "rating": 4.6, "reason": "Pin-spot lighting and gobo designs"},
-    ],
-    "beauty": [
-        {"name": "Henna by Priya", "price_min": 300, "price_max": 1200, "rating": 5.0, "reason": "Bridal mehndi and glam specialist"},
+    "makeup": [
         {"name": "Bridal Glow Studio", "price_min": 400, "price_max": 1500, "rating": 4.8, "reason": "Airbrush makeup and hair styling"},
+        {"name": "Glam by Anjali", "price_min": 300, "price_max": 1200, "rating": 4.7, "reason": "Bridal makeup and party glam"},
     ],
-    "attire": [
-        {"name": "Shaadi Couture", "price_min": 500, "price_max": 5000, "rating": 4.8, "reason": "Designer lehengas and sherwanis"},
-        {"name": "The Bridal Trunk", "price_min": 300, "price_max": 2500, "rating": 4.6, "reason": "Curated South Asian bridal wear"},
-    ],
-    "transportation": [
-        {"name": "Royal Baraat Rides", "price_min": 500, "price_max": 2000, "rating": 4.8, "reason": "Decorated baraat vehicles and limos"},
-        {"name": "Grand Entrance Autos", "price_min": 400, "price_max": 1500, "rating": 4.6, "reason": "Luxury guest shuttles and bridal cars"},
-    ],
-    "officiants": [
-        {"name": "Pandit Ji Ceremonies", "price_min": 500, "price_max": 1500, "rating": 5.0, "reason": "Traditional Hindu wedding ceremonies"},
-        {"name": "Sacred Vows Officiants", "price_min": 300, "price_max": 1000, "rating": 4.8, "reason": "Multi-faith and fusion ceremonies"},
+    "mehndi": [
+        {"name": "Henna by Priya", "price_min": 300, "price_max": 1200, "rating": 5.0, "reason": "Bridal mehndi specialist"},
+        {"name": "MehndiQueens", "price_min": 200, "price_max": 800, "rating": 4.8, "reason": "Intricate Rajasthani designs"},
     ],
     "cultural_services": [
-        {"name": "BollyDhol Beats", "price_min": 400, "price_max": 1000, "rating": 4.8, "reason": "High-energy baraat and dhol performances"},
         {"name": "Desi Cultural Collective", "price_min": 600, "price_max": 2000, "rating": 4.7, "reason": "Giddha, bhangra, and cultural acts"},
+        {"name": "Baraat Brigade", "price_min": 500, "price_max": 1800, "rating": 4.6, "reason": "Full baraat procession and performers"},
     ],
 }
 
@@ -697,31 +690,17 @@ def generate_bundle(state: ChatbotState, db: Session | None = None) -> Bundle:
     return _generate_bundle_mock(state)
 
 
-# Chatbot category keys → DB vendor category values (now 1:1)
-_CATEGORY_MAP = {
-    "venue": "venue",
-    "planning": "planning",
-    "catering": "catering",
-    "bar_beverage": "bar_beverage",
-    "cakes_desserts": "cakes_desserts",
-    "photography": "photography",
-    "videography": "videography",
-    "music_entertainment": "music_entertainment",
-    "floral_decor": "floral_decor",
-    "rentals": "rentals",
-    "lighting_av": "lighting_av",
-    "beauty": "beauty",
-    "attire": "attire",
-    "jewelry": "jewelry",
-    "stationery": "stationery",
-    "transportation": "transportation",
-    "officiants": "officiants",
-    "guest_hospitality": "guest_hospitality",
-    "favors_gifts": "favors_gifts",
-    "cultural_services": "cultural_services",
-    "post_wedding": "post_wedding",
-    "other": "other",
-}
+def _slot_db_filter(slot_key: str) -> tuple[str, str | None] | None:
+    """Resolve a chatbot slot key to (db_category, db_subcategory).
+
+    Returns None for unknown slots so the caller can skip them. When
+    db_subcategory is not None, the vendor query must filter on it too —
+    this is what lets a slot target a specific subcategory (e.g. dhol).
+    """
+    slot = CHATBOT_SLOTS.get(slot_key)
+    if not slot:
+        return None
+    return slot["category"], slot["subcategory"]
 
 # Max price per vendor per category for each preset tier (inf = no cap)
 _PRESET_TIER_CAPS: dict[BudgetTier, float] = {
@@ -917,17 +896,20 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     price_cap = _per_category_cap(state)
 
     for cat in state.needed_categories:
-        db_category = _CATEGORY_MAP.get(cat)
-        if not db_category:
+        flt = _slot_db_filter(cat)
+        if not flt:
             continue
+        db_category, db_subcategory = flt
 
-        # Find vendors for this category, joined with their user for name/pfp
-        vendor_rows = (
+        # Find vendors for this slot, joined with their user for name/pfp
+        q = (
             db.query(Vendor, User)
             .join(User, Vendor.user_id == User.user_id)
             .filter(Vendor.category == db_category)
-            .all()
         )
+        if db_subcategory:
+            q = q.filter(Vendor.subcategory == db_subcategory)
+        vendor_rows = q.all()
 
         # Filter by travel radius if event coordinates are provided
         if state.latitude is not None and state.longitude is not None:
@@ -1088,13 +1070,13 @@ def _apply_llm_intent(
 
     # ── Set booked categories ────────────────────────────────────────
     if intent == "set_booked":
-        cats = [c for c in values.get("categories", []) if c in VENDOR_CATEGORIES]
+        cats = [c for c in values.get("categories", []) if c in CHATBOT_CATEGORIES]
         if cats:
             state.booked_categories = cats
             resp = _step_still_need(state)
         else:
             state.booked_categories = []
-            state.needed_categories = list(VENDOR_CATEGORIES)
+            state.needed_categories = list(CHATBOT_CATEGORIES)
             resp = _step_budget(state)
         resp.bot_message = f"{llm_result.bot_message}\n\n{resp.bot_message}"
         resp.llm_response = True
@@ -1102,7 +1084,7 @@ def _apply_llm_intent(
 
     # ── Set needed categories ────────────────────────────────────────
     if intent == "set_needed":
-        cats = [c for c in values.get("categories", []) if c in VENDOR_CATEGORIES]
+        cats = [c for c in values.get("categories", []) if c in CHATBOT_CATEGORIES]
         state.needed_categories = [c for c in cats if c not in state.booked_categories]
         resp = _step_budget(state)
         resp.bot_message = f"{llm_result.bot_message}\n\n{resp.bot_message}"
@@ -1394,11 +1376,11 @@ async def process_step(
     if current_step == ChatStep.ALREADY_BOOKED:
         if "nothing_yet" in selections or selection == "nothing_yet":
             state.booked_categories = []
-            state.needed_categories = list(VENDOR_CATEGORIES)
+            state.needed_categories = list(CHATBOT_CATEGORIES)
             resp = _step_budget(state)
         else:
             state.booked_categories = [
-                v for v in selections if v in VENDOR_CATEGORIES
+                v for v in selections if v in CHATBOT_CATEGORIES
             ]
             resp = _step_still_need(state)
         _append_history(state, user_input, resp.bot_message)
@@ -1408,17 +1390,14 @@ async def process_step(
     if current_step == ChatStep.STILL_NEED:
         if "recommend_all" in selections or selection == "recommend_all":
             state.needed_categories = [
-                c for c in VENDOR_CATEGORIES if c not in state.booked_categories
+                c for c in CHATBOT_CATEGORIES if c not in state.booked_categories
             ]
         else:
-            chosen = [v for v in selections if v in VENDOR_CATEGORIES]
+            chosen = [v for v in selections if v in CHATBOT_CATEGORIES]
             # Remove duplicates already booked
             state.needed_categories = [
                 c for c in chosen if c not in state.booked_categories
             ]
-            # Handle "other"
-            if "other" in selections:
-                state.needed_categories.append("other")
         resp = _step_budget(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
@@ -1578,7 +1557,7 @@ async def process_step(
 
     # ── STEP 6D: ADD CATEGORY ────────────────────────────────────────
     if current_step == ChatStep.ADD_CATEGORY:
-        new_cats = [v for v in selections if v in VENDOR_CATEGORIES and v not in state.needed_categories]
+        new_cats = [v for v in selections if v in CHATBOT_CATEGORIES and v not in state.needed_categories]
         state.needed_categories.extend(new_cats)
 
         # Generate items for the new categories
@@ -1637,7 +1616,7 @@ async def process_step(
 
     # ── STEP 7b: PARTIAL BOOKING ─────────────────────────────────────
     if current_step == ChatStep.PARTIAL_BOOKING:
-        chosen_cats = [v for v in selections if v in VENDOR_CATEGORIES]
+        chosen_cats = [v for v in selections if v in CHATBOT_CATEGORIES]
         if chosen_cats and db and user_id and state.bundle:
             bundle_id, booking_ids = _create_bundle_from_chatbot(state, user_id, chosen_cats, db)
             resp = StepResponse(

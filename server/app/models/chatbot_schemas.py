@@ -86,6 +86,33 @@ CATEGORY_LABELS = {
 }
 
 
+# Bundle slots the chatbot offers. Each slot is a distinct thing people book for
+# a South Asian event and maps to a (db_category, db_subcategory) filter. This is
+# how the chatbot targets specific subcategories — e.g. a Dhol player or a Mehndi
+# artist — as standalone bundle items, rather than only their parent category.
+# Two slots may share a db_category (e.g. DJ and Dhol are both
+# music_entertainment) but never the same subcategory, so they stay distinct.
+#
+# The full VENDOR_CATEGORIES list is for vendor *registration*; categories not
+# represented here (jewelry, stationery, transportation, etc.) remain discoverable
+# via vendor search but are excluded from auto-generated bundles.
+CHATBOT_SLOTS: dict[str, dict] = {
+    "venue":             {"label": "Venue",             "category": "venue",               "subcategory": None},
+    "catering":          {"label": "Catering",          "category": "catering",            "subcategory": None},
+    "photography":       {"label": "Photography",       "category": "photography",         "subcategory": None},
+    "videography":       {"label": "Videography",       "category": "videography",         "subcategory": None},
+    "dj":                {"label": "DJ",                "category": "music_entertainment", "subcategory": "dj"},
+    "dhol":              {"label": "Dhol",              "category": "music_entertainment", "subcategory": "dhol"},
+    "floral_decor":      {"label": "Floral & Decor",    "category": "floral_decor",        "subcategory": None},
+    "makeup":            {"label": "Makeup & Hair",     "category": "beauty",              "subcategory": "bridal_makeup"},
+    "mehndi":            {"label": "Mehndi",            "category": "beauty",              "subcategory": "mehndi_artist"},
+    "cultural_services": {"label": "Cultural Services", "category": "cultural_services",   "subcategory": None},
+}
+
+# Ordered list of slot keys — used for buttons, defaults, and request validation.
+CHATBOT_CATEGORIES = list(CHATBOT_SLOTS.keys())
+
+
 # ── Nested models ────────────────────────────────────────────────────
 
 
@@ -146,12 +173,13 @@ class ChatbotState(BaseModel):
 
 
 def _split_categories(v: list[str]) -> list[str]:
-    """Allow ['dj', 'venue'] or ['dj, venue'] — split comma-separated entries."""
+    """Allow ['venue', 'catering'] or ['venue, catering'] — split comma-separated
+    entries. Only core chatbot categories are accepted for bundle building."""
     result = []
     for item in v:
         for part in item.split(","):
             part = part.strip().lower()
-            if part and part in VENDOR_CATEGORIES:
+            if part and part in CHATBOT_CATEGORIES:
                 result.append(part)
     return result
 
