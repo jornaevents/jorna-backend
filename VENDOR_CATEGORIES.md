@@ -81,7 +81,8 @@ These categories use tags and price filters for discovery rather than fixed subc
 |---|---|---|
 | Venue | `venue` | `outdoor`, `banquet_hall`, `hotel`, `mandap_only` |
 | Planning & Coordination | `planning` | `full_service`, `day_of`, `destination` |
-| Catering & Beverage | `catering` | `vegetarian`, `halal`, `live_stations`, `bar_service` |
+| Catering | `catering` | `vegetarian`, `halal`, `live_stations`, `buffet`, `plated` |
+| Bar & Beverage | `bar_beverage` | `open_bar`, `mocktail`, `chai_station`, `cocktail` |
 | Photography | `photography` | `bridal`, `candid`, `drone`, `traditional` |
 | Videography | `videography` | `cinematic`, `drone`, `same_day_edit` |
 | Rentals | `rentals` | `furniture`, `tent`, `linen`, `lounge` |

@@ -39,6 +39,7 @@ VENDOR_CATEGORIES = [
     "venue",
     "planning",
     "catering",
+    "bar_beverage",
     "cakes_desserts",
     "photography",
     "videography",
@@ -62,7 +63,8 @@ VENDOR_CATEGORIES = [
 CATEGORY_LABELS = {
     "venue": "Venue",
     "planning": "Planning & Coordination",
-    "catering": "Catering & Beverage",
+    "catering": "Catering",
+    "bar_beverage": "Bar & Beverage",
     "cakes_desserts": "Cakes & Desserts",
     "photography": "Photography",
     "videography": "Videography",

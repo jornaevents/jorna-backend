@@ -702,6 +702,7 @@ _CATEGORY_MAP = {
     "venue": "venue",
     "planning": "planning",
     "catering": "catering",
+    "bar_beverage": "bar_beverage",
     "cakes_desserts": "cakes_desserts",
     "photography": "photography",
     "videography": "videography",

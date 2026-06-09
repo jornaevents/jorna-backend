@@ -13,6 +13,7 @@ class VendorCategory(str, Enum):
     VENUE = "venue"
     PLANNING = "planning"
     CATERING = "catering"
+    BAR_BEVERAGE = "bar_beverage"
     CAKES_DESSERTS = "cakes_desserts"
     PHOTOGRAPHY = "photography"
     VIDEOGRAPHY = "videography"
