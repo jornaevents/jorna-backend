@@ -116,9 +116,9 @@ class TestAlreadyBookedStep:
 
     async def test_single_category(self):
         state = ChatbotState()
-        resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["music_entertainment"], state)
+        resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["dj"], state)
         assert resp.next_step == ChatStep.STILL_NEED
-        assert resp.state.booked_categories == ["music_entertainment"]
+        assert resp.state.booked_categories == ["dj"]
 
 
 @pytest.mark.asyncio
@@ -130,20 +130,20 @@ class TestStillNeedStep:
         assert "venue" not in resp.state.needed_categories
         assert "photography" not in resp.state.needed_categories
         assert "catering" in resp.state.needed_categories
-        assert "music_entertainment" in resp.state.needed_categories
+        assert "dj" in resp.state.needed_categories
 
     async def test_specific_categories(self):
         state = ChatbotState(booked_categories=["venue"])
-        resp = await process_step(ChatStep.STILL_NEED, None, ["music_entertainment", "beauty", "cultural_services"], state)
+        resp = await process_step(ChatStep.STILL_NEED, None, ["dj", "mehndi", "dhol"], state)
         assert resp.next_step == ChatStep.BUDGET
-        assert sorted(resp.state.needed_categories) == sorted(["music_entertainment", "beauty", "cultural_services"])
+        assert sorted(resp.state.needed_categories) == sorted(["dj", "mehndi", "dhol"])
 
     async def test_removes_already_booked_duplicates(self):
-        state = ChatbotState(booked_categories=["venue", "music_entertainment"])
-        resp = await process_step(ChatStep.STILL_NEED, None, ["venue", "music_entertainment", "beauty"], state)
+        state = ChatbotState(booked_categories=["venue", "dj"])
+        resp = await process_step(ChatStep.STILL_NEED, None, ["venue", "dj", "mehndi"], state)
         assert "venue" not in resp.state.needed_categories
-        assert "music_entertainment" not in resp.state.needed_categories
-        assert "beauty" in resp.state.needed_categories
+        assert "dj" not in resp.state.needed_categories
+        assert "mehndi" in resp.state.needed_categories
 
     async def test_other_category_is_filtered(self):
         # "other" is not a core chatbot category — it should be dropped, leaving catering
@@ -204,7 +204,7 @@ class TestCustomBudgetStep:
 class TestStylePreferencesStep:
     async def test_generates_bundle(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment", "catering", "floral_decor"],
+            needed_categories=["dj", "catering", "floral_decor"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant", "pref_local"], state)
@@ -216,7 +216,7 @@ class TestStylePreferencesStep:
 
     async def test_free_text_style(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment"],
+            needed_categories=["dj"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         resp = await process_step(ChatStep.STYLE_PREFERENCES, "elegant and classy", [], state)
@@ -224,7 +224,7 @@ class TestStylePreferencesStep:
         assert resp.bundle is not None
 
     async def test_bundle_has_correct_categories(self):
-        cats = ["music_entertainment", "beauty", "cultural_services"]
+        cats = ["dj", "mehndi", "dhol"]
         state = ChatbotState(needed_categories=cats, budget_tier=BudgetTier.PREMIUM)
         resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["modern"], state)
         bundle_cats = [item.category for item in resp.bundle.items]
@@ -234,7 +234,7 @@ class TestStylePreferencesStep:
 class TestBundleGeneration:
     def test_basic_bundle(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment", "catering"],
+            needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         bundle = generate_bundle(state)
@@ -244,11 +244,11 @@ class TestBundleGeneration:
 
     def test_budget_friendly_cheaper(self):
         state_budget = ChatbotState(
-            needed_categories=["music_entertainment"],
+            needed_categories=["dj"],
             budget_tier=BudgetTier.BUDGET_FRIENDLY,
         )
         state_prem = ChatbotState(
-            needed_categories=["music_entertainment"],
+            needed_categories=["dj"],
             budget_tier=BudgetTier.PREMIUM,
         )
         budget_bundle = generate_bundle(state_budget)
@@ -271,7 +271,7 @@ class TestBundleGeneration:
 
     def test_unknown_category_skipped(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment", "other"],
+            needed_categories=["dj", "other"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         bundle = generate_bundle(state)
@@ -337,13 +337,13 @@ class TestBundleActionStep:
 class TestSwapVendor:
     async def test_swap_changes_vendor(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment"],
+            needed_categories=["dj"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         state.bundle = generate_bundle(state)
         original_name = state.bundle.items[0].vendor_name
 
-        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["music_entertainment"], state)
+        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["dj"], state)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         swapped_name = resp.state.bundle.items[0].vendor_name
         assert swapped_name != original_name
@@ -353,17 +353,17 @@ class TestSwapVendor:
 class TestRemoveCategory:
     async def test_remove_shrinks_bundle(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment", "beauty", "cultural_services"],
+            needed_categories=["dj", "mehndi", "dhol"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         state.bundle = generate_bundle(state)
         assert len(state.bundle.items) == 3
 
-        resp = await process_step(ChatStep.REMOVE_CATEGORY, None, ["beauty"], state)
+        resp = await process_step(ChatStep.REMOVE_CATEGORY, None, ["mehndi"], state)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert len(resp.state.bundle.items) == 2
         cats = [i.category for i in resp.state.bundle.items]
-        assert "beauty" not in cats
+        assert "mehndi" not in cats
         assert "Done" in resp.bot_message
 
 
@@ -371,17 +371,17 @@ class TestRemoveCategory:
 class TestAddCategory:
     async def test_add_expands_bundle(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment"],
+            needed_categories=["dj"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         state.bundle = generate_bundle(state)
         assert len(state.bundle.items) == 1
 
-        resp = await process_step(ChatStep.ADD_CATEGORY, None, ["beauty"], state)
+        resp = await process_step(ChatStep.ADD_CATEGORY, None, ["mehndi"], state)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert len(resp.state.bundle.items) == 2
         cats = [i.category for i in resp.state.bundle.items]
-        assert "beauty" in cats
+        assert "mehndi" in cats
         assert "Added" in resp.bot_message
 
 
@@ -389,7 +389,7 @@ class TestAddCategory:
 class TestResultsBookingStep:
     def _make_state(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment", "catering"],
+            needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         state.bundle = generate_bundle(state)
@@ -425,13 +425,78 @@ class TestResultsBookingStep:
 class TestPartialBooking:
     async def test_selects_categories(self):
         state = ChatbotState(
-            needed_categories=["music_entertainment", "catering"],
+            needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         state.bundle = generate_bundle(state)
-        resp = await process_step(ChatStep.PARTIAL_BOOKING, None, ["music_entertainment"], state)
+        resp = await process_step(ChatStep.PARTIAL_BOOKING, None, ["dj"], state)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
         assert resp.next_step == ChatStep.RESULTS_BOOKING
+
+
+class TestSubcategoryTargeting:
+    """A bundle slot must target its specific subcategory in the DB.
+
+    DJ and Dhol are both `music_entertainment` vendors but different
+    subcategories — the chatbot must keep them distinct so a user can book a
+    dhol player specifically. Same for Makeup vs Mehndi within `beauty`.
+    """
+
+    def _seed(self):
+        import uuid
+        from app.db.models import User, Vendor, Service
+        db = TestingSessionLocal()
+        uid = str(uuid.uuid4())[:8]
+
+        def _vendor(sub, label, price):
+            u = User(
+                email=f"sub_{sub}_{uid}@test.com", username=f"sub_{sub}_{uid}",
+                password="pw", phone="1", f_name=label, l_name="V",
+                age=30, location="NJ", gender="F", language="EN", token_version=0,
+            )
+            db.add(u); db.commit(); db.refresh(u)
+            cat = "beauty" if sub in ("bridal_makeup", "mehndi_artist") else "music_entertainment"
+            v = Vendor(user_id=u.user_id, bio=f"{label} vendor", category=cat,
+                       subcategory=sub, rating=4.8, num_events=20)
+            db.add(v); db.commit(); db.refresh(v)
+            s = Service(name=label, price=price, duration_minutes=120,
+                        vendor_id=v.vendor_id, experience="exp")
+            db.add(s); db.commit()
+            return v.vendor_id
+
+        ids = {
+            "dj": _vendor("dj", "DJ Vendor", 1000.0),
+            "dhol": _vendor("dhol", "Dhol Vendor", 800.0),
+            "mehndi": _vendor("mehndi_artist", "Mehndi Vendor", 500.0),
+        }
+        db.close()
+        return ids
+
+    def _chosen_vendor(self, slot: str):
+        from app.db.models import Vendor
+        self._seed()
+        db = TestingSessionLocal()
+        state = ChatbotState(needed_categories=[slot], budget_tier=BudgetTier.MID_RANGE)
+        bundle = generate_bundle(state, db)
+        assert len(bundle.items) == 1
+        vendor_id = bundle.items[0].vendor_id
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+        db.close()
+        return bundle.items[0], vendor
+
+    def test_dhol_slot_targets_music_entertainment_dhol(self):
+        item, vendor = self._chosen_vendor("dhol")
+        assert item.category == "dhol"
+        # Must resolve to a dhol vendor, never a DJ — both are music_entertainment
+        assert vendor is not None
+        assert vendor.category == "music_entertainment"
+        assert vendor.subcategory == "dhol"
+
+    def test_mehndi_slot_targets_beauty_mehndi_artist(self):
+        item, vendor = self._chosen_vendor("mehndi")
+        assert vendor is not None
+        assert vendor.category == "beauty"
+        assert vendor.subcategory == "mehndi_artist"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -459,7 +524,7 @@ class TestFullFlowNothingBooked:
         # Step 1 → 3: Nothing booked (skip step 2)
         resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["nothing_yet"], resp.state)
         assert resp.next_step == ChatStep.BUDGET
-        assert len(resp.state.needed_categories) == 7
+        assert len(resp.state.needed_categories) == 10
 
         # Step 3 → 4: Budget
         resp = await process_step(ChatStep.BUDGET, None, ["mid-range"], resp.state)
@@ -469,7 +534,7 @@ class TestFullFlowNothingBooked:
         resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant"], resp.state)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.bundle is not None
-        assert len(resp.bundle.items) == 7
+        assert len(resp.bundle.items) == 10
 
         # Step 6 → 7: Keep bundle
         resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], resp.state)
@@ -505,11 +570,11 @@ class TestFullFlowWithBooked:
         resp = await process_step(ChatStep.BUDGET, None, ["premium"], resp.state)
         resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["traditional"], resp.state)
         assert resp.bundle is not None
-        assert len(resp.bundle.items) == 5  # 7 - venue - photographer
+        assert len(resp.bundle.items) == 8  # 10 - venue - photography
 
         # Swap DJ
         resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["swap"], resp.state)
-        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["music_entertainment"], resp.state)
+        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["dj"], resp.state)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
 
         # Save for later
@@ -612,7 +677,7 @@ class TestLLMFallback:
             suggested_step="style_preferences",
             extracted_values={"budget_tier": "mid-range", "budget_amount": "5000"},
         )
-        state = ChatbotState(needed_categories=["music_entertainment", "catering"])
+        state = ChatbotState(needed_categories=["dj", "catering"])
         resp = await process_step(
             ChatStep.BUDGET,
             "I think around five thousand dollars",
@@ -682,10 +747,10 @@ class TestLLMFallback:
         mock_llm.return_value = LLMResult(
             bot_message="Sure, let me swap out the DJ for you!",
             extracted_intent="modify_bundle",
-            extracted_values={"action": "swap", "category": "music_entertainment"},
+            extracted_values={"action": "swap", "category": "dj"},
         )
         state = ChatbotState(
-            needed_categories=["music_entertainment", "catering"],
+            needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
         state.bundle = generate_bundle(state)
@@ -798,7 +863,7 @@ class TestChatbotEndpoints:
         }).json()
         assert resp["next_step"] == "bundle_action"
         assert resp["bundle"] is not None
-        assert len(resp["bundle"]["items"]) == 7
+        assert len(resp["bundle"]["items"]) == 10
 
     def test_step_endpoint_invalid_step(self):
         """Sending an unknown step value should return 422."""

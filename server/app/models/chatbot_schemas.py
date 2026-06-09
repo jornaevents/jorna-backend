@@ -86,20 +86,31 @@ CATEGORY_LABELS = {
 }
 
 
-# Curated subset of categories the chatbot bundle-builder offers. The full
-# VENDOR_CATEGORIES list is for vendor *registration*; the chatbot only builds
-# bundles from these core, commonly-bundled event services. Categories like
-# jewelry, stationery, transportation, etc. remain discoverable via vendor
-# search but are intentionally excluded from auto-generated bundles.
-CHATBOT_CATEGORIES = [
-    "venue",
-    "catering",
-    "photography",
-    "music_entertainment",
-    "floral_decor",
-    "beauty",
-    "cultural_services",
-]
+# Bundle slots the chatbot offers. Each slot is a distinct thing people book for
+# a South Asian event and maps to a (db_category, db_subcategory) filter. This is
+# how the chatbot targets specific subcategories — e.g. a Dhol player or a Mehndi
+# artist — as standalone bundle items, rather than only their parent category.
+# Two slots may share a db_category (e.g. DJ and Dhol are both
+# music_entertainment) but never the same subcategory, so they stay distinct.
+#
+# The full VENDOR_CATEGORIES list is for vendor *registration*; categories not
+# represented here (jewelry, stationery, transportation, etc.) remain discoverable
+# via vendor search but are excluded from auto-generated bundles.
+CHATBOT_SLOTS: dict[str, dict] = {
+    "venue":             {"label": "Venue",             "category": "venue",               "subcategory": None},
+    "catering":          {"label": "Catering",          "category": "catering",            "subcategory": None},
+    "photography":       {"label": "Photography",       "category": "photography",         "subcategory": None},
+    "videography":       {"label": "Videography",       "category": "videography",         "subcategory": None},
+    "dj":                {"label": "DJ",                "category": "music_entertainment", "subcategory": "dj"},
+    "dhol":              {"label": "Dhol",              "category": "music_entertainment", "subcategory": "dhol"},
+    "floral_decor":      {"label": "Floral & Decor",    "category": "floral_decor",        "subcategory": None},
+    "makeup":            {"label": "Makeup & Hair",     "category": "beauty",              "subcategory": "bridal_makeup"},
+    "mehndi":            {"label": "Mehndi",            "category": "beauty",              "subcategory": "mehndi_artist"},
+    "cultural_services": {"label": "Cultural Services", "category": "cultural_services",   "subcategory": None},
+}
+
+# Ordered list of slot keys — used for buttons, defaults, and request validation.
+CHATBOT_CATEGORIES = list(CHATBOT_SLOTS.keys())
 
 
 # ── Nested models ────────────────────────────────────────────────────

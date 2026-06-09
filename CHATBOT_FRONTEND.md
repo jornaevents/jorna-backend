@@ -81,7 +81,9 @@ POST /chatbot/step
 - Multi-select buttons for each vendor category
 - Button: **Nothing yet** (`nothing_yet`)
 
-**Categories:** Venue / Catering / Decor / Photographer / DJ / Mehndi / Dhol
+**Bundle slots (10):** Venue (`venue`) / Catering (`catering`) / Photography (`photography`) / Videography (`videography`) / DJ (`dj`) / Dhol (`dhol`) / Floral & Decor (`floral_decor`) / Makeup & Hair (`makeup`) / Mehndi (`mehndi`) / Cultural Services (`cultural_services`)
+
+> Note: these are chatbot **bundle slots**, not raw vendor categories. Some slots target a subcategory under the hood — e.g. `dj` and `dhol` are both `music_entertainment` vendors, and `makeup`/`mehndi` are both `beauty`. Send the slot key (left of each label) in `selected_values`. The full vendor taxonomy (jewelry, attire, transportation, etc.) is for vendor registration and is browsable via vendor search, not the bundle builder.
 
 **Checklist:**
 - [ ] Multi-select chip UI (user can select multiple categories)
