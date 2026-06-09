@@ -167,6 +167,12 @@ async def lifespan(app: FastAPI):
             "instead of LLM-powered tag scoring. Set it in Railway for full functionality."
         )
 
+    if not os.getenv("RESEND_API_KEY"):
+        logger.warning(
+            "RESEND_API_KEY is not set — booking notifications will only be delivered via "
+            "push (FCM). Users without a device token won't receive email fallbacks."
+        )
+
     if not DATABASE_URL.startswith("sqlite") and any("localhost" in o for o in ALLOWED_ORIGINS):
         logger.warning(
             "ALLOWED_ORIGINS contains localhost entries in a production environment: %s — "

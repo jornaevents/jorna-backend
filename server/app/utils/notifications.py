@@ -195,6 +195,35 @@ def send_push_to_multiple(
 
 
 # ---------------------------------------------------------------------------
+# Email fallback
+# ---------------------------------------------------------------------------
+
+def _email_html(title: str, body: str) -> str:
+    """Wrap a notification title/body in a minimal branded HTML email."""
+    return (
+        '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'
+        'padding:24px;color:#1a1a1a">'
+        f'<h2 style="margin:0 0 12px">{title}</h2>'
+        f'<p style="font-size:15px;line-height:1.5;margin:0 0 20px">{body}</p>'
+        '<hr style="border:none;border-top:1px solid #eee;margin:20px 0">'
+        '<p style="font-size:12px;color:#888;margin:0">Desiconnect — your South Asian event marketplace.</p>'
+        '</div>'
+    )
+
+
+def _send_booking_email(to_email: Optional[str], title: str, body: str) -> dict:
+    """Send a booking notification email. Best-effort; never raises."""
+    if not to_email:
+        return {"success": False, "error": "No recipient email"}
+    try:
+        from app.services.email_service import send_email
+        return send_email(to=to_email, subject=title, html=_email_html(title, body), text=body)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Booking email failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # High-level booking notification dispatchers
 # ---------------------------------------------------------------------------
 
@@ -208,6 +237,8 @@ def notify_booking_status_change(
     vendor_name: str,
     client_fcm_token: Optional[str] = None,
     vendor_fcm_token: Optional[str] = None,
+    client_email: Optional[str] = None,
+    vendor_email: Optional[str] = None,
 ) -> dict:
     """Send push notifications to the relevant parties when a booking's
     status changes.
@@ -248,7 +279,7 @@ def notify_booking_status_change(
 
     data_payload = {"booking_id": booking_id, "status": status}
 
-    # --- Notify vendor ---
+    # --- Notify vendor (push, with email fallback) ---
     vendor_result: dict = {"success": False, "error": "No vendor FCM token"}
     if vendor_fcm_token:
         vendor_result = send_push_notification(
@@ -257,8 +288,13 @@ def notify_booking_status_change(
             body=_fmt(templates["vendor_body"]),
             data=data_payload,
         )
+    vendor_email_result = None
+    if vendor_result.get("success") is not True and vendor_email:
+        vendor_email_result = _send_booking_email(
+            vendor_email, _fmt(templates["vendor_title"]), _fmt(templates["vendor_body"])
+        )
 
-    # --- Notify client ---
+    # --- Notify client (push, with email fallback) ---
     client_result: dict = {"success": False, "error": "No client FCM token"}
     if client_fcm_token:
         client_result = send_push_notification(
@@ -267,8 +303,18 @@ def notify_booking_status_change(
             body=_fmt(templates["client_body"]),
             data=data_payload,
         )
+    client_email_result = None
+    if client_result.get("success") is not True and client_email:
+        client_email_result = _send_booking_email(
+            client_email, _fmt(templates["client_title"]), _fmt(templates["client_body"])
+        )
 
-    return {"client_result": client_result, "vendor_result": vendor_result}
+    return {
+        "client_result": client_result,
+        "vendor_result": vendor_result,
+        "client_email_result": client_email_result,
+        "vendor_email_result": vendor_email_result,
+    }
 
 
 def notify_check_in(

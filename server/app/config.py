@@ -48,6 +48,14 @@ PLATFORM_FEE_PERCENT: int = int(os.getenv("PLATFORM_FEE_PERCENT", "5"))
 # Required only for server-side file uploads; keep this secret.
 SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 
+# ── Email (Resend) ────────────────────────────────────────────────────
+# Transactional email via Resend (https://resend.com). Used as a fallback
+# channel for booking notifications when a user has no FCM push token, and
+# for password-reset emails. Email is silently skipped when unset.
+RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+# Must be an address on a domain verified in your Resend dashboard.
+EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Desiconnect <noreply@desiconnect.com>")
+
 # ── YouTube ───────────────────────────────────────────────────────────
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
 

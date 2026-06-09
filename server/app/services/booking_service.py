@@ -57,6 +57,8 @@ def _dispatch_status_notification(
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
         client_fcm_token=client.fcm_token if client else None,
         vendor_fcm_token=vendor_user.fcm_token if vendor_user else None,
+        client_email=client.email if client else None,
+        vendor_email=vendor_user.email if vendor_user else None,
     )
     logger.info("Booking %s status→%s notification: %s", booking.booking_id, status, result)
     return result
