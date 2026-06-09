@@ -34,25 +34,53 @@ class BudgetTier(str, Enum):
     UNKNOWN = "unknown"
 
 
-# Categories the chatbot offers (display labels → internal keys)
+# All vendor categories — mirrors VendorCategory enum in schemas.py
 VENDOR_CATEGORIES = [
     "venue",
+    "planning",
     "catering",
-    "decor",
-    "photographer",
-    "dj",
-    "mehndi",
-    "dhol",
+    "cakes_desserts",
+    "photography",
+    "videography",
+    "music_entertainment",
+    "floral_decor",
+    "rentals",
+    "lighting_av",
+    "beauty",
+    "attire",
+    "jewelry",
+    "stationery",
+    "transportation",
+    "officiants",
+    "guest_hospitality",
+    "favors_gifts",
+    "cultural_services",
+    "post_wedding",
+    "other",
 ]
 
 CATEGORY_LABELS = {
     "venue": "Venue",
-    "catering": "Catering",
-    "decor": "Decor",
-    "photographer": "Photographer",
-    "dj": "DJ",
-    "mehndi": "Mehndi",
-    "dhol": "Dhol",
+    "planning": "Planning & Coordination",
+    "catering": "Catering & Beverage",
+    "cakes_desserts": "Cakes & Desserts",
+    "photography": "Photography",
+    "videography": "Videography",
+    "music_entertainment": "Music & Entertainment",
+    "floral_decor": "Floral & Decor",
+    "rentals": "Rentals",
+    "lighting_av": "Lighting, AV & Production",
+    "beauty": "Beauty",
+    "attire": "Attire",
+    "jewelry": "Jewelry",
+    "stationery": "Stationery & Signage",
+    "transportation": "Transportation",
+    "officiants": "Officiants & Ceremony Services",
+    "guest_hospitality": "Guest Hospitality",
+    "favors_gifts": "Favors & Gifts",
+    "cultural_services": "Specialty & Cultural Services",
+    "post_wedding": "Post-Wedding Services",
+    "other": "Other",
 }
 
 

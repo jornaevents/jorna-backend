@@ -626,29 +626,57 @@ _MOCK_VENDORS: dict[str, list[dict]] = {
         {"name": "The Grand Mahal Banquet", "price_min": 3000, "price_max": 8000, "rating": 4.8, "reason": "Spacious traditional venue"},
         {"name": "Sapphire Gardens", "price_min": 5000, "price_max": 12000, "rating": 4.9, "reason": "Elegant outdoor setting"},
     ],
+    "planning": [
+        {"name": "Celebrate with Priya", "price_min": 1500, "price_max": 5000, "rating": 4.9, "reason": "Full-service South Asian wedding planning"},
+        {"name": "Perfect Day Coordination", "price_min": 800, "price_max": 2500, "rating": 4.7, "reason": "Day-of coordination specialist"},
+    ],
     "catering": [
         {"name": "Spice & Soul Catering", "price_min": 2000, "price_max": 5000, "rating": 5.0, "reason": "Award-winning South Asian cuisine"},
         {"name": "Royal Feast Kitchen", "price_min": 1500, "price_max": 3500, "rating": 4.7, "reason": "Vegetarian-friendly menu"},
     ],
-    "decor": [
-        {"name": "Marigold Dreams Decor", "price_min": 1500, "price_max": 4000, "rating": 4.9, "reason": "Stunning floral and mandap setups"},
-        {"name": "Desi Glam Décor", "price_min": 800, "price_max": 2500, "rating": 4.6, "reason": "Modern fusion designs"},
+    "cakes_desserts": [
+        {"name": "Mithai & More Bakery", "price_min": 300, "price_max": 1500, "rating": 4.9, "reason": "Custom wedding cakes and Indian sweets"},
+        {"name": "The Sweet Mandap", "price_min": 200, "price_max": 1000, "rating": 4.7, "reason": "Fusion dessert bars and mithai"},
     ],
-    "photographer": [
+    "photography": [
         {"name": "Moments in Motion Photography", "price_min": 2000, "price_max": 5000, "rating": 4.9, "reason": "Cinematic storytelling"},
         {"name": "Desi Lens Studio", "price_min": 1200, "price_max": 3000, "rating": 4.7, "reason": "Traditional + candid specialist"},
     ],
-    "dj": [
+    "videography": [
+        {"name": "Golden Hour Films", "price_min": 2000, "price_max": 5000, "rating": 4.9, "reason": "Cinematic wedding films"},
+        {"name": "Reel Shaadi Productions", "price_min": 1200, "price_max": 3000, "rating": 4.7, "reason": "Highlight reels and full-length films"},
+    ],
+    "music_entertainment": [
         {"name": "Beats & Bhangra DJ", "price_min": 800, "price_max": 2000, "rating": 4.9, "reason": "Bollywood & Bhangra specialist"},
         {"name": "DJ NaachLe", "price_min": 600, "price_max": 1500, "rating": 4.6, "reason": "High energy Punjabi sets"},
     ],
-    "mehndi": [
-        {"name": "Henna by Priya", "price_min": 300, "price_max": 1200, "rating": 5.0, "reason": "Bridal mehndi specialist"},
-        {"name": "MehndiQueens", "price_min": 200, "price_max": 800, "rating": 4.8, "reason": "Intricate Rajasthani designs"},
+    "floral_decor": [
+        {"name": "Marigold Dreams Decor", "price_min": 1500, "price_max": 4000, "rating": 4.9, "reason": "Stunning floral and mandap setups"},
+        {"name": "Desi Glam Décor", "price_min": 800, "price_max": 2500, "rating": 4.6, "reason": "Modern fusion designs"},
     ],
-    "dhol": [
-        {"name": "BollyDhol Beats", "price_min": 400, "price_max": 1000, "rating": 4.8, "reason": "High-energy baraat performances"},
-        {"name": "Rhythm & Dhol", "price_min": 300, "price_max": 800, "rating": 4.7, "reason": "Traditional Punjabi dhol players"},
+    "lighting_av": [
+        {"name": "Luminary Events AV", "price_min": 1000, "price_max": 3500, "rating": 4.8, "reason": "LED uplighting and stage production"},
+        {"name": "Spotlight Productions", "price_min": 700, "price_max": 2000, "rating": 4.6, "reason": "Pin-spot lighting and gobo designs"},
+    ],
+    "beauty": [
+        {"name": "Henna by Priya", "price_min": 300, "price_max": 1200, "rating": 5.0, "reason": "Bridal mehndi and glam specialist"},
+        {"name": "Bridal Glow Studio", "price_min": 400, "price_max": 1500, "rating": 4.8, "reason": "Airbrush makeup and hair styling"},
+    ],
+    "attire": [
+        {"name": "Shaadi Couture", "price_min": 500, "price_max": 5000, "rating": 4.8, "reason": "Designer lehengas and sherwanis"},
+        {"name": "The Bridal Trunk", "price_min": 300, "price_max": 2500, "rating": 4.6, "reason": "Curated South Asian bridal wear"},
+    ],
+    "transportation": [
+        {"name": "Royal Baraat Rides", "price_min": 500, "price_max": 2000, "rating": 4.8, "reason": "Decorated baraat vehicles and limos"},
+        {"name": "Grand Entrance Autos", "price_min": 400, "price_max": 1500, "rating": 4.6, "reason": "Luxury guest shuttles and bridal cars"},
+    ],
+    "officiants": [
+        {"name": "Pandit Ji Ceremonies", "price_min": 500, "price_max": 1500, "rating": 5.0, "reason": "Traditional Hindu wedding ceremonies"},
+        {"name": "Sacred Vows Officiants", "price_min": 300, "price_max": 1000, "rating": 4.8, "reason": "Multi-faith and fusion ceremonies"},
+    ],
+    "cultural_services": [
+        {"name": "BollyDhol Beats", "price_min": 400, "price_max": 1000, "rating": 4.8, "reason": "High-energy baraat and dhol performances"},
+        {"name": "Desi Cultural Collective", "price_min": 600, "price_max": 2000, "rating": 4.7, "reason": "Giddha, bhangra, and cultural acts"},
     ],
 }
 
@@ -669,15 +697,29 @@ def generate_bundle(state: ChatbotState, db: Session | None = None) -> Bundle:
     return _generate_bundle_mock(state)
 
 
-# Chatbot category keys → DB vendor category values
+# Chatbot category keys → DB vendor category values (now 1:1)
 _CATEGORY_MAP = {
     "venue": "venue",
+    "planning": "planning",
     "catering": "catering",
-    "decor": "decoration",
-    "photographer": "photography",
-    "dj": "dj",
-    "mehndi": "mehndi",
-    "dhol": "dhol",
+    "cakes_desserts": "cakes_desserts",
+    "photography": "photography",
+    "videography": "videography",
+    "music_entertainment": "music_entertainment",
+    "floral_decor": "floral_decor",
+    "rentals": "rentals",
+    "lighting_av": "lighting_av",
+    "beauty": "beauty",
+    "attire": "attire",
+    "jewelry": "jewelry",
+    "stationery": "stationery",
+    "transportation": "transportation",
+    "officiants": "officiants",
+    "guest_hospitality": "guest_hospitality",
+    "favors_gifts": "favors_gifts",
+    "cultural_services": "cultural_services",
+    "post_wedding": "post_wedding",
+    "other": "other",
 }
 
 # Max price per vendor per category for each preset tier (inf = no cap)
