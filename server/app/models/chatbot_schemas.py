@@ -86,6 +86,22 @@ CATEGORY_LABELS = {
 }
 
 
+# Curated subset of categories the chatbot bundle-builder offers. The full
+# VENDOR_CATEGORIES list is for vendor *registration*; the chatbot only builds
+# bundles from these core, commonly-bundled event services. Categories like
+# jewelry, stationery, transportation, etc. remain discoverable via vendor
+# search but are intentionally excluded from auto-generated bundles.
+CHATBOT_CATEGORIES = [
+    "venue",
+    "catering",
+    "photography",
+    "music_entertainment",
+    "floral_decor",
+    "beauty",
+    "cultural_services",
+]
+
+
 # ── Nested models ────────────────────────────────────────────────────
 
 
@@ -146,12 +162,13 @@ class ChatbotState(BaseModel):
 
 
 def _split_categories(v: list[str]) -> list[str]:
-    """Allow ['dj', 'venue'] or ['dj, venue'] — split comma-separated entries."""
+    """Allow ['venue', 'catering'] or ['venue, catering'] — split comma-separated
+    entries. Only core chatbot categories are accepted for bundle building."""
     result = []
     for item in v:
         for part in item.split(","):
             part = part.strip().lower()
-            if part and part in VENDOR_CATEGORIES:
+            if part and part in CHATBOT_CATEGORIES:
                 result.append(part)
     return result
 

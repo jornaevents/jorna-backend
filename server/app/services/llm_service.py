@@ -16,7 +16,7 @@ from typing import Optional
 import httpx
 from openai import AsyncOpenAI
 
-from app.models.chatbot_schemas import ChatStep, VENDOR_CATEGORIES, CATEGORY_LABELS
+from app.models.chatbot_schemas import ChatStep, CHATBOT_CATEGORIES, CATEGORY_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 _EXPECTED_VALUES: dict[ChatStep, set[str]] = {
     ChatStep.EVENT_DETAILS: {"has_date", "no_date", "continue"},
-    ChatStep.ALREADY_BOOKED: set(VENDOR_CATEGORIES) | {"nothing_yet"},
-    ChatStep.STILL_NEED: set(VENDOR_CATEGORIES) | {"recommend_all", "other"},
+    ChatStep.ALREADY_BOOKED: set(CHATBOT_CATEGORIES) | {"nothing_yet"},
+    ChatStep.STILL_NEED: set(CHATBOT_CATEGORIES) | {"recommend_all", "other"},
     ChatStep.BUDGET: {"budget-friendly", "mid-range", "premium", "custom", "unknown"},
     ChatStep.CUSTOM_BUDGET: {"under_3000", "3000_7000", "7000_12000", "custom_amount"},
     ChatStep.STYLE_PREFERENCES: {
@@ -37,14 +37,14 @@ _EXPECTED_VALUES: dict[ChatStep, set[str]] = {
         "keep", "customize", "swap", "remove", "add",
         "cheaper", "premium_bundle", "start_over",
     },
-    ChatStep.MANUAL_CUSTOMIZE: set(VENDOR_CATEGORIES) | {"entire_bundle"},
-    ChatStep.SWAP_VENDOR: set(VENDOR_CATEGORIES),
-    ChatStep.REMOVE_CATEGORY: set(VENDOR_CATEGORIES),
-    ChatStep.ADD_CATEGORY: set(VENDOR_CATEGORIES) | {"other"},
+    ChatStep.MANUAL_CUSTOMIZE: set(CHATBOT_CATEGORIES) | {"entire_bundle"},
+    ChatStep.SWAP_VENDOR: set(CHATBOT_CATEGORIES),
+    ChatStep.REMOVE_CATEGORY: set(CHATBOT_CATEGORIES),
+    ChatStep.ADD_CATEGORY: set(CHATBOT_CATEGORIES) | {"other"},
     ChatStep.RESULTS_BOOKING: {
         "book_all", "book_some", "contact", "save", "go_back", "done_contact",
     },
-    ChatStep.PARTIAL_BOOKING: set(VENDOR_CATEGORIES),
+    ChatStep.PARTIAL_BOOKING: set(CHATBOT_CATEGORIES),
 }
 
 # Steps where free-text input is expected as part of normal flow

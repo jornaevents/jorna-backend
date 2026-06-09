@@ -23,10 +23,10 @@ from app.models.chatbot_schemas import (
     ChatbotState,
     ChatStep,
     CATEGORY_LABELS,
+    CHATBOT_CATEGORIES,
     HelperButton,
     MultiBundleResponse,
     StepResponse,
-    VENDOR_CATEGORIES,
 )
 from app.services.llm_service import (
     LLMResult,
@@ -85,7 +85,7 @@ def _cat_buttons(exclude: list[str] | None = None) -> list[HelperButton]:
     excluded = set(exclude or [])
     return [
         HelperButton(label=CATEGORY_LABELS[c], value=c)
-        for c in VENDOR_CATEGORIES
+        for c in CHATBOT_CATEGORIES
         if c not in excluded
     ]
 
@@ -152,9 +152,7 @@ def _step_still_need(state: ChatbotState) -> StepResponse:
         bot_message="What do you want included in your bundle?",
         helper_buttons=[
             HelperButton(label="Recommend everything I still need", value="recommend_all"),
-        ] + _cat_buttons(exclude=state.booked_categories) + [
-            HelperButton(label="Other", value="other"),
-        ],
+        ] + _cat_buttons(exclude=state.booked_categories),
         state=state,
     )
 
@@ -273,9 +271,7 @@ def _step_add_category(state: ChatbotState) -> StepResponse:
     return StepResponse(
         next_step=ChatStep.ADD_CATEGORY,
         bot_message="What would you like to add to the bundle?",
-        helper_buttons=_cat_buttons(exclude=list(bundle_cats)) + [
-            HelperButton(label="Other", value="other"),
-        ],
+        helper_buttons=_cat_buttons(exclude=list(bundle_cats)),
         state=state,
         bundle=state.bundle,
     )
@@ -492,7 +488,7 @@ def generate_multi_bundle(
     Vendor notifications are NOT sent until the user selects a bundle.
     """
     needed = req.needed_categories or [
-        c for c in VENDOR_CATEGORIES if c not in req.booked_categories
+        c for c in CHATBOT_CATEGORIES if c not in req.booked_categories
     ]
 
     _PRESETS = [
@@ -578,7 +574,7 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
         guest_count=req.guest_count,
         booked_categories=req.booked_categories,
         needed_categories=req.needed_categories or [
-            c for c in VENDOR_CATEGORIES if c not in req.booked_categories
+            c for c in CHATBOT_CATEGORIES if c not in req.booked_categories
         ],
         budget_tier=req.budget_tier or BudgetTier.MID_RANGE,
         budget_amount=req.budget_amount,
@@ -1088,13 +1084,13 @@ def _apply_llm_intent(
 
     # ── Set booked categories ────────────────────────────────────────
     if intent == "set_booked":
-        cats = [c for c in values.get("categories", []) if c in VENDOR_CATEGORIES]
+        cats = [c for c in values.get("categories", []) if c in CHATBOT_CATEGORIES]
         if cats:
             state.booked_categories = cats
             resp = _step_still_need(state)
         else:
             state.booked_categories = []
-            state.needed_categories = list(VENDOR_CATEGORIES)
+            state.needed_categories = list(CHATBOT_CATEGORIES)
             resp = _step_budget(state)
         resp.bot_message = f"{llm_result.bot_message}\n\n{resp.bot_message}"
         resp.llm_response = True
@@ -1102,7 +1098,7 @@ def _apply_llm_intent(
 
     # ── Set needed categories ────────────────────────────────────────
     if intent == "set_needed":
-        cats = [c for c in values.get("categories", []) if c in VENDOR_CATEGORIES]
+        cats = [c for c in values.get("categories", []) if c in CHATBOT_CATEGORIES]
         state.needed_categories = [c for c in cats if c not in state.booked_categories]
         resp = _step_budget(state)
         resp.bot_message = f"{llm_result.bot_message}\n\n{resp.bot_message}"
@@ -1394,11 +1390,11 @@ async def process_step(
     if current_step == ChatStep.ALREADY_BOOKED:
         if "nothing_yet" in selections or selection == "nothing_yet":
             state.booked_categories = []
-            state.needed_categories = list(VENDOR_CATEGORIES)
+            state.needed_categories = list(CHATBOT_CATEGORIES)
             resp = _step_budget(state)
         else:
             state.booked_categories = [
-                v for v in selections if v in VENDOR_CATEGORIES
+                v for v in selections if v in CHATBOT_CATEGORIES
             ]
             resp = _step_still_need(state)
         _append_history(state, user_input, resp.bot_message)
@@ -1408,17 +1404,14 @@ async def process_step(
     if current_step == ChatStep.STILL_NEED:
         if "recommend_all" in selections or selection == "recommend_all":
             state.needed_categories = [
-                c for c in VENDOR_CATEGORIES if c not in state.booked_categories
+                c for c in CHATBOT_CATEGORIES if c not in state.booked_categories
             ]
         else:
-            chosen = [v for v in selections if v in VENDOR_CATEGORIES]
+            chosen = [v for v in selections if v in CHATBOT_CATEGORIES]
             # Remove duplicates already booked
             state.needed_categories = [
                 c for c in chosen if c not in state.booked_categories
             ]
-            # Handle "other"
-            if "other" in selections:
-                state.needed_categories.append("other")
         resp = _step_budget(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
@@ -1578,7 +1571,7 @@ async def process_step(
 
     # ── STEP 6D: ADD CATEGORY ────────────────────────────────────────
     if current_step == ChatStep.ADD_CATEGORY:
-        new_cats = [v for v in selections if v in VENDOR_CATEGORIES and v not in state.needed_categories]
+        new_cats = [v for v in selections if v in CHATBOT_CATEGORIES and v not in state.needed_categories]
         state.needed_categories.extend(new_cats)
 
         # Generate items for the new categories
@@ -1637,7 +1630,7 @@ async def process_step(
 
     # ── STEP 7b: PARTIAL BOOKING ─────────────────────────────────────
     if current_step == ChatStep.PARTIAL_BOOKING:
-        chosen_cats = [v for v in selections if v in VENDOR_CATEGORIES]
+        chosen_cats = [v for v in selections if v in CHATBOT_CATEGORIES]
         if chosen_cats and db and user_id and state.bundle:
             bundle_id, booking_ids = _create_bundle_from_chatbot(state, user_id, chosen_cats, db)
             resp = StepResponse(
