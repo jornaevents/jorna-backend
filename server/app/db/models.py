@@ -285,6 +285,17 @@ class RefreshToken(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    token_id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # SHA-256 hex digest of the raw token — never store the raw value
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
 class Event(Base):
     __tablename__ = "events"
 

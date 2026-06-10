@@ -39,6 +39,8 @@ from app.services.auth_service import (
     google_sign_in_or_create,
     complete_profile,
     refresh_access_token,
+    request_password_reset,
+    reset_password,
 )
 
 
@@ -131,6 +133,20 @@ class ChangePasswordRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def reset_password_strength(cls, v: str) -> str:
+        return _validate_password(v)
 
 
 class LogoutRequest(BaseModel):
@@ -377,6 +393,27 @@ def refresh_route(request: Request, body: RefreshRequest, db: Session = Depends(
     """Exchange a valid refresh token for a new access token + rotated refresh token."""
     try:
         return refresh_access_token(refresh_token=body.refresh_token, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/forgot-password")
+@limiter.limit("3/minute")
+def forgot_password_route(request: Request, body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Email a single-use password reset link. Always returns 200 so the response
+    can't be used to discover which email addresses are registered."""
+    try:
+        return request_password_reset(email=body.email, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/reset-password")
+@limiter.limit("5/minute")
+def reset_password_route(request: Request, body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Set a new password using a valid reset token, invalidating all existing sessions."""
+    try:
+        return reset_password(token=body.token, new_password=body.new_password, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
