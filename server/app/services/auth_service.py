@@ -423,6 +423,28 @@ def reset_password(*, token: str, new_password: str, db: Session) -> dict:
     return {"message": "Password has been reset. Please log in with your new password."}
 
 
+def cleanup_expired_tokens(db: Session) -> dict:
+    """Delete expired refresh and password-reset tokens.
+
+    Both tables only ever accumulate — tokens are otherwise removed on use or
+    rotation, so expired rows linger forever without a sweep. Safe to run
+    repeatedly. Compares against a naive UTC now because the columns are stored
+    timezone-naive (DateTime without tz). Returns the per-table delete counts.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    refresh_deleted = (
+        db.query(RefreshToken).filter(RefreshToken.expires_at < now).delete(synchronize_session=False)
+    )
+    reset_deleted = (
+        db.query(PasswordResetToken).filter(PasswordResetToken.expires_at < now).delete(synchronize_session=False)
+    )
+    db.commit()
+    return {
+        "refresh_tokens_deleted": refresh_deleted,
+        "password_reset_tokens_deleted": reset_deleted,
+    }
+
+
 def logout_user(*, user_id: str, db: Session, refresh_token: Optional[str] = None) -> dict:
     """Invalidate all access tokens and optionally a specific refresh token.
 

@@ -12,6 +12,7 @@ from app.services.auth_service import (
     AuthError,
     request_password_reset,
     reset_password,
+    cleanup_expired_tokens,
 )
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
@@ -157,3 +158,36 @@ class TestResetEndpoints:
             json={"token": "bogus", "new_password": "StrongPass123"},
         )
         assert resp.status_code == 400
+
+
+class TestExpiredTokenCleanup:
+    def test_cleanup_deletes_only_expired(self):
+        db = TestingSessionLocal()
+        user = _make_user(db)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        # One expired + one live refresh token
+        db.add(RefreshToken(
+            user_id=user.user_id, token_hash="exp" + "a" * 61, family="f1",
+            expires_at=now - timedelta(days=1), created_at=now - timedelta(days=31),
+        ))
+        db.add(RefreshToken(
+            user_id=user.user_id, token_hash="live" + "b" * 60, family="f2",
+            expires_at=now + timedelta(days=1), created_at=now,
+        ))
+        # One expired reset token
+        db.add(PasswordResetToken(
+            user_id=user.user_id, token_hash="exp" + "c" * 61,
+            expires_at=now - timedelta(minutes=5), created_at=now - timedelta(hours=2),
+        ))
+        db.commit()
+
+        result = cleanup_expired_tokens(db)
+
+        assert result["refresh_tokens_deleted"] == 1
+        assert result["password_reset_tokens_deleted"] == 1
+        # The live refresh token survives
+        live = db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).all()
+        assert len(live) == 1
+        assert live[0].family == "f2"
+        db.close()

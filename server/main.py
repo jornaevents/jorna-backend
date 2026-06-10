@@ -4,6 +4,7 @@ Registers routers and exposes auth / vendor-search routes that
 delegate to the service layer.
 """
 
+import asyncio
 import logging
 import re
 import os
@@ -41,6 +42,7 @@ from app.services.auth_service import (
     refresh_access_token,
     request_password_reset,
     reset_password,
+    cleanup_expired_tokens,
 )
 
 
@@ -153,6 +155,29 @@ class LogoutRequest(BaseModel):
     refresh_token: Optional[str] = None
 
 
+# ── Background tasks ──────────────────────────────────────────────────
+
+_TOKEN_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+
+
+async def _periodic_token_cleanup():
+    """Sweep expired refresh + password-reset tokens once a day.
+
+    Runs immediately on startup, then every 24h. Each pass uses its own DB
+    session. Failures are logged and never crash the loop.
+    """
+    from app.db.database import SessionLocal
+    while True:
+        try:
+            with SessionLocal() as session:
+                result = cleanup_expired_tokens(session)
+            if result["refresh_tokens_deleted"] or result["password_reset_tokens_deleted"]:
+                logger.info("Expired token sweep: %s", result)
+        except Exception as exc:
+            logger.warning("Token cleanup failed: %s", exc)
+        await asyncio.sleep(_TOKEN_CLEANUP_INTERVAL_SECONDS)
+
+
 # ── App setup ─────────────────────────────────────────────────────────
 
 
@@ -214,7 +239,17 @@ async def lifespan(app: FastAPI):
                     INITIAL_ADMIN_EMAIL,
                 )
 
+    # Start the daily expired-token sweep.
+    cleanup_task = asyncio.create_task(_periodic_token_cleanup())
+
     yield
+
+    # Shutdown: stop the background sweep.
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
