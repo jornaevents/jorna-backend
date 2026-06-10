@@ -11,8 +11,15 @@ import bcrypt
 import jwt
 from sqlalchemy.orm import Session
 
-from app.config import ALGORITHM, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
-from app.db.models import User, RefreshToken
+from app.config import (
+    ALGORITHM,
+    SECRET_KEY,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    PASSWORD_RESET_EXPIRE_MINUTES,
+    FRONTEND_URL,
+)
+from app.db.models import User, RefreshToken, PasswordResetToken
 
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -321,6 +328,121 @@ def change_password(*, user_id: str, current_password: str, new_password: str, d
     user.token_version = (user.token_version or 0) + 1
     db.commit()
     return {"message": "Password updated successfully"}
+
+
+def _send_password_reset_email(user: User, raw_token: str) -> None:
+    """Email the user a single-use password reset link. Best-effort."""
+    from app.services.email_service import send_email
+    reset_link = f"{FRONTEND_URL.rstrip('/')}/reset-password?token={raw_token}"
+    subject = "Reset your Desiconnect password"
+    html = (
+        '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'
+        'padding:24px;color:#1a1a1a">'
+        f'<h2 style="margin:0 0 12px">Reset your password</h2>'
+        f'<p style="font-size:15px;line-height:1.5">Hi {user.f_name}, we received a request to '
+        'reset your Desiconnect password. Click the button below to choose a new one.</p>'
+        f'<p style="margin:24px 0"><a href="{reset_link}" '
+        'style="background:#c2410c;color:#fff;text-decoration:none;padding:12px 24px;'
+        'border-radius:6px;font-size:15px;display:inline-block">Reset Password</a></p>'
+        f'<p style="font-size:13px;color:#555">This link expires in '
+        f'{PASSWORD_RESET_EXPIRE_MINUTES} minutes. If you didn\'t request this, you can safely '
+        'ignore this email — your password won\'t change.</p>'
+        '<hr style="border:none;border-top:1px solid #eee;margin:20px 0">'
+        '<p style="font-size:12px;color:#888;margin:0">Desiconnect — your South Asian event marketplace.</p>'
+        '</div>'
+    )
+    text = (
+        f"Hi {user.f_name},\n\nReset your Desiconnect password using this link:\n{reset_link}\n\n"
+        f"This link expires in {PASSWORD_RESET_EXPIRE_MINUTES} minutes. "
+        "If you didn't request this, ignore this email."
+    )
+    send_email(to=user.email, subject=subject, html=html, text=text)
+
+
+def request_password_reset(*, email: str, db: Session) -> dict:
+    """Issue a single-use reset token and email a reset link.
+
+    Always returns the same generic response so callers can't use this endpoint
+    to discover which email addresses are registered (user enumeration).
+    """
+    generic = {"message": "If that email is registered, a password reset link has been sent."}
+    user = db.query(User).filter(User.email == email.lower().strip()).first()
+    if not user:
+        return generic
+
+    # Only the most recent link should be valid — drop any prior tokens.
+    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.user_id).delete()
+
+    raw_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    db.add(PasswordResetToken(
+        user_id=user.user_id,
+        token_hash=_hash_token(raw_token),
+        expires_at=now + timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES),
+        created_at=now,
+    ))
+    db.commit()
+
+    try:
+        _send_password_reset_email(user, raw_token)
+    except Exception as exc:  # pragma: no cover - email is best-effort
+        import logging
+        logging.getLogger(__name__).error("Failed to send reset email: %s", exc)
+
+    return generic
+
+
+def reset_password(*, token: str, new_password: str, db: Session) -> dict:
+    """Verify a reset token, set the new password, and invalidate all sessions."""
+    record = (
+        db.query(PasswordResetToken)
+        .filter(PasswordResetToken.token_hash == _hash_token(token))
+        .first()
+    )
+    if not record:
+        raise AuthError(400, "Invalid or expired reset token")
+
+    if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        db.delete(record)
+        db.commit()
+        raise AuthError(400, "Reset token has expired — please request a new one")
+
+    user = db.query(User).filter(User.user_id == record.user_id).first()
+    if not user:
+        db.delete(record)
+        db.commit()
+        raise AuthError(400, "Invalid or expired reset token")
+
+    user.password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    # Invalidate every outstanding access token and refresh token for this user.
+    user.token_version = (user.token_version or 0) + 1
+    db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).delete()
+    # Single-use: consume this and any sibling reset tokens.
+    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.user_id).delete()
+    db.commit()
+    return {"message": "Password has been reset. Please log in with your new password."}
+
+
+def cleanup_expired_tokens(db: Session) -> dict:
+    """Delete expired refresh and password-reset tokens.
+
+    Both tables only ever accumulate — tokens are otherwise removed on use or
+    rotation, so expired rows linger forever without a sweep. Safe to run
+    repeatedly. Compares against a naive UTC now because the columns are stored
+    timezone-naive (DateTime without tz). Returns the per-table delete counts.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    refresh_deleted = (
+        db.query(RefreshToken).filter(RefreshToken.expires_at < now).delete(synchronize_session=False)
+    )
+    reset_deleted = (
+        db.query(PasswordResetToken).filter(PasswordResetToken.expires_at < now).delete(synchronize_session=False)
+    )
+    db.commit()
+    return {
+        "refresh_tokens_deleted": refresh_deleted,
+        "password_reset_tokens_deleted": reset_deleted,
+    }
 
 
 def logout_user(*, user_id: str, db: Session, refresh_token: Optional[str] = None) -> dict:

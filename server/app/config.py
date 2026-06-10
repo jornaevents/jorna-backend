@@ -19,6 +19,8 @@ ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 # Refresh token lifetime in days (default 30 days).
 REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+# Password-reset token lifetime in minutes (default 60 minutes). Short-lived, single-use.
+PASSWORD_RESET_EXPIRE_MINUTES: int = int(os.getenv("PASSWORD_RESET_EXPIRE_MINUTES", "60"))
 
 # ── Google Calendar OAuth ─────────────────────────────────────────────
 # Where Google redirects after the vendor grants access.
@@ -47,6 +49,14 @@ PLATFORM_FEE_PERCENT: int = int(os.getenv("PLATFORM_FEE_PERCENT", "5"))
 # Service role key (Settings → API in Supabase dashboard).
 # Required only for server-side file uploads; keep this secret.
 SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+
+# ── Email (Resend) ────────────────────────────────────────────────────
+# Transactional email via Resend (https://resend.com). Used as a fallback
+# channel for booking notifications when a user has no FCM push token, and
+# for password-reset emails. Email is silently skipped when unset.
+RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+# Must be an address on a domain verified in your Resend dashboard.
+EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Desiconnect <noreply@desiconnect.com>")
 
 # ── YouTube ───────────────────────────────────────────────────────────
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")

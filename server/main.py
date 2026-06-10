@@ -4,6 +4,7 @@ Registers routers and exposes auth / vendor-search routes that
 delegate to the service layer.
 """
 
+import asyncio
 import logging
 import re
 import os
@@ -39,6 +40,9 @@ from app.services.auth_service import (
     google_sign_in_or_create,
     complete_profile,
     refresh_access_token,
+    request_password_reset,
+    reset_password,
+    cleanup_expired_tokens,
 )
 
 
@@ -133,8 +137,45 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def reset_password_strength(cls, v: str) -> str:
+        return _validate_password(v)
+
+
 class LogoutRequest(BaseModel):
     refresh_token: Optional[str] = None
+
+
+# ── Background tasks ──────────────────────────────────────────────────
+
+_TOKEN_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+
+
+async def _periodic_token_cleanup():
+    """Sweep expired refresh + password-reset tokens once a day.
+
+    Runs immediately on startup, then every 24h. Each pass uses its own DB
+    session. Failures are logged and never crash the loop.
+    """
+    from app.db.database import SessionLocal
+    while True:
+        try:
+            with SessionLocal() as session:
+                result = cleanup_expired_tokens(session)
+            if result["refresh_tokens_deleted"] or result["password_reset_tokens_deleted"]:
+                logger.info("Expired token sweep: %s", result)
+        except Exception as exc:
+            logger.warning("Token cleanup failed: %s", exc)
+        await asyncio.sleep(_TOKEN_CLEANUP_INTERVAL_SECONDS)
 
 
 # ── App setup ─────────────────────────────────────────────────────────
@@ -167,6 +208,12 @@ async def lifespan(app: FastAPI):
             "instead of LLM-powered tag scoring. Set it in Railway for full functionality."
         )
 
+    if not os.getenv("RESEND_API_KEY"):
+        logger.warning(
+            "RESEND_API_KEY is not set — booking notifications will only be delivered via "
+            "push (FCM). Users without a device token won't receive email fallbacks."
+        )
+
     if not DATABASE_URL.startswith("sqlite") and any("localhost" in o for o in ALLOWED_ORIGINS):
         logger.warning(
             "ALLOWED_ORIGINS contains localhost entries in a production environment: %s — "
@@ -192,7 +239,17 @@ async def lifespan(app: FastAPI):
                     INITIAL_ADMIN_EMAIL,
                 )
 
+    # Start the daily expired-token sweep.
+    cleanup_task = asyncio.create_task(_periodic_token_cleanup())
+
     yield
+
+    # Shutdown: stop the background sweep.
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -371,6 +428,27 @@ def refresh_route(request: Request, body: RefreshRequest, db: Session = Depends(
     """Exchange a valid refresh token for a new access token + rotated refresh token."""
     try:
         return refresh_access_token(refresh_token=body.refresh_token, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/forgot-password")
+@limiter.limit("3/minute")
+def forgot_password_route(request: Request, body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Email a single-use password reset link. Always returns 200 so the response
+    can't be used to discover which email addresses are registered."""
+    try:
+        return request_password_reset(email=body.email, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/reset-password")
+@limiter.limit("5/minute")
+def reset_password_route(request: Request, body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Set a new password using a valid reset token, invalidating all existing sessions."""
+    try:
+        return reset_password(token=body.token, new_password=body.new_password, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

@@ -129,6 +129,44 @@ async function logout() {
 
 ---
 
+## 6. Forgot / reset password
+
+Two-step, email-based. The user requests a link, receives an email, and lands on a frontend page that collects the new password and submits the token.
+
+```js
+// Step 1 — user submits their email on the "forgot password" screen
+async function forgotPassword(email) {
+  await fetch('/auth/forgot-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  // Always show the same confirmation — the API never reveals whether the email exists
+  showMessage('If that email is registered, a reset link has been sent.')
+}
+
+// Step 2 — the reset link opens /reset-password?token=XYZ in your app.
+// Read the token from the URL, collect a new password, then:
+async function resetPassword(token, newPassword) {
+  const res = await fetch('/auth/reset-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  })
+  if (!res.ok) throw new Error('Reset link is invalid or expired')
+  // Password changed — all old sessions are now dead. Send the user to login.
+  redirectToLogin()
+}
+```
+
+**Notes:**
+- The reset link points at `{FRONTEND_URL}/reset-password?token=...` — make sure that route exists in your app.
+- The token is **single-use** and expires in 60 minutes. Requesting a new link invalidates any previous one.
+- A successful reset **invalidates all existing sessions** (access + refresh tokens), so the user must log in again afterward.
+- `new_password` must meet the same complexity rules as registration (8+ chars, upper, lower, digit) or the API returns `422`.
+
+---
+
 ## Backend endpoints
 
 | Method | Path | Auth required | Body | Returns |
@@ -137,6 +175,8 @@ async function logout() {
 | `POST` | `/auth/google/lookup` | No | `{ access_token }` | `{ access_token, refresh_token, token_type, user_id, email, is_new_user }` |
 | `POST` | `/auth/refresh` | No | `{ refresh_token }` | `{ access_token, refresh_token, token_type }` |
 | `POST` | `/auth/logout` | Yes | `{ refresh_token? }` | `{ message }` |
+| `POST` | `/auth/forgot-password` | No | `{ email }` | `{ message }` (always 200) |
+| `POST` | `/auth/reset-password` | No | `{ token, new_password }` | `{ message }` |
 
 ---
 
