@@ -506,6 +506,7 @@ class TestEnvConfiguration:
         assert path is not None
         assert path.endswith(".json")
 
+    @pytest.mark.skipif(not firebase_available, reason="firebase_credentials.json not configured")
     def test_firebase_credentials_file_exists(self):
         """The file referenced by FIREBASE_CREDENTIALS_PATH must exist."""
         path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "firebase_credentials.json")
@@ -514,6 +515,7 @@ class TestEnvConfiguration:
             "Download from Firebase Console → Project Settings → Service Accounts."
         )
 
+    @pytest.mark.skipif(not google_available, reason="client_secret.json not configured")
     def test_google_client_secret_file_exists(self):
         """The file referenced by GOOGLE_CLIENT_SECRETS_FILE must exist."""
         path = os.environ.get("GOOGLE_CLIENT_SECRETS_FILE", "client_secret.json")
