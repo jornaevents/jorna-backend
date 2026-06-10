@@ -4,13 +4,24 @@ The bundle builder is a guided chatbot flow that collects event details from the
 
 ---
 
-## Two Entry Points
+## Endpoints
 
-### 1. Step-by-Step Flow (`POST /chatbot/step`)
-A guided conversation — one question at a time. Requires the user to be logged in. The client carries all state between requests; the backend is completely stateless.
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /chatbot/start` | None | Returns the opening Step 0 prompt + empty state |
+| `POST /chatbot/step` | Bearer JWT | Process one step; returns next prompt + updated state |
+| `POST /chatbot/bundle` | None | Single-shot bundle from all inputs at once (not persisted) |
+| `POST /chatbot/bundles` | Bearer JWT | Persists three draft bundles to compare |
+| `POST /bundles/{bundle_id}/select` | Bearer JWT | Keep one comparison bundle, discard the rest |
+
+### 1. Step-by-Step Flow (`POST /chatbot/start` → `POST /chatbot/step`)
+A guided conversation — one question at a time. `/chatbot/start` returns the first prompt; each `/chatbot/step` requires the user to be logged in. The client carries all state between requests; the backend is completely stateless.
 
 ### 2. Three-Bundle Comparison (`POST /chatbot/bundles`)
-Skip the conversation entirely. Send all inputs at once and receive three bundles simultaneously to compare side by side. No auth required.
+Skip the conversation entirely. Send all inputs at once and receive three bundles to compare side by side. Requires the user to be logged in — the three bundles are persisted as drafts and the user keeps one via `POST /bundles/{bundle_id}/select` (see below).
+
+### 3. Single-Shot Bundle (`POST /chatbot/bundle`)
+Same inputs as the comparison endpoint but returns one bundle immediately as a `StepResponse` at `bundle_action`. No auth, nothing persisted — useful for a quick preview that the user can then refine through `/chatbot/step`.
 
 ---
 
@@ -18,6 +29,9 @@ Skip the conversation entirely. Send all inputs at once and receive three bundle
 
 ### Step 1 — Event Details (`event_details`)
 Collects event date, location, and guest count. The user can type free text, click a button, or both.
+
+### Step 1b — Event Time (`event_time`)
+Collects the event start/end time. The user picks a preset (Morning / Afternoon / Evening / Full day / Not sure) or types free text like "3pm to 9pm". "Not sure" stores `TBD` so the booking can be filled in later.
 
 ### Step 2 — Already Booked (`already_booked`)
 The user selects which vendor categories they already have booked. These are excluded from the generated bundle.
@@ -60,7 +74,11 @@ Real `Bundle` and `Booking` records are created in the database. The response re
 | Top Rated | Highest rating | Tiebreaker only |
 | Balanced | Rating 50% + Price 30% | 20% of score |
 
-Each option includes a `factors` array so the frontend can display what's being prioritised. The user picks one and can continue refining it through the step-by-step flow starting at `bundle_action`.
+Each option includes a `factors` array so the frontend can display what's being prioritised.
+
+Because the caller is authenticated, all three bundles (and their bookings) are **persisted as draft `Bundle` records sharing a hidden `bundle_group_id`**, and each option carries its own `bundle_id`. No vendor is notified yet.
+
+To keep one, the frontend calls `POST /bundles/{bundle_id}/select` with the chosen option's `bundle_id`. That endpoint deletes the other two draft bundles and their bookings, clears the group on the survivor (it becomes a normal draft), **notifies the chosen bundle's vendors**, and returns the chosen bundle. Selecting is therefore a commit — it books the chosen bundle. The user can still refine an option through the step-by-step flow starting at `bundle_action` (using the option's `state`) *before* calling `/select`.
 
 ---
 
@@ -103,6 +121,8 @@ When the user confirms a bundle (`book_all` or `book_some`):
 5. The response sets `is_complete: true` with `bundle_id` and `booking_ids`
 6. The frontend detects `is_complete === true` and navigates to `/bundles/{bundle_id}`
 
+In the step-by-step flow, vendors are notified as soon as the bookings are created. In the three-bundle comparison flow, the draft bookings are created up front but vendor notifications are **held until the user calls `POST /bundles/{bundle_id}/select`** — only the chosen bundle's vendors are notified.
+
 ---
 
 ## Instagram Tag Enrichment
@@ -141,7 +161,8 @@ Instagram tags are included alongside user-inputted tags when scoring vendors du
 | `description` | string | One-line summary of the strategy |
 | `factors` | array | Ordered priority factors e.g. `["Lowest price (primary)", "Style match (tiebreaker)"]` |
 | `bundle` | object | The generated bundle |
-| `state` | object | State to pass into `/chatbot/step` to continue refining |
+| `state` | object | State to pass into `/chatbot/step` to continue refining (at `bundle_action`) |
+| `bundle_id` | string | DB bundle ID of the persisted draft — pass to `POST /bundles/{bundle_id}/select` to keep this one |
 
 ### `BundleItem` (inside a bundle)
 
