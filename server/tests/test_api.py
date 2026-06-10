@@ -174,6 +174,10 @@ def test_vendors_search():
     assert len(response.json()["items"]) == 0
 
 
+@pytest.mark.skipif(
+    not os.path.exists(os.environ.get("GOOGLE_CLIENT_SECRETS_FILE", "client_secret.json")),
+    reason="client_secret.json not configured — Google OAuth URL generation unavailable",
+)
 def test_google_auth_redirect():
     db = TestingSessionLocal()
     user = User(

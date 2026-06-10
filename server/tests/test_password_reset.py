@@ -43,26 +43,32 @@ def _request_and_capture_token(email, db):
     return result, captured.get("token")
 
 
+@pytest.fixture
+def db():
+    """A DB session that is always closed, even if the test fails — otherwise the
+    leaked connection keeps the SQLite test file locked on Windows at teardown."""
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 class TestRequestReset:
-    def test_unknown_email_is_generic_and_creates_no_token(self):
-        db = TestingSessionLocal()
+    def test_unknown_email_is_generic_and_creates_no_token(self, db):
         result, token = _request_and_capture_token("nobody@nowhere.com", db)
         assert "if that email is registered" in result["message"].lower()
         assert token is None
-        db.close()
 
-    def test_known_email_creates_token_and_sends_email(self):
-        db = TestingSessionLocal()
+    def test_known_email_creates_token_and_sends_email(self, db):
         user = _make_user(db)
         result, token = _request_and_capture_token(user.email, db)
         assert token is not None
         # A hashed token row exists for the user
         rows = db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.user_id).all()
         assert len(rows) == 1
-        db.close()
 
-    def test_new_request_supersedes_old_token(self):
-        db = TestingSessionLocal()
+    def test_new_request_supersedes_old_token(self, db):
         user = _make_user(db)
         _, token1 = _request_and_capture_token(user.email, db)
         _, token2 = _request_and_capture_token(user.email, db)
@@ -73,12 +79,10 @@ class TestRequestReset:
         # The old token no longer works
         with pytest.raises(AuthError):
             reset_password(token=token1, new_password="BrandNew123", db=db)
-        db.close()
 
 
 class TestResetPassword:
-    def test_valid_token_changes_password(self):
-        db = TestingSessionLocal()
+    def test_valid_token_changes_password(self, db):
         user = _make_user(db, password="OldPass123")
         _, token = _request_and_capture_token(user.email, db)
 
@@ -88,8 +92,7 @@ class TestResetPassword:
         assert bcrypt.checkpw(b"BrandNew123", user.password.encode())
         assert not bcrypt.checkpw(b"OldPass123", user.password.encode())
 
-    def test_reset_bumps_token_version_and_wipes_refresh_tokens(self):
-        db = TestingSessionLocal()
+    def test_reset_bumps_token_version_and_wipes_refresh_tokens(self, db):
         user = _make_user(db)
         db.add(RefreshToken(
             user_id=user.user_id, token_hash="x" * 64, family="fam",
@@ -106,8 +109,7 @@ class TestResetPassword:
         assert user.token_version == old_version + 1
         assert db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).count() == 0
 
-    def test_token_is_single_use(self):
-        db = TestingSessionLocal()
+    def test_token_is_single_use(self, db):
         user = _make_user(db)
         _, token = _request_and_capture_token(user.email, db)
         reset_password(token=token, new_password="BrandNew123", db=db)
@@ -116,15 +118,12 @@ class TestResetPassword:
             reset_password(token=token, new_password="Another123", db=db)
         assert exc.value.status_code == 400
 
-    def test_invalid_token_rejected(self):
-        db = TestingSessionLocal()
+    def test_invalid_token_rejected(self, db):
         with pytest.raises(AuthError) as exc:
             reset_password(token="not-a-real-token", new_password="BrandNew123", db=db)
         assert exc.value.status_code == 400
-        db.close()
 
-    def test_expired_token_rejected(self):
-        db = TestingSessionLocal()
+    def test_expired_token_rejected(self, db):
         user = _make_user(db)
         _, token = _request_and_capture_token(user.email, db)
         # Force-expire the token
@@ -138,7 +137,6 @@ class TestResetPassword:
         with pytest.raises(AuthError) as exc:
             reset_password(token=token, new_password="BrandNew123", db=db)
         assert exc.value.status_code == 400
-        db.close()
 
 
 class TestResetEndpoints:
@@ -161,8 +159,7 @@ class TestResetEndpoints:
 
 
 class TestExpiredTokenCleanup:
-    def test_cleanup_deletes_only_expired(self):
-        db = TestingSessionLocal()
+    def test_cleanup_deletes_only_expired(self, db):
         user = _make_user(db)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -190,4 +187,3 @@ class TestExpiredTokenCleanup:
         live = db.query(RefreshToken).filter(RefreshToken.user_id == user.user_id).all()
         assert len(live) == 1
         assert live[0].family == "f2"
-        db.close()
