@@ -15,6 +15,7 @@ from app.services.bundle_service import (
     list_bundles,
     add_booking_to_bundle,
     remove_booking_from_bundle,
+    rename_bundle,
     update_bundle_status,
     select_bundle,
     delete_bundle,
@@ -31,6 +32,10 @@ class CreateBundleRequest(BaseModel):
 
 class UpdateStatusRequest(BaseModel):
     status: str
+
+
+class RenameBundleRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
 
 
 @router.post("", summary="Create a bundle", status_code=201)
@@ -133,6 +138,23 @@ def select_bundle_route(
     """
     try:
         return select_bundle(bundle_id=bundle_id, caller_user_id=current_user.user_id, db=db)
+    except BundleError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.patch("/{bundle_id}", summary="Rename a bundle")
+def rename_bundle_route(
+    bundle_id: str,
+    body: RenameBundleRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Rename a bundle."""
+    try:
+        return rename_bundle(
+            bundle_id=bundle_id, name=body.name,
+            caller_user_id=current_user.user_id, db=db,
+        )
     except BundleError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

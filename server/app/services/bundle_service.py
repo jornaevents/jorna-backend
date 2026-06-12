@@ -38,6 +38,7 @@ def _booking_summary(booking: Booking, db: Session) -> dict:
         "vendor_id": booking.vendor_id,
         "price": price,
         "amount_cents": booking.amount_cents,
+        "open_to_price_negotiation": vendor.open_to_price_negotiation if vendor else False,
     }
 
 
@@ -260,6 +261,23 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
             remove_vendor_from_bundle_conversations(bundle_id=bundle_id, vendor_user_id=vendor.user_id, db=db)
     except Exception as exc:
         logger.warning("Failed to remove vendor from conversations: %s", exc)
+
+    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    return _bundle_dict(bundle, bookings, db)
+
+
+def rename_bundle(*, bundle_id: str, name: str, caller_user_id: str, db: Session) -> dict:
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+    if not bundle:
+        raise BundleError(404, "Bundle not found")
+    _assert_owns_bundle(bundle, caller_user_id)
+
+    # event_name takes precedence over name when displaying the bundle's title
+    # (see _bundle_dict / BundleDetailResponse), so update both to be safe.
+    bundle.name = name
+    bundle.event_name = name
+    bundle.updated_at = datetime.now(timezone.utc)
+    db.commit()
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     return _bundle_dict(bundle, bookings, db)
