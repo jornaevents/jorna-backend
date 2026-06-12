@@ -370,32 +370,37 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
 
-    # Delete the bundle's bookings, along with any negotiations, messages,
-    # and reviews tied to those bookings
-    from app.db.models import Message, Negotiation, NegotiationOffer, Review
-    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
-    for booking in bookings:
-        negotiation = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
-        if negotiation:
-            db.query(NegotiationOffer).filter(
-                NegotiationOffer.negotiation_id == negotiation.negotiation_id).delete()
-            db.delete(negotiation)
-        db.query(Message).filter(Message.booking_id == booking.booking_id).delete()
-        db.query(Review).filter(Review.booking_id == booking.booking_id).delete()
-        db.delete(booking)
+    try:
+        # Delete the bundle's bookings, along with any negotiations, messages,
+        # and reviews tied to those bookings
+        from app.db.models import Message, Negotiation, NegotiationOffer, Review
+        bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+        for booking in bookings:
+            negotiation = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
+            if negotiation:
+                db.query(NegotiationOffer).filter(
+                    NegotiationOffer.negotiation_id == negotiation.negotiation_id).delete()
+                db.delete(negotiation)
+            db.query(Message).filter(Message.booking_id == booking.booking_id).delete()
+            db.query(Review).filter(Review.booking_id == booking.booking_id).delete()
+            db.delete(booking)
 
-    # Clean up group conversations and their messages/members
-    from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
-    conversations = db.query(Conversation).filter(Conversation.bundle_id == bundle_id).all()
-    for conv in conversations:
-        msg_ids = [m.message_id for m in db.query(GroupMessage).filter(
-            GroupMessage.conversation_id == conv.conversation_id).all()]
-        if msg_ids:
-            db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete()
-            db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete()
-        db.query(ConversationMember).filter(
-            ConversationMember.conversation_id == conv.conversation_id).delete()
-        db.delete(conv)
+        # Clean up group conversations and their messages/members
+        from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
+        conversations = db.query(Conversation).filter(Conversation.bundle_id == bundle_id).all()
+        for conv in conversations:
+            msg_ids = [m.message_id for m in db.query(GroupMessage).filter(
+                GroupMessage.conversation_id == conv.conversation_id).all()]
+            if msg_ids:
+                db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete()
+                db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete()
+            db.query(ConversationMember).filter(
+                ConversationMember.conversation_id == conv.conversation_id).delete()
+            db.delete(conv)
 
-    db.delete(bundle)
-    db.commit()
+        db.delete(bundle)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("delete_bundle failed for bundle %s", bundle_id)
+        raise BundleError(500, f"Delete failed: {exc}")

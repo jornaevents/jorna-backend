@@ -1,8 +1,13 @@
 """Tests for the event bundle system."""
 
 import uuid
+from datetime import datetime, timezone
 import pytest
-from app.db.models import Booking, Bundle, User, Vendor, Service, Event
+from app.db.models import (
+    Booking, Bundle, User, Vendor, Service, Event,
+    Negotiation, NegotiationOffer, Message, Review,
+    Conversation, GroupMessage, GroupMessageRead,
+)
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
@@ -232,6 +237,75 @@ def test_delete_bundle_deletes_bookings(seeded_db):
 
     assert db.query(Booking).filter(Booking.booking_id == booking1.booking_id).first() is None
     assert db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first() is None
+
+
+def test_delete_bundle_with_negotiations_and_chats(seeded_db):
+    """Deleting a confirmed bundle should also clean up negotiations, messages,
+    reviews, and group conversations tied to its bookings."""
+    user = seeded_db["user"]
+    vendor_user = seeded_db["vendor_user"]
+    vendor = seeded_db["vendor"]
+    booking1 = seeded_db["booking1"]
+    booking1_id = booking1.booking_id
+    db = seeded_db["db"]
+    headers = make_auth_headers(user)
+
+    create_resp = client.post("/bundles", json={
+        "name": "Full Bundle", "booking_ids": [booking1_id],
+    }, headers=headers)
+    bundle_id = create_resp.json()["bundle_id"]
+
+    confirm_resp = client.patch(f"/bundles/{bundle_id}/status", json={"status": "confirmed"}, headers=headers)
+    assert confirm_resp.status_code == 200
+
+    now = datetime.now(timezone.utc)
+
+    negotiation = Negotiation(
+        booking_id=booking1_id, status="open",
+        current_offer_cents=10000, proposed_by=user.user_id,
+        created_at=now, updated_at=now,
+    )
+    db.add(negotiation)
+    db.commit()
+    negotiation_id = negotiation.negotiation_id
+
+    db.add(NegotiationOffer(
+        negotiation_id=negotiation_id, proposed_by=user.user_id,
+        action="offer", amount_cents=10000, message="test offer", created_at=now,
+    ))
+    db.add(Message(
+        booking_id=booking1_id, sender_id=user.user_id, receiver_id=vendor_user.user_id,
+        content="hello", created_at=now, is_read=False,
+    ))
+    db.add(Review(
+        booking_id=booking1_id, vendor_id=vendor.vendor_id, user_id=user.user_id,
+        rating=5.0, comment="great", created_at=now,
+    ))
+    db.commit()
+
+    conversations = db.query(Conversation).filter(Conversation.bundle_id == bundle_id).all()
+    assert len(conversations) > 0
+    conv_id = conversations[0].conversation_id
+
+    group_msg = GroupMessage(
+        conversation_id=conv_id, sender_id=user.user_id,
+        content="hi everyone", created_at=now,
+    )
+    db.add(group_msg)
+    db.commit()
+    group_msg_id = group_msg.message_id
+
+    db.add(GroupMessageRead(message_id=group_msg_id, user_id=user.user_id, read_at=now))
+    db.commit()
+
+    response = client.delete(f"/bundles/{bundle_id}", headers=headers)
+    assert response.status_code == 204
+
+    assert db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first() is None
+    assert db.query(Booking).filter(Booking.booking_id == booking1_id).first() is None
+    assert db.query(Negotiation).filter(Negotiation.booking_id == booking1_id).first() is None
+    assert db.query(Conversation).filter(Conversation.bundle_id == bundle_id).first() is None
+    assert db.query(GroupMessage).filter(GroupMessage.conversation_id == conv_id).first() is None
 
 
 def test_other_user_cannot_access_bundle(seeded_db):
