@@ -2,7 +2,7 @@
 
 import uuid
 import pytest
-from app.db.models import Booking, User, Vendor, Service, Event
+from app.db.models import Booking, Bundle, User, Vendor, Service, Event
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
@@ -216,7 +216,7 @@ def test_invalid_status_rejected(seeded_db):
     assert response.status_code == 400
 
 
-def test_delete_bundle_detaches_bookings(seeded_db):
+def test_delete_bundle_deletes_bookings(seeded_db):
     user = seeded_db["user"]
     booking1 = seeded_db["booking1"]
     db = seeded_db["db"]
@@ -230,8 +230,8 @@ def test_delete_bundle_detaches_bookings(seeded_db):
     response = client.delete(f"/bundles/{bundle_id}", headers=headers)
     assert response.status_code == 204
 
-    db.refresh(booking1)
-    assert booking1.bundle_id is None
+    assert db.query(Booking).filter(Booking.booking_id == booking1.booking_id).first() is None
+    assert db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first() is None
 
 
 def test_other_user_cannot_access_bundle(seeded_db):

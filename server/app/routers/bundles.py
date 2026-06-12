@@ -183,7 +183,7 @@ def delete_bundle_route(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a bundle. The individual bookings are kept but detached from the bundle."""
+    """Delete a bundle along with all of its bookings."""
     try:
         delete_bundle(bundle_id=bundle_id, caller_user_id=current_user.user_id, db=db)
     except BundleError as e:

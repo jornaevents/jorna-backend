@@ -370,8 +370,19 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
 
-    # Detach bookings — they remain active, just no longer part of this bundle
-    db.query(Booking).filter(Booking.bundle_id == bundle_id).update({"bundle_id": None})
+    # Delete the bundle's bookings, along with any negotiations, messages,
+    # and reviews tied to those bookings
+    from app.db.models import Message, Negotiation, NegotiationOffer, Review
+    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    for booking in bookings:
+        negotiation = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
+        if negotiation:
+            db.query(NegotiationOffer).filter(
+                NegotiationOffer.negotiation_id == negotiation.negotiation_id).delete()
+            db.delete(negotiation)
+        db.query(Message).filter(Message.booking_id == booking.booking_id).delete()
+        db.query(Review).filter(Review.booking_id == booking.booking_id).delete()
+        db.delete(booking)
 
     # Clean up group conversations and their messages/members
     from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
