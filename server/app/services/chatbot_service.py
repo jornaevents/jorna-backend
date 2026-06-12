@@ -1071,13 +1071,8 @@ def _apply_llm_intent(
     # ── Set booked categories ────────────────────────────────────────
     if intent == "set_booked":
         cats = [c for c in values.get("categories", []) if c in CHATBOT_CATEGORIES]
-        if cats:
-            state.booked_categories = cats
-            resp = _step_still_need(state)
-        else:
-            state.booked_categories = []
-            state.needed_categories = list(CHATBOT_CATEGORIES)
-            resp = _step_budget(state)
+        state.booked_categories = cats
+        resp = _step_still_need(state)
         resp.bot_message = f"{llm_result.bot_message}\n\n{resp.bot_message}"
         resp.llm_response = True
         return resp
@@ -1376,13 +1371,11 @@ async def process_step(
     if current_step == ChatStep.ALREADY_BOOKED:
         if "nothing_yet" in selections or selection == "nothing_yet":
             state.booked_categories = []
-            state.needed_categories = list(CHATBOT_CATEGORIES)
-            resp = _step_budget(state)
         else:
             state.booked_categories = [
                 v for v in selections if v in CHATBOT_CATEGORIES
             ]
-            resp = _step_still_need(state)
+        resp = _step_still_need(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
 
