@@ -100,7 +100,7 @@ def create_bundle_conversations(*, bundle_id: str, client_user_id: str, db: Sess
 
     for conv_type, member_ids in [
         ("vendors_only", vendor_user_ids),
-        ("all_parties", [client_user_id] + vendor_user_ids),
+        ("all_parties", list(dict.fromkeys([client_user_id] + vendor_user_ids))),
     ]:
         # Skip vendors_only if there are no vendors yet
         if conv_type == "vendors_only" and not vendor_user_ids:

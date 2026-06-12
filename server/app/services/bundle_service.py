@@ -309,6 +309,7 @@ def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db
                 bundle_id=bundle_id, client_user_id=caller_user_id, db=db
             )
         except Exception as exc:
+            db.rollback()
             logger.warning("Failed to create bundle conversations on confirm: %s", exc)
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
