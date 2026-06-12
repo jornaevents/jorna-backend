@@ -398,6 +398,12 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
                 ConversationMember.conversation_id == conv.conversation_id).delete()
             db.delete(conv)
 
+        # Flush so the booking/conversation deletes are applied before the
+        # bundle delete — without a relationship() linking these mappers,
+        # SQLAlchemy's flush ordering doesn't guarantee that on its own,
+        # and deleting the bundle first trips the FK constraints.
+        db.flush()
+
         db.delete(bundle)
         db.commit()
     except Exception as exc:
