@@ -32,6 +32,7 @@ router = APIRouter(prefix="/payments", tags=["payments"])
     summary="Start Stripe Connect onboarding for a vendor",
 )
 def stripe_onboard(
+    request: Request,
     vendor_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -40,7 +41,12 @@ def stripe_onboard(
     Creates a Connect Express account if one doesn't exist yet.
     """
     try:
-        return create_vendor_onboarding_url(vendor_id=vendor_id, caller_user_id=current_user.user_id, db=db)
+        return create_vendor_onboarding_url(
+            vendor_id=vendor_id,
+            caller_user_id=current_user.user_id,
+            db=db,
+            base_url=str(request.base_url),
+        )
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

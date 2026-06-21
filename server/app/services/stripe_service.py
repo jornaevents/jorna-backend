@@ -27,13 +27,17 @@ class StripeError(Exception):
 # ── Vendor onboarding ─────────────────────────────────────────────────
 
 
-def create_vendor_onboarding_url(*, vendor_id: str, caller_user_id: str, db: Session) -> dict:
+def create_vendor_onboarding_url(*, vendor_id: str, caller_user_id: str, db: Session, base_url: str | None = None) -> dict:
     """Create (or reuse) a Stripe Express Connect account for the vendor
     and return a one-time hosted onboarding URL.
 
     If the vendor already has a stripe_account_id, a fresh Account Link is
     generated for the same account (handles the case where the vendor
     didn't finish onboarding the first time).
+
+    ``base_url`` (the API's own public base) is used for the return/refresh
+    pages so they resolve to the backend-served landing pages regardless of
+    how FRONTEND_URL is configured.
     """
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
@@ -56,10 +60,11 @@ def create_vendor_onboarding_url(*, vendor_id: str, caller_user_id: str, db: Ses
             db.commit()
             logger.info("Created Stripe Connect account %s for vendor %s", account.id, vendor_id)
 
+        link_base = (base_url or FRONTEND_URL).rstrip("/")
         account_link = stripe.AccountLink.create(
             account=vendor.stripe_account_id,
-            refresh_url=f"{FRONTEND_URL}/vendor/stripe-onboard/refresh?vendor_id={vendor_id}",
-            return_url=f"{FRONTEND_URL}/vendor/stripe-onboard/return?vendor_id={vendor_id}",
+            refresh_url=f"{link_base}/vendor/stripe-onboard/refresh?vendor_id={vendor_id}",
+            return_url=f"{link_base}/vendor/stripe-onboard/return?vendor_id={vendor_id}",
             type="account_onboarding",
         )
     except stripe.StripeError as e:

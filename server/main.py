@@ -317,6 +317,32 @@ def calendar_connected(success: str = "true", vendor_id: str = "", error: str = 
     return HTMLResponse(f"<html><body style='font-family:sans-serif;padding:2rem'>{body}</body></html>")
 
 
+@app.get("/vendor/stripe-onboard/return", response_class=HTMLResponse, include_in_schema=False)
+def stripe_onboard_return(vendor_id: str = ""):
+    """Landing page Stripe redirects to after a vendor finishes Connect onboarding.
+    The app re-checks the vendor's Stripe status when it returns to the foreground."""
+    body = (
+        "<h2>Payment setup complete</h2>"
+        "<p>Your Stripe account is connected. You can close this tab and return to Jorna.</p>"
+    )
+    return HTMLResponse(
+        f"<html><body style='font-family:-apple-system,sans-serif;padding:2.5rem;text-align:center;color:#3a0a12'>{body}</body></html>"
+    )
+
+
+@app.get("/vendor/stripe-onboard/refresh", response_class=HTMLResponse, include_in_schema=False)
+def stripe_onboard_refresh(vendor_id: str = ""):
+    """Stripe redirects here if the onboarding link expired or was reopened.
+    The app generates a fresh link when the vendor taps 'Continue Setup' again."""
+    body = (
+        "<h2>Setup link expired</h2>"
+        "<p>Return to Jorna and tap <b>Continue Setup</b> to finish connecting your payment account.</p>"
+    )
+    return HTMLResponse(
+        f"<html><body style='font-family:-apple-system,sans-serif;padding:2.5rem;text-align:center;color:#3a0a12'>{body}</body></html>"
+    )
+
+
 @app.get("/payment-complete", response_class=HTMLResponse, include_in_schema=False)
 def payment_complete(status: str = "success", booking_id: str = ""):
     """Landing page Stripe Checkout redirects to. The mobile app refreshes the
