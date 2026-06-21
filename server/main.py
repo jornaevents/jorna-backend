@@ -10,6 +10,7 @@ import re
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -317,44 +318,66 @@ def calendar_connected(success: str = "true", vendor_id: str = "", error: str = 
     return HTMLResponse(f"<html><body style='font-family:sans-serif;padding:2rem'>{body}</body></html>")
 
 
+def _app_return_page(*, deep_link: str, heading: str, sub: str) -> HTMLResponse:
+    """An HTML page that automatically bounces back into the Jorna app via its
+    custom URL scheme, with a tappable fallback if the browser blocks the
+    auto-redirect. Stripe requires an https return URL, so the app can't be the
+    direct target — this page is the bridge."""
+    return HTMLResponse(
+        f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<meta http-equiv='refresh' content='0;url={deep_link}'>
+<script>window.location.replace({deep_link!r});</script>
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:3rem 1.5rem;color:#3a0a12;background:#faf7f0}}
+  .btn{{display:inline-block;margin-top:1.5rem;padding:14px 28px;background:#661724;color:#fff;border-radius:14px;text-decoration:none;font-weight:700}}
+</style></head><body>
+<h2>{heading}</h2><p>{sub}</p>
+<a class='btn' href='{deep_link}'>Return to Jorna</a>
+</body></html>"""
+    )
+
+
 @app.get("/vendor/stripe-onboard/return", response_class=HTMLResponse, include_in_schema=False)
 def stripe_onboard_return(vendor_id: str = ""):
     """Landing page Stripe redirects to after a vendor finishes Connect onboarding.
-    The app re-checks the vendor's Stripe status when it returns to the foreground."""
-    body = (
-        "<h2>Payment setup complete</h2>"
-        "<p>Your Stripe account is connected. You can close this tab and return to Jorna.</p>"
-    )
-    return HTMLResponse(
-        f"<html><body style='font-family:-apple-system,sans-serif;padding:2.5rem;text-align:center;color:#3a0a12'>{body}</body></html>"
+    Bounces back into the app, which re-checks the vendor's Stripe status."""
+    deep_link = f"jorna://stripe-onboard-complete?vendor_id={quote(vendor_id, safe='')}"
+    return _app_return_page(
+        deep_link=deep_link,
+        heading="Payment setup complete",
+        sub="Returning you to Jorna…",
     )
 
 
 @app.get("/vendor/stripe-onboard/refresh", response_class=HTMLResponse, include_in_schema=False)
 def stripe_onboard_refresh(vendor_id: str = ""):
     """Stripe redirects here if the onboarding link expired or was reopened.
-    The app generates a fresh link when the vendor taps 'Continue Setup' again."""
-    body = (
-        "<h2>Setup link expired</h2>"
-        "<p>Return to Jorna and tap <b>Continue Setup</b> to finish connecting your payment account.</p>"
-    )
-    return HTMLResponse(
-        f"<html><body style='font-family:-apple-system,sans-serif;padding:2.5rem;text-align:center;color:#3a0a12'>{body}</body></html>"
+    Bounces back into the app, where the vendor can tap 'Continue Setup' again."""
+    deep_link = f"jorna://stripe-onboard-complete?vendor_id={quote(vendor_id, safe='')}&refresh=1"
+    return _app_return_page(
+        deep_link=deep_link,
+        heading="Setup link expired",
+        sub="Returning you to Jorna to finish setup…",
     )
 
 
 @app.get("/payment-complete", response_class=HTMLResponse, include_in_schema=False)
 def payment_complete(status: str = "success", booking_id: str = ""):
-    """Landing page Stripe Checkout redirects to. The mobile app refreshes the
-    booking when it returns to the foreground, so this just tells the user
-    they can close the tab."""
-    if status == "success":
-        body = "<h2>Payment complete</h2><p>Your payment was received and is held securely until you confirm the event.</p><p>You can close this tab and return to Jorna.</p>"
-    else:
-        body = "<h2>Payment canceled</h2><p>No charge was made. Return to Jorna to try again.</p>"
-    return HTMLResponse(
-        f"<html><body style='font-family:-apple-system,sans-serif;padding:2.5rem;text-align:center;color:#3a0a12'>{body}</body></html>"
+    """Landing page Stripe Checkout redirects to. Bounces back into the app,
+    which refreshes the booking's payment state."""
+    status = "success" if status == "success" else "cancel"
+    deep_link = (
+        f"jorna://payment-complete?booking_id={quote(booking_id, safe='')}&status={status}"
     )
+    if status == "success":
+        heading = "Payment complete"
+        sub = "Returning you to Jorna — your payment is held securely until you confirm the event."
+    else:
+        heading = "Payment canceled"
+        sub = "No charge was made. Returning you to Jorna…"
+    return _app_return_page(deep_link=deep_link, heading=heading, sub=sub)
 
 
 @app.get("/")
