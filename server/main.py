@@ -317,6 +317,20 @@ def calendar_connected(success: str = "true", vendor_id: str = "", error: str = 
     return HTMLResponse(f"<html><body style='font-family:sans-serif;padding:2rem'>{body}</body></html>")
 
 
+@app.get("/payment-complete", response_class=HTMLResponse, include_in_schema=False)
+def payment_complete(status: str = "success", booking_id: str = ""):
+    """Landing page Stripe Checkout redirects to. The mobile app refreshes the
+    booking when it returns to the foreground, so this just tells the user
+    they can close the tab."""
+    if status == "success":
+        body = "<h2>Payment complete</h2><p>Your payment was received and is held securely until you confirm the event.</p><p>You can close this tab and return to Jorna.</p>"
+    else:
+        body = "<h2>Payment canceled</h2><p>No charge was made. Return to Jorna to try again.</p>"
+    return HTMLResponse(
+        f"<html><body style='font-family:-apple-system,sans-serif;padding:2.5rem;text-align:center;color:#3a0a12'>{body}</body></html>"
+    )
+
+
 @app.get("/")
 def root():
     return {"message": "Desiconnect API", "status": "ok"}

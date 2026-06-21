@@ -13,6 +13,7 @@ from app.services.stripe_service import (
     create_vendor_onboarding_url,
     get_vendor_stripe_status,
     create_payment_intent,
+    create_checkout_session,
     handle_stripe_webhook,
     confirm_event,
     request_refund,
@@ -84,6 +85,34 @@ def pay_booking(
     """
     try:
         return create_payment_intent(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/checkout-session",
+    summary="Create a hosted Stripe Checkout Session for a confirmed booking",
+)
+@limiter.limit("3/minute")
+def create_booking_checkout_session(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Creates a Stripe-hosted Checkout Session and returns its ``checkout_url``.
+
+    The app opens the URL in the browser; on success Stripe redirects to the
+    ``/payment-complete`` page and the webhook marks the booking paid. Funds are
+    held on the platform until both parties confirm the event.
+    """
+    try:
+        return create_checkout_session(
+            booking_id=booking_id,
+            caller_user_id=current_user.user_id,
+            base_url=str(request.base_url),
+            db=db,
+        )
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

@@ -92,6 +92,8 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "confirmed_at": booking.confirmed_at,
         "paid_at": booking.paid_at,
         "funds_released_at": booking.funds_released_at,
+        "customer_confirmed_at": booking.customer_confirmed_at,
+        "vendor_confirmed_at": booking.vendor_confirmed_at,
         "vendor_open_to_price_negotiation": vendor.open_to_price_negotiation if vendor else False,
         "vendor_open_to_location_negotiation": vendor.open_to_location_negotiation if vendor else False,
         "client_open_to_price_negotiation": client.open_to_price_negotiation if client else False,

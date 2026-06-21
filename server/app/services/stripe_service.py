@@ -185,6 +185,91 @@ def create_payment_intent(*, booking_id: str, caller_user_id: str, db: Session) 
     }
 
 
+# ── Hosted Checkout Session ───────────────────────────────────────────
+
+
+def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: str, db: Session) -> dict:
+    """Create a Stripe-hosted Checkout Session for an approved booking.
+
+    Mirrors create_payment_intent's escrow model — the charge lands in the
+    Desiconnect platform balance and is transferred to the vendor later, once
+    both parties confirm the event (see confirm_event / _release_funds). The
+    underlying PaymentIntent carries the same metadata + transfer_group, so the
+    existing webhook handling works unchanged.
+
+    Returns a hosted ``checkout_url`` the app opens in the browser.
+    payment_status is left untouched until the webhook confirms payment, so an
+    abandoned session can simply be retried.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+    if booking.status != "approved":
+        raise StripeError(400, "Payment can only be initiated for approved bookings")
+    if booking.payment_status not in ("unpaid", "processing"):
+        raise StripeError(400, f"Booking payment is already '{booking.payment_status}'")
+
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    if not service:
+        raise StripeError(404, "Service not found")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    if not vendor or not vendor.stripe_onboarding_complete:
+        raise StripeError(
+            400,
+            "This vendor has not completed Stripe onboarding and cannot accept payments yet.",
+        )
+
+    # Use the negotiated price if one was agreed, otherwise the listed service price.
+    amount_cents = booking.amount_cents if booking.amount_cents else round(service.price * 100)
+    platform_fee_cents = round(amount_cents * PLATFORM_FEE_PERCENT / 100)
+
+    base = base_url.rstrip("/")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": booking.currency,
+                        "product_data": {"name": service.name or "Booking"},
+                        "unit_amount": amount_cents,
+                    },
+                    "quantity": 1,
+                }
+            ],
+            # Propagate to the underlying PaymentIntent so the existing
+            # payment_intent.succeeded webhook + Transfer flow work unchanged.
+            payment_intent_data={
+                "transfer_group": booking_id,
+                "metadata": {
+                    "booking_id": booking_id,
+                    "vendor_id": booking.vendor_id,
+                    "user_id": booking.user_id,
+                },
+            },
+            metadata={"booking_id": booking_id},
+            success_url=f"{base}/payment-complete?booking_id={booking_id}&status=success",
+            cancel_url=f"{base}/payment-complete?booking_id={booking_id}&status=cancel",
+        )
+    except stripe.StripeError as e:
+        raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
+
+    # Persist amounts so fund-release / refund can compute the vendor's share.
+    # payment_status stays as-is until the webhook confirms a completed payment.
+    booking.amount_cents = amount_cents
+    booking.platform_fee_cents = platform_fee_cents
+    db.commit()
+
+    logger.info(
+        "Created Checkout Session %s for booking %s (%d cents)", session.id, booking_id, amount_cents
+    )
+
+    return {"checkout_url": session.url}
+
+
 # ── Webhook ───────────────────────────────────────────────────────────
 
 
@@ -246,6 +331,10 @@ def _on_payment_succeeded(intent: dict, db: Session) -> None:
     booking.payment_status = "paid"
     booking.status = "payment_confirmed"
     booking.paid_at = datetime.now(timezone.utc)
+    # Hosted Checkout doesn't set this at session-creation time (the PaymentIntent
+    # is created by Stripe), so capture it here — refunds need it.
+    if not booking.payment_intent_id:
+        booking.payment_intent_id = intent.get("id")
     db.commit()
     logger.info("Booking %s marked as paid (intent %s)", booking_id, intent["id"])
 
