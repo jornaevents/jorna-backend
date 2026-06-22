@@ -87,6 +87,21 @@ def _assert_owns_bundle(bundle: Bundle, caller_user_id: str) -> None:
         raise BundleError(403, "You do not own this bundle")
 
 
+def _delete_booking_cascade(booking: Booking, db: Session) -> None:
+    """Delete a booking and everything tied to it (negotiation + offers, direct
+    messages, reviews). Used when a client removes a booking or deletes a bundle,
+    so the booking also disappears from the vendor's side."""
+    from app.db.models import Message, Negotiation, NegotiationOffer, Review
+    negotiation = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
+    if negotiation:
+        db.query(NegotiationOffer).filter(
+            NegotiationOffer.negotiation_id == negotiation.negotiation_id).delete()
+        db.delete(negotiation)
+    db.query(Message).filter(Message.booking_id == booking.booking_id).delete()
+    db.query(Review).filter(Review.booking_id == booking.booking_id).delete()
+    db.delete(booking)
+
+
 # ── Service functions ─────────────────────────────────────────────────
 
 
@@ -249,10 +264,15 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
     if booking.bundle_id != bundle_id:
         raise BundleError(400, "Booking is not in this bundle")
 
+    # Don't delete a booking that's already been paid for — money is involved.
+    if booking.payment_status in ("paid", "released", "disputed"):
+        raise BundleError(400, "Can't remove a booking that's already been paid")
+
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
-    booking.bundle_id = None
+    # Delete the booking outright so it also disappears from the vendor's side.
+    _delete_booking_cascade(booking, db)
     bundle.updated_at = datetime.now(timezone.utc)
-    db.commit()
+    db.flush()
 
     # Remove vendor from conversations if they have no other bookings in the bundle
     try:
@@ -261,6 +281,8 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
             remove_vendor_from_bundle_conversations(bundle_id=bundle_id, vendor_user_id=vendor.user_id, db=db)
     except Exception as exc:
         logger.warning("Failed to remove vendor from conversations: %s", exc)
+
+    db.commit()
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     return _bundle_dict(bundle, bookings, db)
@@ -373,18 +395,10 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
 
     try:
         # Delete the bundle's bookings, along with any negotiations, messages,
-        # and reviews tied to those bookings
-        from app.db.models import Message, Negotiation, NegotiationOffer, Review
+        # and reviews tied to those bookings (also removes them from vendors).
         bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
         for booking in bookings:
-            negotiation = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
-            if negotiation:
-                db.query(NegotiationOffer).filter(
-                    NegotiationOffer.negotiation_id == negotiation.negotiation_id).delete()
-                db.delete(negotiation)
-            db.query(Message).filter(Message.booking_id == booking.booking_id).delete()
-            db.query(Review).filter(Review.booking_id == booking.booking_id).delete()
-            db.delete(booking)
+            _delete_booking_cascade(booking, db)
 
         # Clean up group conversations and their messages/members
         from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
