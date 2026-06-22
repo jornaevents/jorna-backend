@@ -239,8 +239,10 @@ def accept_offer(*, negotiation_id: str, caller_user_id: str, db: Session) -> di
     neg.status = "accepted"
     neg.updated_at = now
 
-    # Lock in the agreed price on the booking
+    # Lock in the agreed price on the booking and move it out of the
+    # "negotiation_ongoing" state — both parties agreed, so it's approved (payable).
     booking.amount_cents = neg.current_offer_cents
+    booking.status = "approved"
 
     offer = NegotiationOffer(
         negotiation_id=negotiation_id,
@@ -287,6 +289,11 @@ def reject_offer(*, negotiation_id: str, message: str | None, caller_user_id: st
     now = datetime.now(timezone.utc)
     neg.status = "rejected"
     neg.updated_at = now
+
+    # Negotiation closed without agreement — return the booking to "pending" so it
+    # isn't stuck in "negotiation_ongoing" (the listed price stands).
+    if booking.status == "negotiation_ongoing":
+        booking.status = "pending"
 
     offer = NegotiationOffer(
         negotiation_id=negotiation_id,
