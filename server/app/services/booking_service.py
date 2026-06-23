@@ -73,11 +73,14 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
     # Bookings link to events via their bundle — surface event_id/event_name so the
     # client's event-detail view can match bookings and show the real event name.
     bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     return {
         "booking_id": booking.booking_id,
         "user_id": booking.user_id,
         "vendor_id": booking.vendor_id,
         "service_id": booking.service_id,
+        "service_name": service.name if service else None,
+        "service_category": service.category if service else None,
         "bundle_id": booking.bundle_id,
         "event_id": bundle.event_id if bundle else None,
         "event_name": bundle.event_name if bundle else None,
