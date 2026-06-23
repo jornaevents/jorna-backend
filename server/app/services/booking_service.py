@@ -70,12 +70,17 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
     """Return a booking as a dict, including negotiation preference flags from both parties."""
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     client = db.query(User).filter(User.user_id == booking.user_id).first()
+    # Bookings link to events via their bundle — surface event_id/event_name so the
+    # client's event-detail view can match bookings and show the real event name.
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     return {
         "booking_id": booking.booking_id,
         "user_id": booking.user_id,
         "vendor_id": booking.vendor_id,
         "service_id": booking.service_id,
         "bundle_id": booking.bundle_id,
+        "event_id": bundle.event_id if bundle else None,
+        "event_name": bundle.event_name if bundle else None,
         "date_iso": booking.date_iso,
         "date_end": booking.date_end,
         "time_start": booking.time_start,
