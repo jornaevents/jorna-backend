@@ -92,13 +92,25 @@ def _delete_booking_cascade(booking: Booking, db: Session) -> None:
     messages, reviews). Used when a client removes a booking or deletes a bundle,
     so the booking also disappears from the vendor's side."""
     from app.db.models import Message, Negotiation, NegotiationOffer, Review
-    negotiation = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
-    if negotiation:
+    # A booking can have more than one negotiation (re-negotiation after a reject),
+    # so delete them all — not just the first — or the FK constraint on the booking
+    # delete is violated.
+    negotiation_ids = [
+        n.negotiation_id
+        for n in db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).all()
+    ]
+    if negotiation_ids:
         db.query(NegotiationOffer).filter(
-            NegotiationOffer.negotiation_id == negotiation.negotiation_id).delete()
-        db.delete(negotiation)
-    db.query(Message).filter(Message.booking_id == booking.booking_id).delete()
-    db.query(Review).filter(Review.booking_id == booking.booking_id).delete()
+            NegotiationOffer.negotiation_id.in_(negotiation_ids)
+        ).delete(synchronize_session=False)
+        db.query(Negotiation).filter(
+            Negotiation.negotiation_id.in_(negotiation_ids)
+        ).delete(synchronize_session=False)
+    db.query(Message).filter(Message.booking_id == booking.booking_id).delete(synchronize_session=False)
+    db.query(Review).filter(Review.booking_id == booking.booking_id).delete(synchronize_session=False)
+    # Flush so the dependent rows are gone in the DB before the booking row is
+    # removed — without mapped relationships, SQLAlchemy won't order this for us.
+    db.flush()
     db.delete(booking)
 
 
