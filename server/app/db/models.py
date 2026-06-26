@@ -104,6 +104,7 @@ class Service(Base):
     experience = Column(Text, nullable=False)
     media = Column(JSON, nullable=True)
     category = Column(String(50), nullable=True)
+    subcategory = Column(String(50), nullable=True)
     price_unit = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
 

@@ -26,6 +26,7 @@ def _service_dict(service: Service) -> dict:
         "experience": service.experience,
         "media": service.media,
         "category": service.category,
+        "subcategory": service.subcategory,
         "price_unit": service.price_unit,
         "description": service.description,
     }
@@ -40,6 +41,7 @@ def create_service(
     experience: str,
     media: Optional[list[str]],
     category: Optional[str] = None,
+    subcategory: Optional[str] = None,
     price_unit: Optional[str] = None,
     description: Optional[str] = None,
     db: Session,
@@ -56,6 +58,7 @@ def create_service(
         experience=experience,
         media=media,
         category=category,
+        subcategory=subcategory,
         price_unit=price_unit,
         description=description,
     )

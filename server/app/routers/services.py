@@ -33,6 +33,7 @@ class UpdateServiceRequest(BaseModel):
     experience: Optional[str] = None
     media: Optional[list[str]] = None
     category: Optional[str] = None
+    subcategory: Optional[str] = None
     price_unit: Optional[str] = None
     description: Optional[str] = None
 
@@ -44,6 +45,7 @@ class CreateServiceRequest(BaseModel):
     experience: str
     media: Optional[list[str]] = None
     category: Optional[str] = None
+    subcategory: Optional[str] = None
     price_unit: Optional[str] = None
     description: Optional[str] = None
 
@@ -67,6 +69,7 @@ def create_service_route(
             experience=body.experience,
             media=body.media,
             category=body.category,
+            subcategory=body.subcategory,
             price_unit=body.price_unit,
             description=body.description,
             db=db,
