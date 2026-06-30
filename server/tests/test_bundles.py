@@ -308,6 +308,65 @@ def test_delete_bundle_with_negotiations_and_chats(seeded_db):
     assert db.query(GroupMessage).filter(GroupMessage.conversation_id == conv_id).first() is None
 
 
+def test_bundle_auto_links_event_and_cascade_deletes(seeded_db):
+    """A bundle with bookings but no event gets one auto-created (surfaced via the
+    serializer), and deleting the bundle removes that auto-created event."""
+    from app.services import bundle_service
+    user = seeded_db["user"]
+    booking1 = seeded_db["booking1"]
+    db = seeded_db["db"]
+    now = datetime.now(timezone.utc)
+
+    bundle = Bundle(
+        user_id=user.user_id, name="AI Bundle", event_name="Sangeet Night",
+        status="draft", created_at=now, updated_at=now,
+    )
+    db.add(bundle)
+    db.flush()
+    booking1.bundle_id = bundle.bundle_id
+    db.commit()
+    bundle_id = bundle.bundle_id
+
+    assert bundle.event_id is None
+    bundle_service._ensure_bundle_event(bundle, db)
+    db.commit()
+
+    event_id = bundle.event_id
+    assert event_id is not None
+    event = db.query(Event).filter(Event.event_id == event_id).first()
+    assert event is not None
+    assert event.name == "Sangeet Night"
+    assert event.user_id == user.user_id
+
+    headers = make_auth_headers(user)
+    resp = client.get(f"/bundles/{bundle_id}", headers=headers)
+    assert resp.json()["event_id"] == event_id
+
+    del_resp = client.delete(f"/bundles/{bundle_id}", headers=headers)
+    assert del_resp.status_code == 204
+    assert db.query(Event).filter(Event.event_id == event_id).first() is None
+
+
+def test_delete_bundle_keeps_event_shared_by_another_bundle(seeded_db):
+    """When two bundles reference the same event, deleting one keeps the event."""
+    user = seeded_db["user"]
+    event = seeded_db["event"]
+    db = seeded_db["db"]
+    now = datetime.now(timezone.utc)
+
+    b1 = Bundle(user_id=user.user_id, name="B1", event_id=event.event_id,
+                status="draft", created_at=now, updated_at=now)
+    b2 = Bundle(user_id=user.user_id, name="B2", event_id=event.event_id,
+                status="draft", created_at=now, updated_at=now)
+    db.add_all([b1, b2])
+    db.commit()
+    b1_id = b1.bundle_id
+
+    resp = client.delete(f"/bundles/{b1_id}", headers=make_auth_headers(user))
+    assert resp.status_code == 204
+    assert db.query(Event).filter(Event.event_id == event.event_id).first() is not None
+
+
 def test_other_user_cannot_access_bundle(seeded_db):
     user = seeded_db["user"]
     vendor_user = seeded_db["vendor_user"]
