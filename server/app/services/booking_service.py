@@ -182,6 +182,18 @@ def create_booking(
     db.commit()
     db.refresh(booking)
 
+    # Make sure the booking's bundle is backed by a real Event so it shows up
+    # under the client's My Events / Event Portfolio.
+    try:
+        from app.services.bundle_service import _ensure_bundle_event
+        _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+        if _bundle:
+            _ensure_bundle_event(_bundle, db)
+            db.commit()
+    except Exception as exc:
+        logger.warning("create_booking: failed to ensure bundle event: %s", exc)
+        db.rollback()
+
     client, vendor_obj, vendor_user, _ = _get_booking_parties(db, booking)
     try:
         notification = _dispatch_status_notification(

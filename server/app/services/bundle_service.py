@@ -77,6 +77,35 @@ def _bundle_dict(bundle: Bundle, bookings: list[Booking], db: Session) -> dict:
     }
 
 
+def _ensure_bundle_event(bundle: Bundle, db: Session) -> None:
+    """Back a bundle with a real Event so its bookings show up under the client's
+    My Events / Event Portfolio. Creates one from the bundle's name + a sample
+    booking's date/location when the bundle isn't linked yet. No-op once linked
+    or when the bundle has no bookings to anchor the event on.
+
+    Does NOT commit — the caller owns the transaction.
+    """
+    if bundle.event_id:
+        return
+    sample = (
+        db.query(Booking)
+        .filter(Booking.bundle_id == bundle.bundle_id)
+        .first()
+    )
+    if not sample:
+        return
+    event = Event(
+        user_id=bundle.user_id,
+        name=(bundle.event_name or bundle.name or "My Event"),
+        date_iso=sample.date_iso or "",
+        location=sample.location or "",
+    )
+    db.add(event)
+    db.flush()
+    bundle.event_id = event.event_id
+    bundle.updated_at = datetime.now(timezone.utc)
+
+
 def _assert_owns_booking(booking: Booking, caller_user_id: str) -> None:
     if booking.user_id != caller_user_id:
         raise BundleError(403, "You can only add your own bookings to a bundle")
@@ -380,6 +409,10 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
 
     bundle.bundle_group_id = None
     bundle.updated_at = datetime.now(timezone.utc)
+
+    # Back the chosen bundle with a real Event so its services show up under the
+    # client's My Events / Event Portfolio.
+    _ensure_bundle_event(bundle, db)
     db.commit()
 
     # Now notify vendors for the chosen bundle's bookings
@@ -406,6 +439,9 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
     _assert_owns_bundle(bundle, caller_user_id)
 
     try:
+        # Remember the linked event so we can clean it up after the bundle is gone.
+        event_id = bundle.event_id
+
         # Delete the bundle's bookings, along with any negotiations, messages,
         # and reviews tied to those bookings (also removes them from vendors).
         bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
@@ -432,6 +468,22 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
         db.flush()
 
         db.delete(bundle)
+        db.flush()
+
+        # Cascade-delete the bundle's event once no other bundle references it.
+        # This removes the auto-created events that back AI bundles so they don't
+        # linger in the client's Event Portfolio after the bundle is gone.
+        if event_id:
+            still_referenced = (
+                db.query(Bundle)
+                .filter(Bundle.event_id == event_id, Bundle.bundle_id != bundle_id)
+                .count()
+            )
+            if still_referenced == 0:
+                event = db.query(Event).filter(Event.event_id == event_id).first()
+                if event:
+                    db.delete(event)
+
         db.commit()
     except Exception as exc:
         db.rollback()
