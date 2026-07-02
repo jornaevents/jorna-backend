@@ -432,6 +432,58 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
     return _bundle_dict(bundle, chosen_bookings, db)
 
 
+def _delete_bundle_cascade(bundle: Bundle, db: Session) -> None:
+    """Delete a bundle plus everything hanging off it: its bookings (with their
+    negotiations/messages/reviews), its group conversations, and — once no other
+    bundle references it — its linked event. Flushes but does NOT commit; the
+    caller owns the transaction."""
+    bundle_id = bundle.bundle_id
+    # Remember the linked event so we can clean it up after the bundle is gone.
+    event_id = bundle.event_id
+
+    # Delete the bundle's bookings, along with any negotiations, messages,
+    # and reviews tied to those bookings (also removes them from vendors).
+    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    for booking in bookings:
+        _delete_booking_cascade(booking, db)
+
+    # Clean up group conversations and their messages/members
+    from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
+    conversations = db.query(Conversation).filter(Conversation.bundle_id == bundle_id).all()
+    for conv in conversations:
+        msg_ids = [m.message_id for m in db.query(GroupMessage).filter(
+            GroupMessage.conversation_id == conv.conversation_id).all()]
+        if msg_ids:
+            db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete()
+            db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete()
+        db.query(ConversationMember).filter(
+            ConversationMember.conversation_id == conv.conversation_id).delete()
+        db.delete(conv)
+
+    # Flush so the booking/conversation deletes are applied before the
+    # bundle delete — without a relationship() linking these mappers,
+    # SQLAlchemy's flush ordering doesn't guarantee that on its own,
+    # and deleting the bundle first trips the FK constraints.
+    db.flush()
+
+    db.delete(bundle)
+    db.flush()
+
+    # Cascade-delete the bundle's event once no other bundle references it.
+    # This removes the auto-created events that back AI bundles so they don't
+    # linger in the client's Event Portfolio after the bundle is gone.
+    if event_id:
+        still_referenced = (
+            db.query(Bundle)
+            .filter(Bundle.event_id == event_id, Bundle.bundle_id != bundle_id)
+            .count()
+        )
+        if still_referenced == 0:
+            event = db.query(Event).filter(Event.event_id == event_id).first()
+            if event:
+                db.delete(event)
+
+
 def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
     bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
     if not bundle:
@@ -439,53 +491,145 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
     _assert_owns_bundle(bundle, caller_user_id)
 
     try:
-        # Remember the linked event so we can clean it up after the bundle is gone.
-        event_id = bundle.event_id
-
-        # Delete the bundle's bookings, along with any negotiations, messages,
-        # and reviews tied to those bookings (also removes them from vendors).
-        bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
-        for booking in bookings:
-            _delete_booking_cascade(booking, db)
-
-        # Clean up group conversations and their messages/members
-        from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
-        conversations = db.query(Conversation).filter(Conversation.bundle_id == bundle_id).all()
-        for conv in conversations:
-            msg_ids = [m.message_id for m in db.query(GroupMessage).filter(
-                GroupMessage.conversation_id == conv.conversation_id).all()]
-            if msg_ids:
-                db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete()
-                db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete()
-            db.query(ConversationMember).filter(
-                ConversationMember.conversation_id == conv.conversation_id).delete()
-            db.delete(conv)
-
-        # Flush so the booking/conversation deletes are applied before the
-        # bundle delete — without a relationship() linking these mappers,
-        # SQLAlchemy's flush ordering doesn't guarantee that on its own,
-        # and deleting the bundle first trips the FK constraints.
-        db.flush()
-
-        db.delete(bundle)
-        db.flush()
-
-        # Cascade-delete the bundle's event once no other bundle references it.
-        # This removes the auto-created events that back AI bundles so they don't
-        # linger in the client's Event Portfolio after the bundle is gone.
-        if event_id:
-            still_referenced = (
-                db.query(Bundle)
-                .filter(Bundle.event_id == event_id, Bundle.bundle_id != bundle_id)
-                .count()
-            )
-            if still_referenced == 0:
-                event = db.query(Event).filter(Event.event_id == event_id).first()
-                if event:
-                    db.delete(event)
-
+        _delete_bundle_cascade(bundle, db)
         db.commit()
     except Exception as exc:
         db.rollback()
         logger.exception("delete_bundle failed for bundle %s", bundle_id)
         raise BundleError(500, f"Delete failed: {exc}")
+
+
+# ── One-off legacy data cleanup ───────────────────────────────────────
+
+# Marker the pre-fix iOS app wrote on events it auto-created for AI bundles.
+_LEGACY_AI_EVENT_MARKER = "Bundle from jornAI"
+
+# A booking with any of these payment states is never deleted by the cleanup.
+_PROTECTED_PAYMENT_STATUSES = {"processing", "paid", "released", "refunded", "disputed"}
+
+
+def cleanup_legacy_bundle_event_data(*, db: Session, dry_run: bool = True, stale_days: int = 7) -> dict:
+    """One-off cleanup for data created before bundles were backed by events
+    (2026-07 linkage fix). Three targets:
+
+    1. Orphan AI events — events the old iOS confirm flow created (marked by
+       description "Bundle from jornAI") that no bundle references. User-created
+       events are never touched.
+    2. Abandoned comparison drafts — draft bundles still carrying a
+       bundle_group_id (unchosen chatbot options) older than `stale_days`.
+       Skipped entirely if any of their bookings has payment activity.
+    3. Duplicate bookings — more than one booking for the same
+       (bundle, vendor, service, date), from the era when select+confirm both
+       created bookings. Keeps the most meaningful one (payment activity >
+       has a negotiation > has a real location > furthest along) and
+       cascade-deletes the rest. Paid/processing bookings are never deleted.
+
+    With dry_run=True (the default) nothing is modified — the report shows
+    exactly what a real run would delete.
+    """
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+    from app.db.models import Negotiation
+
+    report: dict = {
+        "dry_run": dry_run,
+        "orphan_ai_events": [],
+        "stale_draft_bundles": [],
+        "duplicate_bookings_removed": [],
+        "skipped_paid_groups": 0,
+    }
+
+    # ── 1. Orphan AI-generated events ─────────────────────────────────
+    referenced_event_ids = {
+        eid for (eid,) in db.query(Bundle.event_id).filter(Bundle.event_id.isnot(None)).all()
+    }
+    ai_events = db.query(Event).filter(Event.description == _LEGACY_AI_EVENT_MARKER).all()
+    for event in ai_events:
+        if event.event_id in referenced_event_ids:
+            continue
+        report["orphan_ai_events"].append({"event_id": event.event_id, "name": event.name})
+        if not dry_run:
+            db.delete(event)
+
+    # ── 2. Abandoned comparison drafts ────────────────────────────────
+    # Column is a naive-UTC timestamp; compare with a naive cutoff.
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=stale_days)
+    stale_bundles = (
+        db.query(Bundle)
+        .filter(
+            Bundle.status == "draft",
+            Bundle.bundle_group_id.isnot(None),
+            Bundle.created_at < cutoff,
+        )
+        .all()
+    )
+    for bundle in stale_bundles:
+        bookings = db.query(Booking).filter(Booking.bundle_id == bundle.bundle_id).all()
+        if any(b.payment_status in _PROTECTED_PAYMENT_STATUSES for b in bookings):
+            report["skipped_paid_groups"] += 1
+            continue
+        report["stale_draft_bundles"].append({
+            "bundle_id": bundle.bundle_id,
+            "name": bundle.name,
+            "bookings": len(bookings),
+        })
+        if not dry_run:
+            _delete_bundle_cascade(bundle, db)
+
+    # ── 3. Duplicate bookings within a bundle ─────────────────────────
+    if not dry_run:
+        db.flush()
+    # Bundles slated for deletion in stage 2 — skip their bookings so a dry
+    # run doesn't double-report rows that vanish with their bundle anyway.
+    stale_bundle_ids = {entry["bundle_id"] for entry in report["stale_draft_bundles"]}
+    groups: dict = defaultdict(list)
+    for booking in db.query(Booking).filter(Booking.bundle_id.isnot(None)).all():
+        if booking.bundle_id in stale_bundle_ids:
+            continue
+        groups[(booking.bundle_id, booking.vendor_id, booking.service_id, booking.date_iso)].append(booking)
+
+    negotiated_ids = {
+        bid for (bid,) in db.query(Negotiation.booking_id).all()
+    }
+
+    def keeper_rank(b: Booking) -> tuple:
+        has_payment = b.payment_status in _PROTECTED_PAYMENT_STATUSES
+        has_negotiation = b.booking_id in negotiated_ids
+        has_location = bool(b.location) and b.location.upper() != "TBD"
+        progressed = b.status not in ("pending",)
+        return (has_payment, has_negotiation, has_location, progressed)
+
+    for _, members in groups.items():
+        if len(members) < 2:
+            continue
+        # Never delete anything in a group with more than one payment-active
+        # booking — that needs human eyes, not a script.
+        paid = [b for b in members if b.payment_status in _PROTECTED_PAYMENT_STATUSES]
+        if len(paid) > 1:
+            report["skipped_paid_groups"] += 1
+            continue
+        keeper = max(members, key=keeper_rank)
+        for booking in members:
+            if booking.booking_id == keeper.booking_id:
+                continue
+            if booking.payment_status in _PROTECTED_PAYMENT_STATUSES:
+                continue  # belt and braces — never remove payment-active rows
+            report["duplicate_bookings_removed"].append({
+                "booking_id": booking.booking_id,
+                "bundle_id": booking.bundle_id,
+                "kept": keeper.booking_id,
+            })
+            if not dry_run:
+                _delete_booking_cascade(booking, db)
+
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+
+    report["totals"] = {
+        "orphan_ai_events": len(report["orphan_ai_events"]),
+        "stale_draft_bundles": len(report["stale_draft_bundles"]),
+        "duplicate_bookings_removed": len(report["duplicate_bookings_removed"]),
+    }
+    return report

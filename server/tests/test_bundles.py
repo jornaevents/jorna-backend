@@ -367,6 +367,148 @@ def test_delete_bundle_keeps_event_shared_by_another_bundle(seeded_db):
     assert db.query(Event).filter(Event.event_id == event.event_id).first() is not None
 
 
+class TestLegacyDataCleanup:
+    """cleanup_legacy_bundle_event_data — orphan AI events, stale comparison
+    drafts, duplicate bookings; dry-run must not modify anything."""
+
+    def _cleanup(self, db, **kwargs):
+        from app.services import bundle_service
+        return bundle_service.cleanup_legacy_bundle_event_data(db=db, **kwargs)
+
+    def test_orphan_ai_event_deleted_user_event_kept(self, seeded_db):
+        db = seeded_db["db"]
+        user = seeded_db["user"]
+        user_event = seeded_db["event"]  # user-created, no marker
+
+        orphan = Event(
+            user_id=user.user_id, name="AI Orphan",
+            date_iso="2026-11-01", location="Hall",
+            description="Bundle from jornAI",
+        )
+        linked = Event(
+            user_id=user.user_id, name="AI Linked",
+            date_iso="2026-11-02", location="Hall",
+            description="Bundle from jornAI",
+        )
+        db.add_all([orphan, linked])
+        db.commit()
+        now = datetime.now(timezone.utc)
+        db.add(Bundle(user_id=user.user_id, event_id=linked.event_id, name="Linked",
+                      status="draft", created_at=now, updated_at=now))
+        db.commit()
+        orphan_id, linked_id, user_event_id = orphan.event_id, linked.event_id, user_event.event_id
+
+        # Dry run reports the orphan but deletes nothing
+        report = self._cleanup(db, dry_run=True)
+        assert orphan_id in [e["event_id"] for e in report["orphan_ai_events"]]
+        assert db.query(Event).filter(Event.event_id == orphan_id).first() is not None
+
+        # Real run deletes only the unreferenced AI event
+        report = self._cleanup(db, dry_run=False)
+        assert db.query(Event).filter(Event.event_id == orphan_id).first() is None
+        assert db.query(Event).filter(Event.event_id == linked_id).first() is not None
+        assert db.query(Event).filter(Event.event_id == user_event_id).first() is not None
+
+    def test_duplicate_bookings_deduped_keeping_negotiated(self, seeded_db):
+        db = seeded_db["db"]
+        user = seeded_db["user"]
+        vendor = seeded_db["vendor"]
+        service = seeded_db["service"]
+        now = datetime.now(timezone.utc)
+
+        bundle = Bundle(user_id=user.user_id, name="Dupes", status="confirmed",
+                        created_at=now, updated_at=now)
+        db.add(bundle)
+        db.flush()
+        # Same vendor+service+date twice — the select+confirm double-create bug.
+        dup_a = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
+                        service_id=service.service_id, time_start="18:00", time_end="23:00",
+                        location="TBD", date_iso="2026-12-01", status="pending",
+                        bundle_id=bundle.bundle_id)
+        dup_b = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
+                        service_id=service.service_id, time_start="18:00", time_end="23:00",
+                        location="Edison Hall", date_iso="2026-12-01", status="pending",
+                        bundle_id=bundle.bundle_id)
+        db.add_all([dup_a, dup_b])
+        db.commit()
+        # The one with a negotiation must win even though the other has a location.
+        db.add(Negotiation(booking_id=dup_a.booking_id, status="open",
+                           current_offer_cents=90000, proposed_by=user.user_id,
+                           created_at=now, updated_at=now))
+        db.commit()
+        a_id, b_id = dup_a.booking_id, dup_b.booking_id
+
+        report = self._cleanup(db, dry_run=False)
+        removed = [r["booking_id"] for r in report["duplicate_bookings_removed"]]
+        assert b_id in removed
+        assert db.query(Booking).filter(Booking.booking_id == a_id).first() is not None
+        assert db.query(Booking).filter(Booking.booking_id == b_id).first() is None
+
+    def test_paid_duplicate_never_deleted(self, seeded_db):
+        db = seeded_db["db"]
+        user = seeded_db["user"]
+        vendor = seeded_db["vendor"]
+        service = seeded_db["service"]
+        now = datetime.now(timezone.utc)
+
+        bundle = Bundle(user_id=user.user_id, name="PaidDupes", status="confirmed",
+                        created_at=now, updated_at=now)
+        db.add(bundle)
+        db.flush()
+        paid = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
+                       service_id=service.service_id, time_start="10:00", time_end="14:00",
+                       location="TBD", date_iso="2026-12-05", status="approved",
+                       payment_status="paid", bundle_id=bundle.bundle_id)
+        unpaid = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
+                         service_id=service.service_id, time_start="10:00", time_end="14:00",
+                         location="Edison Hall", date_iso="2026-12-05", status="pending",
+                         bundle_id=bundle.bundle_id)
+        db.add_all([paid, unpaid])
+        db.commit()
+        paid_id, unpaid_id = paid.booking_id, unpaid.booking_id
+
+        self._cleanup(db, dry_run=False)
+        assert db.query(Booking).filter(Booking.booking_id == paid_id).first() is not None
+        assert db.query(Booking).filter(Booking.booking_id == unpaid_id).first() is None
+
+    def test_stale_comparison_draft_removed_recent_kept(self, seeded_db):
+        from datetime import timedelta
+        db = seeded_db["db"]
+        user = seeded_db["user"]
+        old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        now = datetime.now(timezone.utc)
+
+        stale = Bundle(user_id=user.user_id, name="Old comparison", status="draft",
+                       bundle_group_id="group-1", created_at=old, updated_at=old)
+        fresh = Bundle(user_id=user.user_id, name="Fresh comparison", status="draft",
+                       bundle_group_id="group-2", created_at=now, updated_at=now)
+        chosen = Bundle(user_id=user.user_id, name="Chosen", status="draft",
+                        bundle_group_id=None, created_at=old, updated_at=old)
+        db.add_all([stale, fresh, chosen])
+        db.commit()
+        stale_id, fresh_id, chosen_id = stale.bundle_id, fresh.bundle_id, chosen.bundle_id
+
+        report = self._cleanup(db, dry_run=False, stale_days=7)
+        assert stale_id in [b["bundle_id"] for b in report["stale_draft_bundles"]]
+        assert db.query(Bundle).filter(Bundle.bundle_id == stale_id).first() is None
+        assert db.query(Bundle).filter(Bundle.bundle_id == fresh_id).first() is not None
+        # No group id => a normal draft the user is still working on. Kept.
+        assert db.query(Bundle).filter(Bundle.bundle_id == chosen_id).first() is not None
+
+    def test_admin_endpoint_requires_admin(self, seeded_db):
+        user = seeded_db["user"]
+        db = seeded_db["db"]
+
+        resp = client.post("/admin/cleanup/bundle-event-data", headers=make_auth_headers(user))
+        assert resp.status_code == 403
+
+        user.is_admin = True
+        db.commit()
+        resp = client.post("/admin/cleanup/bundle-event-data", headers=make_auth_headers(user))
+        assert resp.status_code == 200
+        assert resp.json()["dry_run"] is True
+
+
 def test_other_user_cannot_access_bundle(seeded_db):
     user = seeded_db["user"]
     vendor_user = seeded_db["vendor_user"]
