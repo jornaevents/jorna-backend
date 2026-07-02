@@ -311,10 +311,13 @@ async def add_security_headers(request: Request, call_next):
 
 @app.get("/calendar-connected", response_class=HTMLResponse, include_in_schema=False)
 def calendar_connected(success: str = "true", vendor_id: str = "", error: str = ""):
+    # Query params are attacker-controlled — escape them or this page is a
+    # reflected-XSS vector (CSP allows inline scripts for the return pages).
+    from html import escape
     if success == "true":
-        body = f"<h2>Google Calendar connected!</h2><p>Vendor ID: {vendor_id}</p><p>You can close this tab.</p>"
+        body = f"<h2>Google Calendar connected!</h2><p>Vendor ID: {escape(vendor_id)}</p><p>You can close this tab.</p>"
     else:
-        body = f"<h2>Failed to connect Google Calendar</h2><p>{error}</p><p>Close this tab and try again.</p>"
+        body = f"<h2>Failed to connect Google Calendar</h2><p>{escape(error)}</p><p>Close this tab and try again.</p>"
     return HTMLResponse(f"<html><body style='font-family:sans-serif;padding:2rem'>{body}</body></html>")
 
 
