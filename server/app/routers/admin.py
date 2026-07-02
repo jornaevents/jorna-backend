@@ -138,6 +138,21 @@ def list_admins(
     return [{"user_id": u.user_id, "email": u.email, "f_name": u.f_name, "l_name": u.l_name} for u in admins]
 
 
+@router.post("/cleanup/bundle-event-data", summary="One-off cleanup of legacy bundle/event data (admin only)")
+def cleanup_bundle_event_data(
+    dry_run: bool = Query(True, description="Preview what would be deleted without modifying anything"),
+    stale_days: int = Query(7, ge=1, le=365, description="Draft comparison bundles older than this many days are considered abandoned"),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    """Remove data artifacts from before the 2026-07 bundle→event linkage fix:
+    orphan AI-created events, abandoned comparison-draft bundles, and duplicate
+    bookings. Run with dry_run=true first and review the report; paid bookings
+    are never touched either way."""
+    from app.services.bundle_service import cleanup_legacy_bundle_event_data
+    return cleanup_legacy_bundle_event_data(db=db, dry_run=dry_run, stale_days=stale_days)
+
+
 def _require_scraper_auth(
     x_scraper_key: str | None = Header(None, alias="X-Scraper-Key", description="SCRAPER_API_KEY value for cron job access"),
     api_key: str | None = Query(None, description="DEPRECATED — use the X-Scraper-Key header; query params end up in access logs"),
