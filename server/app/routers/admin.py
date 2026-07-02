@@ -5,7 +5,7 @@ import os
 import re
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -139,13 +139,16 @@ def list_admins(
 
 
 def _require_scraper_auth(
-    api_key: str | None = Query(None, description="SCRAPER_API_KEY value for cron job access"),
+    x_scraper_key: str | None = Header(None, alias="X-Scraper-Key", description="SCRAPER_API_KEY value for cron job access"),
+    api_key: str | None = Query(None, description="DEPRECATED — use the X-Scraper-Key header; query params end up in access logs"),
     credentials=Depends(__import__("fastapi.security", fromlist=["HTTPBearer"]).HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db),
 ):
-    """Accept either a valid SCRAPER_API_KEY query param or an admin JWT token."""
+    """Accept a valid SCRAPER_API_KEY (X-Scraper-Key header preferred; legacy
+    ?api_key= query param still works) or an admin JWT token."""
     scraper_key = os.getenv("SCRAPER_API_KEY")
-    if api_key and scraper_key and api_key == scraper_key:
+    supplied = x_scraper_key or api_key
+    if supplied and scraper_key and supplied == scraper_key:
         return  # authenticated via static API key
 
     # Try JWT admin auth
