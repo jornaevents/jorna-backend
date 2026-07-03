@@ -106,6 +106,93 @@ def get_vendor_stripe_status(*, vendor_id: str, caller_user_id: str, db: Session
     }
 
 
+# ── Earnings ──────────────────────────────────────────────────────────
+
+
+def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> dict:
+    """Summarize a vendor's money: released payouts, funds held in escrow,
+    upcoming (approved but not yet paid) bookings, and per-booking history.
+
+    Built entirely from booking payment fields — no Stripe API calls — so it's
+    fast and works even before onboarding completes. Net = amount − platform fee.
+    """
+    from app.db.models import Bundle
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    if not vendor:
+        raise StripeError(404, "Vendor not found")
+    if vendor.user_id != caller_user_id:
+        raise StripeError(403, "You are not authorised to view this vendor's earnings")
+
+    bookings = db.query(Booking).filter(Booking.vendor_id == vendor_id).all()
+
+    def net_cents(b: Booking) -> int:
+        amount = b.amount_cents or 0
+        fee = b.platform_fee_cents or 0
+        return max(amount - fee, 0)
+
+    released = [b for b in bookings if b.payment_status == "released"]
+    in_escrow = [b for b in bookings if b.payment_status in ("paid", "processing")]
+    disputed = [b for b in bookings if b.payment_status == "disputed"]
+    refunded = [b for b in bookings if b.payment_status == "refunded"]
+    # Approved but unpaid — the client still has to pay; estimate from the
+    # booking amount when set, else the service's listed price.
+    upcoming = [b for b in bookings if b.status == "approved" and b.payment_status == "unpaid"]
+
+    def upcoming_cents(b: Booking) -> int:
+        if b.amount_cents:
+            return b.amount_cents
+        service = db.query(Service).filter(Service.service_id == b.service_id).first()
+        return round((service.price if service else 0) * 100)
+
+    # Per-booking history for everything with payment activity, newest first.
+    history_bookings = [b for b in bookings if b.payment_status != "unpaid"]
+    bundle_ids = {b.bundle_id for b in history_bookings if b.bundle_id}
+    bundles = {
+        bu.bundle_id: bu
+        for bu in db.query(Bundle).filter(Bundle.bundle_id.in_(bundle_ids)).all()
+    } if bundle_ids else {}
+    client_ids = {b.user_id for b in history_bookings}
+    clients = {
+        u.user_id: u
+        for u in db.query(User).filter(User.user_id.in_(client_ids)).all()
+    } if client_ids else {}
+
+    def entry(b: Booking) -> dict:
+        bundle = bundles.get(b.bundle_id) if b.bundle_id else None
+        client = clients.get(b.user_id)
+        return {
+            "booking_id": b.booking_id,
+            "event_name": (bundle.event_name or bundle.name) if bundle else None,
+            "client_name": f"{client.f_name} {client.l_name}" if client else None,
+            "date_iso": b.date_iso,
+            "amount_cents": b.amount_cents or 0,
+            "platform_fee_cents": b.platform_fee_cents or 0,
+            "net_cents": net_cents(b),
+            "payment_status": b.payment_status,
+            "paid_at": b.paid_at.isoformat() if b.paid_at else None,
+            "funds_released_at": b.funds_released_at.isoformat() if b.funds_released_at else None,
+        }
+
+    history = sorted(
+        (entry(b) for b in history_bookings),
+        key=lambda e: e["paid_at"] or "",
+        reverse=True,
+    )
+
+    return {
+        "vendor_id": vendor_id,
+        "total_released_cents": sum(net_cents(b) for b in released),
+        "in_escrow_cents": sum(net_cents(b) for b in in_escrow),
+        "upcoming_cents": sum(upcoming_cents(b) for b in upcoming),
+        "upcoming_count": len(upcoming),
+        "disputed_cents": sum(net_cents(b) for b in disputed),
+        "refunded_cents": sum((b.amount_cents or 0) for b in refunded),
+        "platform_fees_cents": sum((b.platform_fee_cents or 0) for b in released),
+        "history": history,
+    }
+
+
 # ── Payment intent ────────────────────────────────────────────────────
 
 

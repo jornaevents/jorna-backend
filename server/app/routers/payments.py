@@ -12,6 +12,7 @@ from app.services.stripe_service import (
     StripeError,
     create_vendor_onboarding_url,
     get_vendor_stripe_status,
+    get_vendor_earnings,
     create_payment_intent,
     create_checkout_session,
     handle_stripe_webhook,
@@ -65,6 +66,23 @@ def stripe_status(
     """
     try:
         return get_vendor_stripe_status(vendor_id=vendor_id, caller_user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get(
+    "/vendors/{vendor_id}/earnings",
+    summary="Vendor earnings summary + payout history",
+)
+def vendor_earnings(
+    vendor_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Released / in-escrow / upcoming totals plus per-booking payment history.
+    Only the vendor themselves can view it."""
+    try:
+        return get_vendor_earnings(vendor_id=vendor_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
