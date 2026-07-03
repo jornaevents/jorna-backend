@@ -68,6 +68,72 @@ def test_create_booking(seeded_db):
     assert "booking_id" in data
 
 
+def test_duplicate_booking_returns_existing(seeded_db):
+    """Retrying the same slot (same bundle+vendor+service+date) must not
+    create a second booking — the existing one is returned."""
+    user = seeded_db["user"]
+    service = seeded_db["service"]
+    db = seeded_db["db"]
+    headers = make_auth_headers(user)
+
+    payload = {
+        "service_id": service.service_id,
+        "event_name": "Dupe Guard Event",
+        "time_start": "13:00",
+        "time_end": "15:00",
+        "location": "123 Test St",
+        "date_iso": "2026-06-01",
+    }
+    first = client.post("/bookings", json=payload, headers=headers)
+    assert first.status_code == 200
+    first_data = first.json()
+
+    # Retry into the same auto-created bundle → same booking back, no dupe.
+    payload["bundle_id"] = first_data["bundle_id"]
+    second = client.post("/bookings", json=payload, headers=headers)
+    assert second.status_code == 200
+    second_data = second.json()
+    assert second_data["booking_id"] == first_data["booking_id"]
+
+    count = db.query(Booking).filter(
+        Booking.bundle_id == first_data["bundle_id"],
+        Booking.service_id == service.service_id,
+        Booking.date_iso == "2026-06-01",
+    ).count()
+    assert count == 1
+
+
+def test_rebook_allowed_after_rejection(seeded_db):
+    """A rejected booking must not block re-booking the same slot."""
+    user = seeded_db["user"]
+    service = seeded_db["service"]
+    db = seeded_db["db"]
+    headers = make_auth_headers(user)
+
+    payload = {
+        "service_id": service.service_id,
+        "event_name": "Rebook Event",
+        "time_start": "10:00",
+        "time_end": "12:00",
+        "location": "123 Test St",
+        "date_iso": "2026-06-02",
+    }
+    first = client.post("/bookings", json=payload, headers=headers)
+    assert first.status_code == 200
+    first_data = first.json()
+
+    # Vendor rejects it.
+    booking = db.query(Booking).filter(Booking.booking_id == first_data["booking_id"]).first()
+    booking.status = "rejected"
+    db.commit()
+
+    # Same slot books again — new booking, not the rejected one.
+    payload["bundle_id"] = first_data["bundle_id"]
+    second = client.post("/bookings", json=payload, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["booking_id"] != first_data["booking_id"]
+
+
 def test_approve_booking(seeded_db):
     db = seeded_db["db"]
     user = seeded_db["user"]

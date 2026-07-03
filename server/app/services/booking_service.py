@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Bundle, User, Vendor, Service
@@ -164,6 +165,37 @@ def create_booking(
         db.flush()
         bundle_id = bundle.bundle_id
 
+    def _existing_live_booking() -> Booking | None:
+        """The same slot (bundle + vendor + service + date) already booked and
+        not rejected/cancelled."""
+        return (
+            db.query(Booking)
+            .filter(
+                Booking.bundle_id == bundle_id,
+                Booking.vendor_id == service.vendor_id,
+                Booking.service_id == service_id,
+                Booking.date_iso == date_iso,
+                Booking.status.notin_(("rejected", "cancelled")),
+            )
+            .first()
+        )
+
+    def _idempotent_response(existing: Booking) -> dict:
+        return {
+            "message": "Booking already exists for this vendor, service, and date",
+            "booking_id": existing.booking_id,
+            "bundle_id": existing.bundle_id,
+            "status": existing.status,
+            "notification": None,
+        }
+
+    # Duplicate guard: client retries, double-taps, or a second code path
+    # re-booking the same slot get the existing booking back instead of a
+    # duplicate (the partial unique index backstops the remaining race).
+    existing = _existing_live_booking()
+    if existing:
+        return _idempotent_response(existing)
+
     booking = Booking(
         booking_id=str(uuid.uuid4()),
         user_id=user_id,
@@ -179,7 +211,15 @@ def create_booking(
         bundle_id=bundle_id,
     )
     db.add(booking)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Lost a create race — the unique index caught it. Return the winner.
+        db.rollback()
+        existing = _existing_live_booking()
+        if existing:
+            return _idempotent_response(existing)
+        raise
     db.refresh(booking)
 
     # Make sure the booking's bundle is backed by a real Event so it shows up

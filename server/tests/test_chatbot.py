@@ -101,12 +101,14 @@ class TestEventDetailsStep:
 
 @pytest.mark.asyncio
 class TestAlreadyBookedStep:
-    async def test_nothing_yet_skips_to_budget(self):
+    async def test_nothing_yet_goes_to_still_need(self):
+        """Nothing booked → the user still chooses what they need on the next
+        step (with "recommend everything" one tap away) rather than being
+        auto-assigned all categories."""
         state = ChatbotState()
         resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["nothing_yet"], state)
-        assert resp.next_step == ChatStep.BUDGET
+        assert resp.next_step == ChatStep.STILL_NEED
         assert resp.state.booked_categories == []
-        assert resp.state.needed_categories == list(CHATBOT_CATEGORIES)
 
     async def test_categories_selected_goes_to_still_need(self):
         state = ChatbotState()
@@ -521,8 +523,13 @@ class TestFullFlowNothingBooked:
         resp = await process_step(ChatStep.EVENT_TIME, None, ["evening"], resp.state)
         assert resp.next_step == ChatStep.ALREADY_BOOKED
 
-        # Step 1 → 3: Nothing booked (skip step 2)
+        # Step 1 → 2: Nothing booked → choose what's needed
         resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["nothing_yet"], resp.state)
+        assert resp.next_step == ChatStep.STILL_NEED
+        assert resp.state.booked_categories == []
+
+        # Step 2 → 3: Recommend everything still needed
+        resp = await process_step(ChatStep.STILL_NEED, None, ["recommend_all"], resp.state)
         assert resp.next_step == ChatStep.BUDGET
         assert len(resp.state.needed_categories) == 10
 
@@ -837,10 +844,19 @@ class TestChatbotEndpoints:
         }).json()
         state = resp["state"]
 
-        # Nothing booked
+        # Nothing booked → picks needs on the next step
         resp = client.post("/chatbot/step", headers=headers, json={
             "current_step": "already_booked",
             "selected_values": ["nothing_yet"],
+            "state": state,
+        }).json()
+        assert resp["next_step"] == "still_need"
+        state = resp["state"]
+
+        # Recommend everything still needed
+        resp = client.post("/chatbot/step", headers=headers, json={
+            "current_step": "still_need",
+            "selected_values": ["recommend_all"],
             "state": state,
         }).json()
         assert resp["next_step"] == "budget"
