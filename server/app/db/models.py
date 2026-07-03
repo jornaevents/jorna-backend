@@ -297,6 +297,37 @@ class PasswordResetToken(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class ContentReport(Base):
+    """A user-filed report against content or another user (App Store guideline
+    1.2 requires a reporting mechanism for user-generated content)."""
+
+    __tablename__ = "content_reports"
+
+    report_id = Column(String(36), primary_key=True, default=uuid_str)
+    reporter_user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # user | vendor | review | message | conversation
+    target_type = Column(String(20), nullable=False)
+    target_id = Column(String(36), nullable=False, index=True)
+    reason = Column(String(50), nullable=False)   # spam | inappropriate | harassment | scam | other
+    details = Column(Text, nullable=True)
+    # open | reviewed | dismissed
+    status = Column(String(20), nullable=False, default="open")
+    created_at = Column(DateTime, nullable=False)
+
+
+class UserBlock(Base):
+    """blocker no longer wants to see blocked's content (messages, reviews,
+    listings). Enforced client-side from GET /users/me/blocks."""
+
+    __tablename__ = "user_blocks"
+    __table_args__ = (UniqueConstraint("blocker_user_id", "blocked_user_id", name="uq_user_block"),)
+
+    block_id = Column(String(36), primary_key=True, default=uuid_str)
+    blocker_user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    blocked_user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False)
+
+
 class Event(Base):
     __tablename__ = "events"
 

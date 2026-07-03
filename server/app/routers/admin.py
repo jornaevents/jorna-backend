@@ -138,6 +138,52 @@ def list_admins(
     return [{"user_id": u.user_id, "email": u.email, "f_name": u.f_name, "l_name": u.l_name} for u in admins]
 
 
+@router.get("/reports", summary="List content reports (admin only)")
+def list_reports(
+    status: str | None = Query(None, description="Filter: open | reviewed | dismissed"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    from app.db.models import ContentReport
+    q = db.query(ContentReport)
+    if status:
+        q = q.filter(ContentReport.status == status)
+    rows = q.order_by(ContentReport.created_at.desc()).offset(offset).limit(limit).all()
+    return [
+        {
+            "report_id": r.report_id,
+            "reporter_user_id": r.reporter_user_id,
+            "target_type": r.target_type,
+            "target_id": r.target_id,
+            "reason": r.reason,
+            "details": r.details,
+            "status": r.status,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.patch("/reports/{report_id}", summary="Update a report's status (admin only)")
+def update_report_status(
+    report_id: str,
+    status: str = Query(..., description="open | reviewed | dismissed"),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    from app.db.models import ContentReport
+    if status not in {"open", "reviewed", "dismissed"}:
+        raise HTTPException(status_code=400, detail="status must be open, reviewed, or dismissed")
+    report = db.query(ContentReport).filter(ContentReport.report_id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    report.status = status
+    db.commit()
+    return {"message": "Updated", "report_id": report_id, "status": status}
+
+
 @router.post("/cleanup/bundle-event-data", summary="One-off cleanup of legacy bundle/event data (admin only)")
 def cleanup_bundle_event_data(
     dry_run: bool = Query(True, description="Preview what would be deleted without modifying anything"),
