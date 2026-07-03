@@ -366,6 +366,18 @@ def stripe_onboard_refresh(vendor_id: str = ""):
     )
 
 
+@app.get("/reset-password", response_class=HTMLResponse, include_in_schema=False)
+def reset_password_landing(token: str = ""):
+    """Landing page for the password-reset email link. Bounces into the app,
+    which opens the choose-a-new-password sheet with the token prefilled."""
+    deep_link = f"jorna://reset-password?token={quote(token, safe='')}"
+    return _app_return_page(
+        deep_link=deep_link,
+        heading="Reset your password",
+        sub="Opening Jorna so you can choose a new password…",
+    )
+
+
 @app.get("/payment-complete", response_class=HTMLResponse, include_in_schema=False)
 def payment_complete(status: str = "success", booking_id: str = ""):
     """Landing page Stripe Checkout redirects to. Bounces back into the app,
