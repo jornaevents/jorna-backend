@@ -536,6 +536,7 @@ def cleanup_legacy_bundle_event_data(*, db: Session, dry_run: bool = True, stale
         "orphan_ai_events": [],
         "stale_draft_bundles": [],
         "duplicate_bookings_removed": [],
+        "orphan_conversations": [],
         "skipped_paid_groups": 0,
     }
 
@@ -622,6 +623,34 @@ def cleanup_legacy_bundle_event_data(*, db: Session, dry_run: bool = True, stale
             if not dry_run:
                 _delete_booking_cascade(booking, db)
 
+    # ── 4. Orphaned group chats ───────────────────────────────────────
+    # Conversations whose bundle no longer exists (deleted before bundle
+    # deletion cascaded to chats). Remove them with members/messages/reads.
+    from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
+    if not dry_run:
+        db.flush()
+    all_convs = db.query(Conversation).all()
+    conv_bundle_ids = {c.bundle_id for c in all_convs}
+    live_bundles = {
+        bid for (bid,) in db.query(Bundle.bundle_id).filter(Bundle.bundle_id.in_(conv_bundle_ids)).all()
+    } if conv_bundle_ids else set()
+    for conv in all_convs:
+        if conv.bundle_id in live_bundles:
+            continue
+        report["orphan_conversations"].append({
+            "conversation_id": conv.conversation_id,
+            "name": conv.name,
+        })
+        if not dry_run:
+            msg_ids = [m.message_id for m in db.query(GroupMessage).filter(
+                GroupMessage.conversation_id == conv.conversation_id).all()]
+            if msg_ids:
+                db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete(synchronize_session=False)
+                db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete(synchronize_session=False)
+            db.query(ConversationMember).filter(
+                ConversationMember.conversation_id == conv.conversation_id).delete(synchronize_session=False)
+            db.delete(conv)
+
     if dry_run:
         db.rollback()
     else:
@@ -631,5 +660,6 @@ def cleanup_legacy_bundle_event_data(*, db: Session, dry_run: bool = True, stale
         "orphan_ai_events": len(report["orphan_ai_events"]),
         "stale_draft_bundles": len(report["stale_draft_bundles"]),
         "duplicate_bookings_removed": len(report["duplicate_bookings_removed"]),
+        "orphan_conversations": len(report["orphan_conversations"]),
     }
     return report
