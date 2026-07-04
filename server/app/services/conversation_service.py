@@ -205,7 +205,12 @@ def remove_vendor_from_bundle_conversations(*, bundle_id: str, vendor_user_id: s
 
 
 def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
-    """Return all conversations the current user is a member of."""
+    """Return all conversations the current user is a member of.
+
+    Conversations whose bundle no longer exists are excluded — historical
+    deletions (before bundle deletion cascaded to chats) left orphans that
+    should never resurface in anyone's inbox.
+    """
     memberships = db.query(ConversationMember).filter(
         ConversationMember.user_id == caller_user_id
     ).all()
@@ -213,6 +218,13 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
     conversations = db.query(Conversation).filter(
         Conversation.conversation_id.in_(conv_ids)
     ).order_by(Conversation.created_at.desc()).all()
+
+    live_bundle_ids = {
+        bid for (bid,) in db.query(Bundle.bundle_id).filter(
+            Bundle.bundle_id.in_({c.bundle_id for c in conversations})
+        ).all()
+    } if conversations else set()
+    conversations = [c for c in conversations if c.bundle_id in live_bundle_ids]
 
     result = []
     for conv in conversations:

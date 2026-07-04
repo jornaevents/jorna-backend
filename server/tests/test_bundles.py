@@ -495,6 +495,54 @@ class TestLegacyDataCleanup:
         # No group id => a normal draft the user is still working on. Kept.
         assert db.query(Bundle).filter(Bundle.bundle_id == chosen_id).first() is not None
 
+    def test_orphan_conversations_hidden_and_purged(self, seeded_db):
+        """Chats whose bundle is gone are excluded from listings and removed
+        by the cleanup."""
+        from datetime import datetime, timezone
+        from app.db.models import Conversation, ConversationMember, GroupMessage
+        from app.services.conversation_service import list_conversations
+
+        db = seeded_db["db"]
+        user = seeded_db["user"]
+        now = datetime.now(timezone.utc)
+
+        # A live bundle with a conversation, and an orphan conversation whose
+        # bundle no longer exists.
+        live = Bundle(user_id=user.user_id, name="Live", status="confirmed",
+                      created_at=now, updated_at=now)
+        db.add(live)
+        db.flush()
+        conv_live = Conversation(bundle_id=live.bundle_id, type="all_parties",
+                                 name="Live chat", created_at=now)
+        conv_orphan = Conversation(bundle_id="bundle-gone-123", type="all_parties",
+                                   name="Ghost chat", created_at=now)
+        db.add_all([conv_live, conv_orphan])
+        db.flush()
+        db.add_all([
+            ConversationMember(conversation_id=conv_live.conversation_id, user_id=user.user_id, joined_at=now),
+            ConversationMember(conversation_id=conv_orphan.conversation_id, user_id=user.user_id, joined_at=now),
+            GroupMessage(conversation_id=conv_orphan.conversation_id, sender_id=user.user_id,
+                         content="lingering", created_at=now),
+        ])
+        db.commit()
+        orphan_id = conv_orphan.conversation_id
+
+        # Listing hides the orphan but keeps the live chat.
+        listed = list_conversations(caller_user_id=user.user_id, db=db)
+        listed_ids = {c["conversation_id"] for c in listed}
+        assert conv_live.conversation_id in listed_ids
+        assert orphan_id not in listed_ids
+
+        # Cleanup reports it on dry run and deletes it for real.
+        report = self._cleanup(db, dry_run=True)
+        assert orphan_id in [c["conversation_id"] for c in report["orphan_conversations"]]
+        assert db.query(Conversation).filter(Conversation.conversation_id == orphan_id).first() is not None
+
+        self._cleanup(db, dry_run=False)
+        assert db.query(Conversation).filter(Conversation.conversation_id == orphan_id).first() is None
+        assert db.query(GroupMessage).filter(GroupMessage.conversation_id == orphan_id).first() is None
+        assert db.query(Conversation).filter(Conversation.conversation_id == conv_live.conversation_id).first() is not None
+
     def test_admin_endpoint_requires_admin(self, seeded_db):
         user = seeded_db["user"]
         db = seeded_db["db"]
