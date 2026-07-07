@@ -1005,7 +1005,17 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
 
 
 def _mock_item_for_category(cat: str, tier: BudgetTier) -> BundleItem | None:
-    """Return a mock BundleItem for a category when no real vendors exist."""
+    """Return a mock BundleItem for a category when no real vendors exist.
+
+    Gated by CHATBOT_MOCK_VENDORS so fake "coming soon" vendors can be turned
+    off in production; when disabled the category is simply omitted from the
+    bundle (all call sites handle None).
+    """
+    from app.config import CHATBOT_MOCK_VENDORS
+    if not CHATBOT_MOCK_VENDORS:
+        logger.info("Mock vendors disabled — omitting category '%s' from bundle", cat)
+        return None
+    logger.warning("Serving MOCK vendor for category '%s' (no real supply)", cat)
     pool = _MOCK_VENDORS.get(cat)
     if not pool:
         return None

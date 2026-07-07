@@ -39,6 +39,9 @@ def _booking_summary(booking: Booking, db: Session) -> dict:
         "price": price,
         "amount_cents": booking.amount_cents,
         "open_to_price_negotiation": vendor.open_to_price_negotiation if vendor else False,
+        # Vendor-approval timestamp — the client uses it to show the 24-hour
+        # refund window on paid bookings.
+        "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,
     }
 
 

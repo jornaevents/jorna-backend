@@ -58,6 +58,12 @@ RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 # Must be an address on a domain verified in your Resend dashboard.
 EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Desiconnect <noreply@desiconnect.com>")
 
+# ── Chatbot ───────────────────────────────────────────────────────────
+# When a bundle category has no real vendor supply, the AI builder can pad the
+# bundle with mock "coming soon" vendors. Useful for demos; set to "false" in
+# production once real supply exists so fake vendors can never appear.
+CHATBOT_MOCK_VENDORS: bool = os.getenv("CHATBOT_MOCK_VENDORS", "true").strip().lower() in ("1", "true", "yes")
+
 # ── YouTube ───────────────────────────────────────────────────────────
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
 
