@@ -1,7 +1,7 @@
 """Router for event bundle endpoints."""
 
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -59,11 +59,17 @@ def create_bundle_route(
 
 @router.get("", summary="List current user's bundles")
 def list_bundles_route(
+    limit: Optional[int] = Query(None, ge=1, le=200, description="Max bundles to return; omit for all"),
+    offset: int = Query(0, ge=0, description="Bundles to skip (for paging)"),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return all bundles belonging to the authenticated user."""
-    return list_bundles(user_id=current_user.user_id, db=db)
+    """Return the authenticated user's bundles, newest first.
+
+    `limit`/`offset` page the result; omitting `limit` returns all (existing
+    behaviour). Either way the response is a plain JSON array of bundles.
+    """
+    return list_bundles(user_id=current_user.user_id, db=db, limit=limit, offset=offset)
 
 
 @router.get("/{bundle_id}", summary="Get a bundle with all its bookings")

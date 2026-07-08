@@ -8,7 +8,25 @@ from app.db.models import (
     Negotiation, NegotiationOffer, Message, Review,
     Conversation, GroupMessage, GroupMessageRead,
 )
-from tests.test_api import TestingSessionLocal, client, make_auth_headers
+from tests.test_api import TestingSessionLocal, client, make_auth_headers, engine
+
+from contextlib import contextmanager
+from sqlalchemy import event as sa_event
+
+
+@contextmanager
+def count_queries():
+    """Count SQL statements executed on the test engine within the block."""
+    counter = {"n": 0}
+
+    def _before(conn, cursor, statement, params, context, executemany):
+        counter["n"] += 1
+
+    sa_event.listen(engine, "before_cursor_execute", _before)
+    try:
+        yield counter
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", _before)
 
 
 @pytest.fixture
@@ -132,6 +150,70 @@ def test_list_bundles(seeded_db):
     names = [b["name"] for b in response.json()]
     assert "Bundle A" in names
     assert "Bundle B" in names
+
+
+def test_list_bundles_query_count_is_constant(seeded_db):
+    """N+1 regression: listing bundles must issue a bounded, constant number of
+    queries regardless of how many bundles/bookings the user has. Before the
+    batch refactor this was 1 + N*2 + N*M*3."""
+    from app.services.bundle_service import list_bundles, create_bundle
+
+    user = seeded_db["user"]
+    vendor = seeded_db["vendor"]
+    service = seeded_db["service"]
+    db = seeded_db["db"]
+
+    def make_bundle(n_bookings: int):
+        ids = []
+        for _ in range(n_bookings):
+            bk = Booking(
+                user_id=user.user_id, vendor_id=vendor.vendor_id,
+                service_id=service.service_id, time_start="10:00",
+                time_end="12:00", location="Hall", date_iso="2026-10-01",
+                status="pending",
+            )
+            db.add(bk); db.commit(); db.refresh(bk)
+            ids.append(bk.booking_id)
+        create_bundle(user_id=user.user_id, name="B", booking_ids=ids, db=db)
+
+    # Small dataset: 2 bundles x 2 bookings
+    make_bundle(2)
+    make_bundle(2)
+    with count_queries() as small:
+        small_result = list_bundles(user_id=user.user_id, db=db)
+
+    # 3x the data: 6 bundles x 3 bookings on top
+    for _ in range(6):
+        make_bundle(3)
+    with count_queries() as large:
+        large_result = list_bundles(user_id=user.user_id, db=db)
+
+    # Correctness didn't regress: all bundles + their bookings are present.
+    assert len(large_result) == 8
+    assert sum(b["booking_count"] for b in large_result) == (2 + 2) + 6 * 3
+
+    # The whole point: query count does not grow with data size.
+    assert small["n"] == large["n"], (small["n"], large["n"])
+    assert large["n"] <= 8  # ~6 batched queries, independent of N and M
+
+
+def test_list_bundles_pagination(seeded_db):
+    """limit/offset page the result; omitting limit returns everything."""
+    user = seeded_db["user"]
+    headers = make_auth_headers(user)
+    for i in range(5):
+        client.post("/bundles", json={"name": f"Bundle {i}"}, headers=headers)
+
+    all_bundles = client.get("/bundles", headers=headers).json()
+    assert len(all_bundles) == 5
+
+    page = client.get("/bundles?limit=2", headers=headers).json()
+    assert len(page) == 2
+    # Newest-first ordering is preserved, so paging is stable.
+    assert page == all_bundles[:2]
+
+    page2 = client.get("/bundles?limit=2&offset=2", headers=headers).json()
+    assert page2 == all_bundles[2:4]
 
 
 def test_get_bundle(seeded_db):
