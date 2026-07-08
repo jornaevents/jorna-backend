@@ -19,10 +19,17 @@ class BundleError(Exception):
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
-def _booking_summary(booking: Booking, db: Session) -> dict:
-    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
-    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
-    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
+def _booking_summary(
+    booking: Booking,
+    service: Service | None,
+    vendor: Vendor | None,
+    vendor_user: User | None,
+) -> dict:
+    """Build a booking's summary dict from already-resolved related rows.
+
+    Pure (no DB access) so callers can batch-load the Service/Vendor/User once
+    via ``_resolve_booking_refs`` instead of issuing three queries per booking.
+    """
     price = (booking.amount_cents / 100) if booking.amount_cents else (service.price if service else 0.0)
     return {
         "booking_id": booking.booking_id,
@@ -45,15 +52,74 @@ def _booking_summary(booking: Booking, db: Session) -> dict:
     }
 
 
-def _bundle_dict(bundle: Bundle, bookings: list[Booking], db: Session) -> dict:
-    booking_summaries = [_booking_summary(b, db) for b in bookings]
+# Sentinel so _bundle_dict can tell "no event passed, go fetch it" apart from
+# "event passed and it's None" (a bundle with no linked event).
+_UNSET = object()
+
+
+def _resolve_booking_refs(
+    bookings: list[Booking], db: Session
+) -> tuple[dict[str, Service], dict[str, Vendor], dict[str, User]]:
+    """Batch-load the Service/Vendor/User rows referenced by a set of bookings.
+
+    Three queries total (services, vendors, then the vendors' users) regardless
+    of how many bookings there are — the fix for the per-booking N+1 in
+    ``_booking_summary``. Returns id→row maps.
+    """
+    service_ids = {b.service_id for b in bookings if b.service_id}
+    vendor_ids = {b.vendor_id for b in bookings if b.vendor_id}
+
+    services = (
+        {s.service_id: s for s in db.query(Service).filter(Service.service_id.in_(service_ids)).all()}
+        if service_ids else {}
+    )
+    vendors = (
+        {v.vendor_id: v for v in db.query(Vendor).filter(Vendor.vendor_id.in_(vendor_ids)).all()}
+        if vendor_ids else {}
+    )
+    user_ids = {v.user_id for v in vendors.values() if v.user_id}
+    users = (
+        {u.user_id: u for u in db.query(User).filter(User.user_id.in_(user_ids)).all()}
+        if user_ids else {}
+    )
+    return services, vendors, users
+
+
+def _bundle_dict(
+    bundle: Bundle,
+    bookings: list[Booking],
+    db: Session,
+    *,
+    refs: tuple[dict[str, Service], dict[str, Vendor], dict[str, User]] | None = None,
+    event=_UNSET,
+) -> dict:
+    """Serialize a bundle with its bookings.
+
+    ``refs`` (service/vendor/user maps) and ``event`` can be supplied
+    pre-resolved by a batch caller (``list_bundles``) to avoid per-bundle
+    queries; when omitted they're resolved here so single-bundle callers stay
+    a one-liner.
+    """
+    if refs is None:
+        refs = _resolve_booking_refs(bookings, db)
+    service_map, vendor_map, user_map = refs
+
+    booking_summaries = []
+    for b in bookings:
+        vendor = vendor_map.get(b.vendor_id)
+        vendor_user = user_map.get(vendor.user_id) if vendor else None
+        booking_summaries.append(
+            _booking_summary(b, service_map.get(b.service_id), vendor, vendor_user)
+        )
+
     total_cost = sum(b["price"] for b in booking_summaries)
 
     status_counts: dict[str, int] = {}
     for b in booking_summaries:
         status_counts[b["status"]] = status_counts.get(b["status"], 0) + 1
 
-    event = db.query(Event).filter(Event.event_id == bundle.event_id).first() if bundle.event_id else None
+    if event is _UNSET:
+        event = db.query(Event).filter(Event.event_id == bundle.event_id).first() if bundle.event_id else None
 
     return {
         "bundle_id": bundle.bundle_id,
@@ -203,13 +269,55 @@ def get_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
     return _bundle_dict(bundle, bookings, db)
 
 
-def list_bundles(*, user_id: str, db: Session) -> list[dict]:
-    bundles = db.query(Bundle).filter(Bundle.user_id == user_id).order_by(Bundle.created_at.desc()).all()
-    result = []
-    for b in bundles:
-        bookings = db.query(Booking).filter(Booking.bundle_id == b.bundle_id).all()
-        result.append(_bundle_dict(b, bookings, db))
-    return result
+def list_bundles(
+    *, user_id: str, db: Session, limit: int | None = None, offset: int = 0
+) -> list[dict]:
+    """Return the user's bundles, newest first.
+
+    Batched to a constant number of queries regardless of how many bundles or
+    bookings there are (previously 1 + N×2 + N×M×3): one query for the page of
+    bundles, one for all their bookings, three to resolve the bookings'
+    services/vendors/users, and one for the linked events. ``limit``/``offset``
+    page the result.
+    """
+    query = (
+        db.query(Bundle)
+        .filter(Bundle.user_id == user_id)
+        .order_by(Bundle.created_at.desc())
+    )
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    bundles = query.all()
+    if not bundles:
+        return []
+
+    # All bookings for the returned bundles in one query, grouped by bundle.
+    bundle_ids = [b.bundle_id for b in bundles]
+    all_bookings = db.query(Booking).filter(Booking.bundle_id.in_(bundle_ids)).all()
+    bookings_by_bundle: dict[str, list[Booking]] = {}
+    for bk in all_bookings:
+        bookings_by_bundle.setdefault(bk.bundle_id, []).append(bk)
+
+    # Resolve every booking's Service/Vendor/User once, and every linked event.
+    refs = _resolve_booking_refs(all_bookings, db)
+    event_ids = {b.event_id for b in bundles if b.event_id}
+    event_map = (
+        {e.event_id: e for e in db.query(Event).filter(Event.event_id.in_(event_ids)).all()}
+        if event_ids else {}
+    )
+
+    return [
+        _bundle_dict(
+            b,
+            bookings_by_bundle.get(b.bundle_id, []),
+            db,
+            refs=refs,
+            event=event_map.get(b.event_id),
+        )
+        for b in bundles
+    ]
 
 
 def get_bundle_conversations(*, bundle_id: str, caller_user_id: str, db: Session) -> list[dict]:
