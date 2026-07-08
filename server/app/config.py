@@ -67,6 +67,20 @@ CHATBOT_MOCK_VENDORS: bool = os.getenv("CHATBOT_MOCK_VENDORS", "true").strip().l
 # ── YouTube ───────────────────────────────────────────────────────────
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
 
+# ── Error monitoring (Sentry) ─────────────────────────────────────────
+# Set SENTRY_DSN to your Sentry project's DSN to enable error reporting.
+# Unset → Sentry is disabled and the app runs untouched (see app/observability.py).
+SENTRY_DSN: str = os.getenv("SENTRY_DSN", "").strip()
+# Tag events with an environment; defaults to production on a real DB, else development.
+SENTRY_ENVIRONMENT: str = (
+    os.getenv("SENTRY_ENVIRONMENT", "").strip()
+    or ("production" if not DATABASE_URL.startswith("sqlite") else "development")
+)
+# Fraction of requests traced for performance (0.0 = errors only; keeps cost/free-tier low).
+SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0"))
+# Release identifier for grouping — Railway injects the commit SHA automatically.
+RELEASE: str = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip() or os.getenv("RELEASE", "").strip() or None
+
 # ── CORS ──────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins.
 # Example: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com
