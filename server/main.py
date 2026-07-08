@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before any module reads os.environ
 
+# Initialise error monitoring as early as possible so import/startup errors are
+# captured too. No-op unless SENTRY_DSN is set.
+from app.observability import init_sentry
+init_sentry()
+
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import text
