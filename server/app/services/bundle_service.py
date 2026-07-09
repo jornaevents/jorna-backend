@@ -45,7 +45,9 @@ def _booking_summary(
         "vendor_id": booking.vendor_id,
         "price": price,
         "amount_cents": booking.amount_cents,
-        "open_to_price_negotiation": vendor.open_to_price_negotiation if vendor else False,
+        # Negotiation is now per-service (the vendor toggles it per service),
+        # not vendor-wide. Key name kept for client compatibility.
+        "open_to_price_negotiation": service.negotiable if service else False,
         # Vendor-approval timestamp — the client uses it to show the 24-hour
         # refund window on paid bookings.
         "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,

@@ -107,6 +107,9 @@ class Service(Base):
     subcategory = Column(String(50), nullable=True)
     price_unit = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
+    # Whether the vendor allows price negotiation on THIS service (default off).
+    # Replaces the vendor-wide open_to_price_negotiation for booking negotiation.
+    negotiable = Column(Boolean, nullable=False, default=False)
 
 
 class Booking(Base):

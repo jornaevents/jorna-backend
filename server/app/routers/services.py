@@ -61,6 +61,7 @@ class UpdateServiceRequest(BaseModel):
     subcategory: Optional[str] = None
     price_unit: Optional[str] = None
     description: Optional[str] = None
+    negotiable: Optional[bool] = None
 
     @field_validator("category")
     @classmethod
@@ -83,6 +84,7 @@ class CreateServiceRequest(BaseModel):
     subcategory: Optional[str] = None
     price_unit: Optional[str] = None
     description: Optional[str] = None
+    negotiable: bool = False   # per-service price negotiation; default off
 
     @field_validator("category")
     @classmethod
@@ -117,6 +119,7 @@ def create_service_route(
             subcategory=body.subcategory,
             price_unit=body.price_unit,
             description=body.description,
+            negotiable=body.negotiable,
             db=db,
         )
     except ServiceError as e:
