@@ -274,9 +274,15 @@ def delete_service_image_route(
 @router.get("", summary="List services")
 def list_services_route(
     vendor_id: Optional[str] = Query(None, description="Filter by vendor ID"),
+    category: Optional[str] = Query(None, description="Filter by service category (e.g. a bundle slot's category)"),
+    subcategory: Optional[str] = Query(None, description="Filter by service subcategory (e.g. dj vs dhol)"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Return a list of services, optionally filtered by vendor_id. No auth required."""
-    return list_services(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+    """Return a list of services (with vendor info), filterable by vendor_id
+    and/or category + subcategory. No auth required."""
+    return list_services(
+        vendor_id=vendor_id, category=category, subcategory=subcategory,
+        limit=limit, offset=offset, db=db,
+    )

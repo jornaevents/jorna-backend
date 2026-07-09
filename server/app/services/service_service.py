@@ -3,7 +3,7 @@
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.db.models import Service, Vendor
+from app.db.models import Service, Vendor, User
 from app.services.storage_service import delete_service_image
 
 
@@ -30,6 +30,16 @@ def _service_dict(service: Service) -> dict:
         "price_unit": service.price_unit,
         "description": service.description,
     }
+
+
+def _service_with_vendor_dict(service: Service, vendor: Vendor, user: User) -> dict:
+    """Service fields plus its vendor's display info — the shape the service-first
+    swap picker needs (one call gives service + who offers it)."""
+    d = _service_dict(service)
+    d["vendor_name"] = f"{user.f_name} {user.l_name}".strip() if user else None
+    d["vendor_rating"] = vendor.rating if vendor else None
+    d["vendor_pfp_url"] = user.pfp_url if user else None
+    return d
 
 
 def create_service(
@@ -87,14 +97,35 @@ def get_service(*, service_id: str, db: Session) -> dict:
 
 
 def list_services(
-    *, vendor_id: Optional[str] = None, limit: int = 20, offset: int = 0, db: Session
+    *,
+    vendor_id: Optional[str] = None,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+    db: Session,
 ) -> dict:
-    """Return a paginated list of services, optionally filtered by *vendor_id*."""
-    query = db.query(Service)
+    """Return a paginated list of services with their vendor info.
+
+    Filterable by vendor_id (a vendor's own services) and/or category +
+    subcategory (candidate services for a bundle slot, across all vendors —
+    the service-first swap picker's list). Joins the vendor + user so each
+    item includes vendor_name/rating/pfp in one call.
+    """
+    query = (
+        db.query(Service, Vendor, User)
+        .join(Vendor, Service.vendor_id == Vendor.vendor_id)
+        .join(User, Vendor.user_id == User.user_id)
+    )
     if vendor_id:
         query = query.filter(Service.vendor_id == vendor_id)
+    if category:
+        query = query.filter(Service.category == category)
+    if subcategory:
+        query = query.filter(Service.subcategory == subcategory)
     total = query.count()
-    items = [_service_dict(s) for s in query.offset(offset).limit(limit).all()]
+    rows = query.offset(offset).limit(limit).all()
+    items = [_service_with_vendor_dict(s, v, u) for s, v, u in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
