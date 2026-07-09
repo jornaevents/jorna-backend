@@ -317,6 +317,68 @@ def _step_partial_booking(state: ChatbotState) -> StepResponse:
 # ── Multi-bundle generation ───────────────────────────────────────────
 
 
+def _candidate_service_rows(
+    cat: str,
+    state: ChatbotState,
+    db: Session,
+    booked_vendor_ids: set[str],
+    price_cap: float,
+    used_vendor_ids: set[str],
+) -> list[tuple]:
+    """Candidate (Service, Vendor, User) rows for a slot — the service-first unit.
+
+    Filters by the slot's Service.category (and Service.subcategory when the slot
+    specifies one, e.g. dj vs dhol). Applies, in order: the one-vendor-per-bundle
+    dedup (skip vendors already used in this bundle), travel radius, already-booked
+    vendors, and the per-category budget cap (kept only if some service survives).
+    Returns [] when nothing qualifies so the caller can fall back to a mock item.
+    """
+    from app.db.models import Vendor, Service, User
+    from app.utils.location import calculate_distance_miles
+
+    flt = _slot_db_filter(cat)
+    if not flt:
+        return []
+    db_category, db_subcategory = flt
+
+    q = (
+        db.query(Service, Vendor, User)
+        .join(Vendor, Service.vendor_id == Vendor.vendor_id)
+        .join(User, Vendor.user_id == User.user_id)
+        .filter(Service.category == db_category)
+    )
+    if db_subcategory:
+        q = q.filter(Service.subcategory == db_subcategory)
+    rows = q.all()  # list of (Service, Vendor, User)
+
+    # Dedup: a vendor fills at most one slot per generated bundle. A user who
+    # wants a vendor in two roles does it manually in the bundle editor.
+    if used_vendor_ids:
+        rows = [(s, v, u) for s, v, u in rows if v.vendor_id not in used_vendor_ids]
+
+    # Travel radius (only when the event has coordinates)
+    if state.latitude is not None and state.longitude is not None:
+        rows = [
+            (s, v, u) for s, v, u in rows
+            if u.latitude is None or u.longitude is None
+            or v.open_to_long_distance
+            or calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
+        ]
+
+    # Drop vendors already booked on the event date
+    if booked_vendor_ids:
+        rows = [(s, v, u) for s, v, u in rows if v.vendor_id not in booked_vendor_ids]
+
+    # Budget cap: keep services within cap; if none qualify, keep all (show the
+    # cheapest available even if over budget).
+    if price_cap < float("inf"):
+        within = [(s, v, u) for s, v, u in rows if s.price <= price_cap]
+        if within:
+            rows = within
+
+    return rows
+
+
 def _build_bundle_with_strategy(
     state: ChatbotState,
     strategy: str,
@@ -325,17 +387,17 @@ def _build_bundle_with_strategy(
     """Build a bundle using a specific selection strategy.
 
     strategy:
-      'budget'    — pick the cheapest vendor per category
-      'top_rated' — pick the highest rated vendor per category
+      'budget'    — pick the cheapest service per slot
+      'top_rated' — pick the highest-rated vendor's service per slot
       'balanced'  — balance rating and price equally
 
-    All three strategies also factor in LLM-scored tag relevance when
-    style/preferences are provided, so cultural or style preferences
-    influence which vendor is picked even within a price/rating sort.
+    Slots are filled by services (matched on Service.category / subcategory),
+    a vendor fills at most one slot per bundle, and each slot's price is the
+    chosen service's own price. All three strategies also factor in LLM-scored
+    tag relevance when style/preferences are provided.
     """
-    from app.db.models import Vendor, Service, User, Tag
+    from app.db.models import Vendor, Tag
     from app.services.llm_service import get_relevant_tags_for_preferences
-    from app.utils.location import calculate_distance_miles
 
     items: list[BundleItem] = []
     total_min = 0.0
@@ -361,36 +423,19 @@ def _build_bundle_with_strategy(
     # Pre-compute once — same set applies to every category in this bundle
     booked_vendor_ids = _get_booked_vendor_ids(state, db)
     price_cap = _per_category_cap(state)
+    used_vendor_ids: set[str] = set()
+
+    def _tag_bonus(v) -> float:
+        """Small bonus for vendors whose tags match user preferences."""
+        if not llm_relevant_tags:
+            return 0.0
+        v_tags = {t.name.lower() for t in (v.tags or [])} | {t.lower() for t in (v.instagram_tags or [])}
+        return len(v_tags & llm_relevant_tags) * 0.1
 
     for cat in state.needed_categories:
-        flt = _slot_db_filter(cat)
-        if not flt:
-            continue
-        db_category, db_subcategory = flt
+        rows = _candidate_service_rows(cat, state, db, booked_vendor_ids, price_cap, used_vendor_ids)
 
-        q = (
-            db.query(Vendor, User)
-            .join(User, Vendor.user_id == User.user_id)
-            .filter(Vendor.category == db_category)
-        )
-        if db_subcategory:
-            q = q.filter(Vendor.subcategory == db_subcategory)
-        vendor_rows = q.all()
-
-        # Filter by travel radius if event coordinates are provided
-        if state.latitude is not None and state.longitude is not None:
-            vendor_rows = [
-                (v, u) for v, u in vendor_rows
-                if u.latitude is None or u.longitude is None or
-                v.open_to_long_distance or
-                calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
-            ]
-
-        # Filter out vendors already booked on the event date
-        if booked_vendor_ids:
-            vendor_rows = [(v, u) for v, u in vendor_rows if v.vendor_id not in booked_vendor_ids]
-
-        if not vendor_rows:
+        if not rows:
             mock_tier = {
                 "budget": BudgetTier.BUDGET_FRIENDLY,
                 "top_rated": BudgetTier.PREMIUM,
@@ -403,82 +448,43 @@ def _build_bundle_with_strategy(
                 total_max += item.price_max
             continue
 
-        vendor_ids = [v.vendor_id for v, _ in vendor_rows]
-        all_services = db.query(Service).filter(Service.vendor_id.in_(vendor_ids)).all()
-        services_by_vendor: dict[str, list] = {}
-        for svc in all_services:
-            services_by_vendor.setdefault(svc.vendor_id, []).append(svc)
-
-        # Budget enforcement: keep vendors with at least one service within cap.
-        if price_cap < float("inf"):
-            within_budget = [
-                (v, u) for v, u in vendor_rows
-                if any(s.price <= price_cap for s in services_by_vendor.get(v.vendor_id, []))
-                or not services_by_vendor.get(v.vendor_id)
-            ]
-            if within_budget:
-                vendor_rows = within_budget
-
-        def _avg_price(v) -> float:
-            svcs = services_by_vendor.get(v.vendor_id, [])
-            within = [s for s in svcs if s.price <= price_cap] if price_cap < float("inf") else svcs
-            pool = within if within else svcs
-            return sum(s.price for s in pool) / len(pool) if pool else 0.0
-
-        def _tag_bonus(v) -> float:
-            """Small bonus for vendors whose tags match user preferences."""
-            if not llm_relevant_tags:
-                return 0.0
-            v_tags = {t.name.lower() for t in (v.tags or [])} | {t.lower() for t in (v.instagram_tags or [])}
-            return len(v_tags & llm_relevant_tags) * 0.1
-
+        # Rank individual services by the strategy. row = (service, vendor, user).
         if strategy == "budget":
-            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: (_avg_price(r[0]), -_tag_bonus(r[0])))
+            rows.sort(key=lambda r: (r[0].price, -_tag_bonus(r[1])))
         elif strategy == "top_rated":
-            vendor_rows_sorted = sorted(vendor_rows, key=lambda r: (-(r[0].rating or 0.0), -_tag_bonus(r[0])))
+            rows.sort(key=lambda r: (-(r[1].rating or 0.0), r[0].price, -_tag_bonus(r[1])))
         else:  # balanced
-            max_price = max((_avg_price(v) for v, _ in vendor_rows), default=1.0) or 1.0
-            max_rating = max((v.rating or 0.0 for v, _ in vendor_rows), default=1.0) or 1.0
-            vendor_rows_sorted = sorted(
-                vendor_rows,
-                key=lambda r: (r[0].rating or 0.0) / max_rating * 0.5
-                              + (1 - _avg_price(r[0]) / max_price) * 0.3
-                              + _tag_bonus(r[0]) * 0.2,
+            max_price = max((r[0].price for r in rows), default=1.0) or 1.0
+            max_rating = max((r[1].rating or 0.0 for r in rows), default=1.0) or 1.0
+            rows.sort(
+                key=lambda r: (r[1].rating or 0.0) / max_rating * 0.5
+                              + (1 - r[0].price / max_price) * 0.3
+                              + _tag_bonus(r[1]) * 0.2,
                 reverse=True,
             )
 
-        vendor, user = vendor_rows_sorted[0]
-        services = services_by_vendor.get(vendor.vendor_id, [])
-
-        if services:
-            within_cap = [s for s in services if s.price <= price_cap]
-            candidate_services = within_cap if within_cap else services
-            prices = [s.price for s in candidate_services]
-            p_min, p_max = min(prices), max(prices)
-            best = min(candidate_services, key=lambda s: s.price)
-            service_id = best.service_id
-            match_reason = best.description or best.experience or vendor.bio or ""
-        else:
-            p_min = p_max = 0.0
-            service_id = None
-            match_reason = vendor.bio or ""
+        service, vendor, user = rows[0]
+        used_vendor_ids.add(vendor.vendor_id)
+        price = round(service.price, 2)
+        match_reason = service.description or service.experience or vendor.bio or ""
 
         items.append(BundleItem(
             category=cat,
             vendor_id=vendor.vendor_id,
-            service_id=service_id,
+            service_id=service.service_id,
+            service_name=service.name,
             vendor_name=f"{user.f_name} {user.l_name}",
             pfp_url=user.pfp_url,
-            price_min=round(p_min, 2),
-            price_max=round(p_max, 2),
+            price_min=price,
+            price_max=price,
             rating=vendor.rating or 0.0,
             match_reason=_rule_based_match_reason(
                 cat, vendor.rating or 0.0, match_reason,
                 list(state.style), list(state.preferences), state.budget_tier,
             ),
         ))
-        total_min += p_min
-        total_max += p_max
+        total_min += price
+        total_max += price
 
     return Bundle(
         items=items,
@@ -863,10 +869,14 @@ def _score_vendor(
 
 
 def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
-    """Query real vendors from the DB, one per needed category."""
-    from app.db.models import Vendor, Service, User
+    """Query real services from the DB, one per needed category (service-first).
+
+    Each slot is filled by a single service (matched on Service.category /
+    subcategory), scored via its vendor, with a vendor filling at most one slot
+    per bundle. The slot price is the chosen service's own price.
+    """
+    from app.db.models import Vendor
     from app.services.llm_service import get_relevant_tags_for_preferences
-    from app.utils.location import calculate_distance_miles
 
     tier = state.budget_tier or BudgetTier.MID_RANGE
     items: list[BundleItem] = []
@@ -894,38 +904,13 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     # Pre-compute once — same set applies to every category in this bundle
     booked_vendor_ids = _get_booked_vendor_ids(state, db)
     price_cap = _per_category_cap(state)
+    used_vendor_ids: set[str] = set()
 
     for cat in state.needed_categories:
-        flt = _slot_db_filter(cat)
-        if not flt:
-            continue
-        db_category, db_subcategory = flt
+        rows = _candidate_service_rows(cat, state, db, booked_vendor_ids, price_cap, used_vendor_ids)
 
-        # Find vendors for this slot, joined with their user for name/pfp
-        q = (
-            db.query(Vendor, User)
-            .join(User, Vendor.user_id == User.user_id)
-            .filter(Vendor.category == db_category)
-        )
-        if db_subcategory:
-            q = q.filter(Vendor.subcategory == db_subcategory)
-        vendor_rows = q.all()
-
-        # Filter by travel radius if event coordinates are provided
-        if state.latitude is not None and state.longitude is not None:
-            vendor_rows = [
-                (v, u) for v, u in vendor_rows
-                if u.latitude is None or u.longitude is None or
-                v.open_to_long_distance or
-                calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
-            ]
-
-        # Filter out vendors already booked on the event date
-        if booked_vendor_ids:
-            vendor_rows = [(v, u) for v, u in vendor_rows if v.vendor_id not in booked_vendor_ids]
-
-        if not vendor_rows:
-            # No real vendors — fall back to mock for this category
+        if not rows:
+            # No real service for this slot — fall back to mock for this category
             mock_item = _mock_item_for_category(cat, tier)
             if mock_item:
                 items.append(mock_item)
@@ -933,69 +918,36 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
                 total_max += mock_item.price_max
             continue
 
-        # Fetch services for all candidate vendors in one query
-        vendor_ids = [v.vendor_id for v, _ in vendor_rows]
-        all_services = db.query(Service).filter(Service.vendor_id.in_(vendor_ids)).all()
-        services_by_vendor: dict[str, list] = {}
-        for svc in all_services:
-            services_by_vendor.setdefault(svc.vendor_id, []).append(svc)
-
-        # Budget enforcement: keep vendors that have at least one service within the cap.
-        # If none qualify, fall back to all vendors (show cheapest available over budget).
-        if price_cap < float("inf"):
-            within_budget = [
-                (v, u) for v, u in vendor_rows
-                if any(s.price <= price_cap for s in services_by_vendor.get(v.vendor_id, []))
-                or not services_by_vendor.get(v.vendor_id)
-            ]
-            if within_budget:
-                vendor_rows = within_budget
-
-        # Score every vendor and pick the best match
+        # Score each candidate service by its vendor (price-aware via the single
+        # service), then pick the highest score, tie-broken by the cheaper service.
         scored = [
-            (
-                _score_vendor(v, services_by_vendor.get(v.vendor_id, []), state.style, state.preferences, tier, llm_relevant_tags),
-                v,
-                u,
-                services_by_vendor.get(v.vendor_id, []),
-            )
-            for v, u in vendor_rows
+            (_score_vendor(v, [s], state.style, state.preferences, tier, llm_relevant_tags), s.price, s, v, u)
+            for s, v, u in rows
         ]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        _, vendor, user, services = scored[0]
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        _, _, service, vendor, user = scored[0]
+        used_vendor_ids.add(vendor.vendor_id)
 
-        if services:
-            # Prefer services within the budget cap; fall back to all if none qualify.
-            within_cap = [s for s in services if s.price <= price_cap]
-            candidate_services = within_cap if within_cap else services
-            prices = [s.price for s in candidate_services]
-            p_min = min(prices)
-            p_max = max(prices)
-            best_service = min(candidate_services, key=lambda s: s.price)
-            service_id = best_service.service_id
-            match_reason = best_service.description or best_service.experience or vendor.bio or ""
-        else:
-            p_min = 0.0
-            p_max = 0.0
-            service_id = None
-            match_reason = vendor.bio or ""
+        price = round(service.price, 2)
+        match_reason = service.description or service.experience or vendor.bio or ""
 
         items.append(BundleItem(
             category=cat,
             vendor_id=vendor.vendor_id,
-            service_id=service_id,
+            service_id=service.service_id,
+            service_name=service.name,
             vendor_name=f"{user.f_name} {user.l_name}",
             pfp_url=user.pfp_url,
-            price_min=round(p_min, 2),
-            price_max=round(p_max, 2),
+            price_min=price,
+            price_max=price,
             rating=vendor.rating or 0.0,
             match_reason=_rule_based_match_reason(
                 cat, vendor.rating or 0.0, match_reason,
                 list(state.style), list(state.preferences), state.budget_tier,
             ),
         ))
-        total_min += p_min
-        total_max += p_max
+        total_min += price
+        total_max += price
 
     return Bundle(
         items=items,
@@ -1022,11 +974,14 @@ def _mock_item_for_category(cat: str, tier: BudgetTier) -> BundleItem | None:
     vendor_idx = _TIER_INDEX.get(tier, 0)
     vendor = pool[vendor_idx] if vendor_idx < len(pool) else pool[0]
     price_mult = 0.8 if tier == BudgetTier.BUDGET_FRIENDLY else (1.3 if tier == BudgetTier.PREMIUM else 1.0)
+    # Single estimated price (midpoint of the mock band) so a placeholder slot
+    # reads like a service, not a range — consistent with real service items.
+    price = round((vendor["price_min"] + vendor["price_max"]) / 2 * price_mult, 2)
     return BundleItem(
         category=cat,
         vendor_name=vendor["name"],
-        price_min=round(vendor["price_min"] * price_mult, 2),
-        price_max=round(vendor["price_max"] * price_mult, 2),
+        price_min=price,
+        price_max=price,
         rating=vendor["rating"],
         match_reason=vendor["reason"],
     )
