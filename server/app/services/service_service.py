@@ -46,10 +46,20 @@ def create_service(
     description: Optional[str] = None,
     db: Session,
 ) -> dict:
-    """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor."""
+    """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
+
+    Service-first bundle matching keys off Service.category, so a service must
+    always be categorized. When the client omits a category, fall back to the
+    vendor's own category (and subcategory) so nothing is left uncategorized.
+    """
     vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
     if not vendor:
         raise ServiceError(403, "You must be a vendor to add services")
+    if not category:
+        category = vendor.category
+        # Only inherit the vendor's subcategory alongside its category.
+        if subcategory is None:
+            subcategory = vendor.subcategory
     service = Service(
         vendor_id=vendor.vendor_id,
         name=name,

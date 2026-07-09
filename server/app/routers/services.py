@@ -2,12 +2,13 @@
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import User
 from app.dependencies import get_current_user
+from app.models.schemas import VendorCategory, VENDOR_SUBCATEGORIES
 from app.services.service_service import (
     ServiceError,
     create_service,
@@ -25,6 +26,30 @@ router = APIRouter(prefix="/services", tags=["services"])
 
 # ── Request schemas ───────────────────────────────────────────────────
 
+# Category is validated against the shared vendor taxonomy. It stays optional on
+# the wire (older clients may omit it) — the service layer then defaults it to
+# the vendor's own category so no service is ever left uncategorized. Services
+# use the same category/subcategory taxonomy as vendors.
+_VALID_CATEGORIES = {c.value for c in VendorCategory}
+
+
+def _validate_category(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return v
+    if v not in _VALID_CATEGORIES:
+        raise ValueError(f"Invalid category '{v}'. Valid: {sorted(_VALID_CATEGORIES)}")
+    return v
+
+
+def _validate_subcategory(v: Optional[str], info) -> Optional[str]:
+    if v is None:
+        return v
+    category = info.data.get("category")
+    valid = VENDOR_SUBCATEGORIES.get(category, []) if category else []
+    if valid and v not in valid:
+        raise ValueError(f"Invalid subcategory '{v}' for category '{category}'. Valid: {valid}")
+    return v
+
 
 class UpdateServiceRequest(BaseModel):
     name: Optional[str] = None
@@ -37,6 +62,16 @@ class UpdateServiceRequest(BaseModel):
     price_unit: Optional[str] = None
     description: Optional[str] = None
 
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, v):
+        return _validate_category(v)
+
+    @field_validator("subcategory")
+    @classmethod
+    def _check_subcategory(cls, v, info):
+        return _validate_subcategory(v, info)
+
 
 class CreateServiceRequest(BaseModel):
     name: str
@@ -48,6 +83,16 @@ class CreateServiceRequest(BaseModel):
     subcategory: Optional[str] = None
     price_unit: Optional[str] = None
     description: Optional[str] = None
+
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, v):
+        return _validate_category(v)
+
+    @field_validator("subcategory")
+    @classmethod
+    def _check_subcategory(cls, v, info):
+        return _validate_subcategory(v, info)
 
 
 # ── Routes ────────────────────────────────────────────────────────────
