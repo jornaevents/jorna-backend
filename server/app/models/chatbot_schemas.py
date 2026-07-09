@@ -130,6 +130,7 @@ class BundleItem(BaseModel):
     category: str
     vendor_id: Optional[str] = None    # None when falling back to mock data
     service_id: Optional[str] = None
+    service_name: Optional[str] = None  # the specific service filling this slot
     vendor_name: str
     pfp_url: Optional[str] = None
     price_min: float
