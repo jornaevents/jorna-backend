@@ -41,6 +41,7 @@ def _booking_summary(
         "location": booking.location,
         "service_name": service.name if service else None,
         "service_category": service.category if service else None,
+        "service_subcategory": service.subcategory if service else None,
         "vendor_name": f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else None,
         "vendor_id": booking.vendor_id,
         "price": price,

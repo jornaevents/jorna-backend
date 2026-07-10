@@ -85,6 +85,7 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "service_id": booking.service_id,
         "service_name": service.name if service else None,
         "service_category": service.category if service else None,
+        "service_subcategory": service.subcategory if service else None,
         # Effective price: the agreed amount if set, otherwise the listed service price.
         "price": (booking.amount_cents / 100) if booking.amount_cents else (service.price if service else 0.0),
         "bundle_id": booking.bundle_id,
