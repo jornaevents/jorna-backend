@@ -346,6 +346,10 @@ def _candidate_service_rows(
         .join(Vendor, Service.vendor_id == Vendor.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
         .filter(Service.category == db_category)
+        # AI bundles only pick fixed-price (non-negotiable) services, so the whole
+        # bundle can be one-click confirmed with no per-service price step. A user
+        # who wants a negotiable service adds it manually via the bundle editor.
+        .filter(Service.negotiable == False)  # noqa: E712 (SQL boolean compare)
     )
     if db_subcategory:
         q = q.filter(Service.subcategory == db_subcategory)

@@ -29,6 +29,7 @@ def _service_dict(service: Service) -> dict:
         "subcategory": service.subcategory,
         "price_unit": service.price_unit,
         "description": service.description,
+        "negotiable": service.negotiable,
     }
 
 
@@ -54,6 +55,7 @@ def create_service(
     subcategory: Optional[str] = None,
     price_unit: Optional[str] = None,
     description: Optional[str] = None,
+    negotiable: bool = False,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -81,6 +83,7 @@ def create_service(
         subcategory=subcategory,
         price_unit=price_unit,
         description=description,
+        negotiable=negotiable,
     )
     db.add(service)
     db.commit()
