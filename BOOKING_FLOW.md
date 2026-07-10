@@ -24,6 +24,8 @@ All three auto-create a `Bundle` record. The chatbot can create multiple booking
 
 `POST /chatbot/bundles` (requires auth) generates three bundles — Budget, Top Rated, and Balanced — and immediately **persists all three to the DB** as drafts. All bookings are created in `pending` status but vendor notifications are held.
 
+Matching is **service-first**: each slot is filled by a specific `Service` (matched on `Service.category` / `subcategory`, not the vendor's category), a vendor fills at most one slot per bundle, and **only non-negotiable services** are eligible (`Service.negotiable == False`) so the whole bundle can be confirmed in one step. A slot with no real supply falls back to a placeholder item.
+
 Each option in the response includes a `bundle_id`:
 
 ```json
@@ -114,7 +116,7 @@ While a booking is `pending` or `negotiation_ongoing`, the client can update:
 
 ## Negotiation Flow
 
-Either party (client or vendor) can open a negotiation at any point while the booking is `pending` or `approved` and unpaid.
+Price negotiation is a **per-service toggle** (`Service.negotiable`, default `False`) the vendor sets when creating or editing a service — it replaced the old vendor-wide `open_to_price_negotiation` for booking negotiation. Either party can open a negotiation while the booking is `pending` or `approved` and unpaid, **but only if the booked service is negotiable**. Non-negotiable services are fixed-price and are implicitly accepted when the bundle is confirmed — there is no accept-price step for them.
 
 ```
 POST /negotiations               → opens negotiation, booking → negotiation_ongoing
@@ -124,11 +126,14 @@ POST /negotiations/{id}/reject   → closes negotiation, price unchanged
 ```
 
 **Rules:**
+- The booked service must be negotiable — `start_negotiation` returns 400 if `Service.negotiable` is false (enforced server-side, not just in the UI)
 - Only one negotiation per booking
 - Turns alternate — you cannot counter your own offer
 - You cannot accept your own offer
 - Once accepted, the agreed price is locked onto the booking
 - Once rejected, the booking price stays at the original service price and the vendor can approve/reject normally
+
+Each booking summary exposes the flag as `negotiable` (and, for backward compatibility, the legacy `open_to_price_negotiation` key), both sourced from the booked service.
 
 ### Negotiation status
 
@@ -194,7 +199,8 @@ Client
   Booking 1                   Booking 2         (each independent)
   status: pending              status: pending
     │                             │
-    ├── Negotiation?              ├── Negotiation?
+    ├── Negotiation?              ├── Negotiation?   (only if the
+    │   (service negotiable)      │    service is negotiable)
     │     ↓ accept                │
     │   price locked              │
     │                             │
@@ -222,3 +228,5 @@ Client
 - Vendors can only approve or reject from `pending` or `negotiation_ongoing`
 - Payment can only start after a booking is `approved`
 - Negotiations lock the price on accept; rejecting leaves the original price
+- Negotiation is per-service: only services the vendor marked negotiable (`Service.negotiable`, default off) can be negotiated; `POST /negotiations` rejects a non-negotiable service
+- AI-generated comparison bundles only include non-negotiable services, so a bundle confirms in one step with no per-service accept-price
