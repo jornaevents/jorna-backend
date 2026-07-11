@@ -24,6 +24,21 @@ class StripeError(Exception):
         super().__init__(detail)
 
 
+def _sv(obj, key, default=None):
+    """Read ``key`` from a Stripe object (or plain dict), tolerating absence.
+
+    stripe-python's StripeObject is not dict-subclassed (v5+), so ``.get()`` is
+    unavailable and bracket access raises KeyError for missing keys. This wrapper
+    restores dict-style ``.get`` semantics across StripeObjects and plain dicts.
+    """
+    if obj is None:
+        return default
+    try:
+        return obj[key]
+    except (KeyError, TypeError):
+        return default
+
+
 # ── Vendor onboarding ─────────────────────────────────────────────────
 
 
@@ -389,13 +404,13 @@ def sync_booking_payment(*, booking_id: str, caller_user_id: str, db: Session) -
     try:
         if booking.checkout_session_id:
             session = stripe.checkout.Session.retrieve(booking.checkout_session_id)
-            paid = session.get("payment_status") == "paid"
+            paid = _sv(session, "payment_status") == "paid"
             # `payment_intent` is a bare id string when the session isn't expanded.
-            intent_id = session.get("payment_intent")
+            intent_id = _sv(session, "payment_intent")
         elif booking.payment_intent_id:
             intent = stripe.PaymentIntent.retrieve(booking.payment_intent_id)
-            paid = intent.get("status") == "succeeded"
-            intent_id = intent.get("id")
+            paid = _sv(intent, "status") == "succeeded"
+            intent_id = _sv(intent, "id")
     except stripe.StripeError as e:
         raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
 
@@ -481,7 +496,7 @@ def _mark_booking_paid(booking: Booking, payment_intent_id: str | None, db: Sess
 
 
 def _on_payment_succeeded(intent: dict, db: Session) -> None:
-    booking_id = intent.get("metadata", {}).get("booking_id")
+    booking_id = _sv(_sv(intent, "metadata"), "booking_id")
     if not booking_id:
         return
 
@@ -490,11 +505,11 @@ def _on_payment_succeeded(intent: dict, db: Session) -> None:
         logger.warning("payment_intent.succeeded: booking %s not found", booking_id)
         return
 
-    _mark_booking_paid(booking, intent.get("id"), db)
+    _mark_booking_paid(booking, _sv(intent, "id"), db)
 
 
 def _on_payment_failed(intent: dict, db: Session) -> None:
-    booking_id = intent.get("metadata", {}).get("booking_id")
+    booking_id = _sv(_sv(intent, "metadata"), "booking_id")
     if not booking_id:
         return
 
@@ -504,7 +519,7 @@ def _on_payment_failed(intent: dict, db: Session) -> None:
 
     booking.payment_status = "unpaid"
     db.commit()
-    logger.warning("Payment failed for booking %s (intent %s)", booking_id, intent["id"])
+    logger.warning("Payment failed for booking %s (intent %s)", booking_id, _sv(intent, "id"))
 
 
 def _on_account_updated(account: dict, db: Session) -> None:
@@ -515,7 +530,7 @@ def _on_account_updated(account: dict, db: Session) -> None:
     details_submitted so the vendor can accept payments without having to
     manually call the status endpoint.
     """
-    stripe_account_id = account.get("id")
+    stripe_account_id = _sv(account, "id")
     if not stripe_account_id:
         return
 
@@ -524,7 +539,7 @@ def _on_account_updated(account: dict, db: Session) -> None:
         logger.debug("account.updated: no vendor found for Stripe account %s", stripe_account_id)
         return
 
-    complete = bool(account.get("details_submitted"))
+    complete = bool(_sv(account, "details_submitted"))
     if complete != vendor.stripe_onboarding_complete:
         vendor.stripe_onboarding_complete = complete
         db.commit()
