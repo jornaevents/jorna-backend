@@ -141,6 +141,10 @@ class Booking(Base):
 
     # Payment — populated when the customer pays after booking is confirmed
     payment_intent_id = Column(String(255), nullable=True, index=True)
+    # Stripe Checkout Session id — stored so the app can reconcile payment status
+    # straight from Stripe on return from checkout (safety net for a delayed or
+    # misconfigured payment_intent.succeeded webhook). See sync_booking_payment.
+    checkout_session_id = Column(String(255), nullable=True)
     # unpaid | processing | paid | released | refunded | disputed
     payment_status = Column(String(50), nullable=False, default="unpaid")
     amount_cents = Column(Integer, nullable=True)       # total charged to customer

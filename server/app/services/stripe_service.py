@@ -349,10 +349,13 @@ def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: s
     except stripe.StripeError as e:
         raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
 
-    # Persist amounts so fund-release / refund can compute the vendor's share.
-    # payment_status stays as-is until the webhook confirms a completed payment.
+    # Persist amounts so fund-release / refund can compute the vendor's share, and
+    # the session id so we can reconcile payment status directly with Stripe on
+    # return from checkout (see sync_booking_payment). payment_status stays as-is
+    # until a completed payment is confirmed (webhook or reconcile).
     booking.amount_cents = amount_cents
     booking.platform_fee_cents = platform_fee_cents
+    booking.checkout_session_id = session.id
     db.commit()
 
     logger.info(
@@ -360,6 +363,44 @@ def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: s
     )
 
     return {"checkout_url": session.url}
+
+
+def sync_booking_payment(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """Reconcile a booking's payment status directly with Stripe.
+
+    A safety net for when the payment_intent.succeeded webhook is delayed or
+    misconfigured: the app calls this when the customer returns from hosted
+    Checkout, and we ask Stripe whether the charge actually completed rather than
+    waiting on the webhook. Idempotent — a harmless no-op once the webhook (or a
+    previous sync) has already marked the booking paid.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+
+    # Terminal / already-synced states need no Stripe round-trip.
+    if booking.payment_status in ("paid", "released", "refunded", "disputed"):
+        return {"booking_id": booking_id, "payment_status": booking.payment_status, "updated": False}
+
+    paid = False
+    intent_id: str | None = None
+    try:
+        if booking.checkout_session_id:
+            session = stripe.checkout.Session.retrieve(booking.checkout_session_id)
+            paid = session.get("payment_status") == "paid"
+            # `payment_intent` is a bare id string when the session isn't expanded.
+            intent_id = session.get("payment_intent")
+        elif booking.payment_intent_id:
+            intent = stripe.PaymentIntent.retrieve(booking.payment_intent_id)
+            paid = intent.get("status") == "succeeded"
+            intent_id = intent.get("id")
+    except stripe.StripeError as e:
+        raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
+
+    updated = _mark_booking_paid(booking, intent_id, db) if paid else False
+    return {"booking_id": booking_id, "payment_status": booking.payment_status, "updated": updated}
 
 
 # ── Webhook ───────────────────────────────────────────────────────────
@@ -410,6 +451,35 @@ def handle_stripe_webhook(*, payload: bytes, signature: str, db: Session) -> dic
     return {"received": True}
 
 
+def _mark_booking_paid(booking: Booking, payment_intent_id: str | None, db: Session) -> bool:
+    """Idempotently transition a booking to 'paid'.
+
+    Shared by the payment_intent.succeeded webhook and the reconcile-on-return
+    path (sync_booking_payment) so both apply the exact same state change.
+    Returns True if this call actually moved the booking to 'paid'.
+    """
+    # Never walk back a further-along state (funds released / refunded / disputed).
+    if booking.payment_status in ("released", "refunded", "disputed"):
+        return False
+
+    # Already paid — just backfill the PaymentIntent id if we now have one
+    # (hosted Checkout doesn't set it at session-creation time; refunds need it).
+    if booking.payment_status == "paid":
+        if payment_intent_id and not booking.payment_intent_id:
+            booking.payment_intent_id = payment_intent_id
+            db.commit()
+        return False
+
+    booking.payment_status = "paid"
+    booking.status = "payment_confirmed"
+    booking.paid_at = datetime.now(timezone.utc)
+    if payment_intent_id and not booking.payment_intent_id:
+        booking.payment_intent_id = payment_intent_id
+    db.commit()
+    logger.info("Booking %s marked as paid (intent %s)", booking.booking_id, payment_intent_id)
+    return True
+
+
 def _on_payment_succeeded(intent: dict, db: Session) -> None:
     booking_id = intent.get("metadata", {}).get("booking_id")
     if not booking_id:
@@ -420,15 +490,7 @@ def _on_payment_succeeded(intent: dict, db: Session) -> None:
         logger.warning("payment_intent.succeeded: booking %s not found", booking_id)
         return
 
-    booking.payment_status = "paid"
-    booking.status = "payment_confirmed"
-    booking.paid_at = datetime.now(timezone.utc)
-    # Hosted Checkout doesn't set this at session-creation time (the PaymentIntent
-    # is created by Stripe), so capture it here — refunds need it.
-    if not booking.payment_intent_id:
-        booking.payment_intent_id = intent.get("id")
-    db.commit()
-    logger.info("Booking %s marked as paid (intent %s)", booking_id, intent["id"])
+    _mark_booking_paid(booking, intent.get("id"), db)
 
 
 def _on_payment_failed(intent: dict, db: Session) -> None:

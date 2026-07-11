@@ -15,6 +15,7 @@ from app.services.stripe_service import (
     get_vendor_earnings,
     create_payment_intent,
     create_checkout_session,
+    sync_booking_payment,
     handle_stripe_webhook,
     confirm_event,
     request_refund,
@@ -137,6 +138,25 @@ def create_booking_checkout_session(
             base_url=str(request.base_url),
             db=db,
         )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/sync-payment",
+    summary="Reconcile a booking's payment status directly with Stripe",
+)
+def sync_booking_payment_status(
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Safety net for a delayed/misconfigured webhook: pull the booking's payment
+    status straight from Stripe and mark it paid if the charge completed. Called
+    by the app when the customer returns from hosted Checkout. Idempotent.
+    """
+    try:
+        return sync_booking_payment(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
