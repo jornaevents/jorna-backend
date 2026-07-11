@@ -52,6 +52,10 @@ def _booking_summary(
         # Vendor-approval timestamp — the client uses it to show the 24-hour
         # refund window on paid bookings.
         "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,
+        # GPS venue check-in timestamps (stored as ISO strings). Lets the client's
+        # bundle view show whether the vendor has arrived and checked in.
+        "vendor_checked_in_at": booking.vendor_checked_in_at,
+        "client_checked_in_at": booking.client_checked_in_at,
     }
 
 

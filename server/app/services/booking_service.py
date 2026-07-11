@@ -432,8 +432,26 @@ def check_in(
 
     current_time = datetime.now(timezone.utc).isoformat()
 
+    released = False
     if is_vendor:
         booking.vendor_checked_in_at = current_time
+        # The vendor's GPS check-in doubles as their event-completion
+        # confirmation for escrow release. Release still requires the customer
+        # to confirm too, and only matters once funds are actually held.
+        if booking.payment_status == "paid" and not booking.vendor_confirmed_at:
+            booking.vendor_confirmed_at = datetime.now(timezone.utc)
+            if booking.customer_confirmed_at:
+                # Both parties are now in — pay out the vendor. Best-effort: a
+                # Stripe failure must not fail the check-in the vendor just made.
+                try:
+                    from app.services.stripe_service import _release_funds
+                    _release_funds(booking, db)
+                    released = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "check_in: fund release failed for booking %s: %s",
+                        booking.booking_id, exc,
+                    )
     else:
         booking.client_checked_in_at = current_time
 
@@ -458,8 +476,12 @@ def check_in(
     logger.info("Check-in notification for booking %s: %s", booking.booking_id, checkin_notification)
 
     return {
-        "message": "Check-in successful",
+        "message": (
+            "Check-in successful. Funds have been released to you."
+            if released else "Check-in successful."
+        ),
         "distance_miles": round(distance, 2),
         "check_in_time": current_time,
+        "funds_released": released,
         "notification": checkin_notification,
     }
