@@ -68,6 +68,9 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "l_name": u.l_name,
         "location": u.location,
         "pfp_url": u.pfp_url,
+        # Public contact — surfaced on the storefront so clients can reach out.
+        "email": u.email,
+        "phone": u.phone,
         "tags": sorted(t.name for t in v.tags),
         "instagram_username": v.instagram_username,
         "instagram_tags": v.instagram_tags or [],
