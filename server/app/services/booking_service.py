@@ -121,6 +121,48 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
 
 # ── Service functions ─────────────────────────────────────────────────
 
+def propagate_bundle_venue_location(bundle_id: str | None, db: Session) -> None:
+    """Seed every booking in a bundle with its venue's location + GPS coordinates.
+
+    All vendors in an event attend the same venue, so the venue-category
+    service's stored location/coords anchor the whole event: this fills in any
+    booking (including the venue's own) that lacks coordinates, so the traveling
+    vendors can GPS-check-in. Only fills NULLs — an explicit per-booking pin is
+    never overwritten. No-op when the bundle has no venue service with coords.
+
+    Does NOT commit — the caller owns the transaction.
+    """
+    if not bundle_id:
+        return
+    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    if not bookings:
+        return
+    service_ids = [b.service_id for b in bookings if b.service_id]
+    services = (
+        {s.service_id: s for s in db.query(Service).filter(Service.service_id.in_(service_ids)).all()}
+        if service_ids else {}
+    )
+    venue = next(
+        (
+            services[b.service_id]
+            for b in bookings
+            if b.service_id in services
+            and services[b.service_id].category == "venue"
+            and services[b.service_id].venue_latitude is not None
+            and services[b.service_id].venue_longitude is not None
+        ),
+        None,
+    )
+    if not venue:
+        return
+    for b in bookings:
+        if b.venue_latitude is None or b.venue_longitude is None:
+            b.venue_latitude = venue.venue_latitude
+            b.venue_longitude = venue.venue_longitude
+            if not b.location and venue.location:
+                b.location = venue.location
+
+
 def create_booking(
     *,
     user_id: str,
@@ -226,14 +268,16 @@ def create_booking(
         raise
     db.refresh(booking)
 
-    # Make sure the booking's bundle is backed by a real Event so it shows up
-    # under the client's My Events / Event Portfolio.
+    # Share the bundle's venue location/coords across its bookings (so traveling
+    # vendors can check in) and make sure the bundle is backed by a real Event so
+    # it shows up under the client's My Events / Event Portfolio.
     try:
         from app.services.bundle_service import _ensure_bundle_event
+        propagate_bundle_venue_location(booking.bundle_id, db)
         _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
         if _bundle:
             _ensure_bundle_event(_bundle, db)
-            db.commit()
+        db.commit()
     except Exception as exc:
         logger.warning("create_booking: failed to ensure bundle event: %s", exc)
         db.rollback()

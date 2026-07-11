@@ -110,6 +110,12 @@ class Service(Base):
     # Whether the vendor allows price negotiation on THIS service (default off).
     # Replaces the vendor-wide open_to_price_negotiation for booking negotiation.
     negotiable = Column(Boolean, nullable=False, default=False)
+    # Physical venue location — required for venue-category services (enforced in
+    # the router). A booked venue anchors the event's venue and supplies the GPS
+    # coordinates traveling vendors check in against.
+    location = Column(String(255), nullable=True)
+    venue_latitude = Column(Float, nullable=True)
+    venue_longitude = Column(Float, nullable=True)
 
 
 class Booking(Base):

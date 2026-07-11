@@ -62,6 +62,10 @@ class UpdateServiceRequest(BaseModel):
     price_unit: Optional[str] = None
     description: Optional[str] = None
     negotiable: Optional[bool] = None
+    # Venue location (required for venue-category services; enforced in service layer).
+    location: Optional[str] = None
+    venue_latitude: Optional[float] = None
+    venue_longitude: Optional[float] = None
 
     @field_validator("category")
     @classmethod
@@ -85,6 +89,10 @@ class CreateServiceRequest(BaseModel):
     price_unit: Optional[str] = None
     description: Optional[str] = None
     negotiable: bool = False   # per-service price negotiation; default off
+    # Venue location (required for venue-category services; enforced in service layer).
+    location: Optional[str] = None
+    venue_latitude: Optional[float] = None
+    venue_longitude: Optional[float] = None
 
     @field_validator("category")
     @classmethod
@@ -120,6 +128,9 @@ def create_service_route(
             price_unit=body.price_unit,
             description=body.description,
             negotiable=body.negotiable,
+            location=body.location,
+            venue_latitude=body.venue_latitude,
+            venue_longitude=body.venue_longitude,
             db=db,
         )
     except ServiceError as e:

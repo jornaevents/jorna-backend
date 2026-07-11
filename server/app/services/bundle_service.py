@@ -170,11 +170,23 @@ def _ensure_bundle_event(bundle: Bundle, db: Session) -> None:
     )
     if not sample:
         return
+    # Prefer the booked venue's address for the event location; fall back to a
+    # sample booking's location when the bundle has no venue service.
+    venue_service = (
+        db.query(Service)
+        .join(Booking, Booking.service_id == Service.service_id)
+        .filter(
+            Booking.bundle_id == bundle.bundle_id,
+            Service.category == "venue",
+            Service.location.isnot(None),
+        )
+        .first()
+    )
     event = Event(
         user_id=bundle.user_id,
         name=(bundle.event_name or bundle.name or "My Event"),
         date_iso=sample.date_iso or "",
-        location=sample.location or "",
+        location=(venue_service.location if venue_service else None) or sample.location or "",
     )
     db.add(event)
     db.flush()

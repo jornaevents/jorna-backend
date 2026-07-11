@@ -30,7 +30,25 @@ def _service_dict(service: Service) -> dict:
         "price_unit": service.price_unit,
         "description": service.description,
         "negotiable": service.negotiable,
+        "location": service.location,
+        "venue_latitude": service.venue_latitude,
+        "venue_longitude": service.venue_longitude,
     }
+
+
+def _require_venue_location(
+    category: Optional[str],
+    location: Optional[str],
+    venue_latitude: Optional[float],
+    venue_longitude: Optional[float],
+) -> None:
+    """Venue services must carry a location with map coordinates — a booked venue
+    anchors the event's venue and supplies the coords traveling vendors check in
+    against. No-op for every other category."""
+    if category == "venue" and (
+        not location or venue_latitude is None or venue_longitude is None
+    ):
+        raise ServiceError(400, "Venue services require a location with map coordinates.")
 
 
 def _service_with_vendor_dict(service: Service, vendor: Vendor, user: User) -> dict:
@@ -56,6 +74,9 @@ def create_service(
     price_unit: Optional[str] = None,
     description: Optional[str] = None,
     negotiable: bool = False,
+    location: Optional[str] = None,
+    venue_latitude: Optional[float] = None,
+    venue_longitude: Optional[float] = None,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -72,6 +93,7 @@ def create_service(
         # Only inherit the vendor's subcategory alongside its category.
         if subcategory is None:
             subcategory = vendor.subcategory
+    _require_venue_location(category, location, venue_latitude, venue_longitude)
     service = Service(
         vendor_id=vendor.vendor_id,
         name=name,
@@ -84,6 +106,9 @@ def create_service(
         price_unit=price_unit,
         description=description,
         negotiable=negotiable,
+        location=location,
+        venue_latitude=venue_latitude,
+        venue_longitude=venue_longitude,
     )
     db.add(service)
     db.commit()
@@ -140,6 +165,15 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
     vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
     if not vendor or vendor.user_id != user_id:
         raise ServiceError(403, "Not authorized to edit this service")
+    # Enforce the venue-location rule on the merged result (the update may have
+    # switched the category to "venue" or cleared a venue's location). Validate
+    # before mutating so a rejected update leaves the row untouched.
+    def _merged(field):
+        return update_data[field] if field in update_data else getattr(service, field)
+    _require_venue_location(
+        _merged("category"), _merged("location"),
+        _merged("venue_latitude"), _merged("venue_longitude"),
+    )
     for field, value in update_data.items():
         setattr(service, field, value)
     db.commit()
