@@ -163,6 +163,118 @@ def propagate_bundle_venue_location(bundle_id: str | None, db: Session) -> None:
                 b.location = venue.location
 
 
+# ── Pricing estimate (rate x quantity) ───────────────────────────────
+
+def _normalize_unit(price_unit: str | None) -> str | None:
+    """Map a service's price_unit to hour/day/event/person. Tolerates legacy
+    display strings ("Per Hour") and short codes ("hour")."""
+    if not price_unit:
+        return None
+    u = price_unit.strip().lower()
+    if u.startswith("per "):
+        u = u[4:].strip()
+    if u.startswith("hour"):
+        return "hour"
+    if u.startswith("day"):
+        return "day"
+    if u.startswith("event"):
+        return "event"
+    if u.startswith("person") or u in ("head", "plate", "guest", "pax"):
+        return "person"
+    return None
+
+
+def _parse_clock(value: str | None) -> float | None:
+    """Parse a clock string ("5:00 PM", "17:00", "5 pm") to fractional hours
+    (0..24). Returns None for vague values ("evening", "TBD", "")."""
+    if not value:
+        return None
+    s = value.strip().lower()
+    if not s or s in ("tbd", "n/a"):
+        return None
+    import re
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", s)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2)) if m.group(2) else 0
+    ampm = m.group(3)
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    if hour > 24 or minute >= 60:
+        return None
+    return hour + minute / 60.0
+
+
+def _parse_date(value: str | None):
+    """Parse an ISO-ish date (YYYY-MM-DD, optionally with time) to a date. None
+    for vague/unparseable values."""
+    if not value:
+        return None
+    s = value.strip()
+    if not s or s.upper() == "TBD":
+        return None
+    from datetime import date
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+def estimate_amount_cents(
+    service: Service | None,
+    *,
+    guest_count: int | None = None,
+    date_iso: str | None = None,
+    date_end: str | None = None,
+    time_start: str | None = None,
+    time_end: str | None = None,
+) -> int | None:
+    """Estimate a booking's total in cents = rate x quantity, per the service's
+    price_unit. Returns None when the quantity can't be determined — the caller
+    then leaves amount_cents nil and the booking prices at the flat rate.
+
+    person -> guest_count; day -> days in the date range; hour -> hours in the
+    event time window; event/unknown/missing-data -> None (flat rate).
+    """
+    if not service:
+        return None
+    unit = _normalize_unit(service.price_unit)
+    rate = service.price or 0.0
+    if unit is None or rate <= 0:
+        return None
+
+    if unit == "person":
+        if guest_count and guest_count > 0:
+            return round(rate * guest_count * 100)
+        return None
+
+    if unit == "day":
+        start = _parse_date(date_iso)
+        if not start:
+            return None
+        end = _parse_date(date_end) or start
+        days = max((end - start).days + 1, 1)
+        return round(rate * days * 100)
+
+    if unit == "hour":
+        start = _parse_clock(time_start)
+        end = _parse_clock(time_end)
+        if start is None or end is None:
+            return None
+        hours = end - start
+        if hours <= 0:
+            hours += 24  # crosses midnight (e.g. 8 PM - 1 AM)
+        if hours <= 0 or hours > 24:
+            return None
+        return round(rate * hours * 100)
+
+    # "event" -> flat rate: leave amount nil so it prices at service.price.
+    return None
+
+
 def create_booking(
     *,
     user_id: str,
@@ -256,6 +368,14 @@ def create_booking(
         status=BookingStatus.PENDING.value,
         bundle_id=bundle_id,
     )
+    # Best-effort estimate from what a direct booking carries (per-hour from the
+    # time window; per-day single-day). guest_count/date_end aren't available
+    # here, so per-person/multi-day fall back to the flat rate.
+    est = estimate_amount_cents(
+        service, date_iso=date_iso, time_start=time_start, time_end=time_end
+    )
+    if est is not None:
+        booking.amount_cents = est
     db.add(booking)
     try:
         db.commit()

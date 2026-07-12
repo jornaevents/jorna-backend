@@ -1189,7 +1189,8 @@ def _create_bundle_from_chatbot(
     Returns (bundle_id, [booking_id, ...]).
     """
     from datetime import datetime, timezone
-    from app.db.models import Bundle, Booking
+    from app.db.models import Bundle, Booking, Service
+    from app.services.booking_service import estimate_amount_cents
 
     items_to_book = [
         item for item in (state.bundle.items if state.bundle else [])
@@ -1235,6 +1236,19 @@ def _create_bundle_from_chatbot(
             status="pending",
             bundle_id=bundle.bundle_id,
         )
+        # Estimated total = rate x quantity (guests / days / hours), per the
+        # service's price_unit. Left nil (flat rate) when it can't be computed.
+        svc = db.query(Service).filter(Service.service_id == item.service_id).first()
+        est = estimate_amount_cents(
+            svc,
+            guest_count=state.guest_count,
+            date_iso=date_iso,
+            date_end=date_end,
+            time_start=state.time_start,
+            time_end=state.time_end,
+        )
+        if est is not None:
+            booking.amount_cents = est
         db.add(booking)
         db.flush()
         booking_ids.append(booking.booking_id)
