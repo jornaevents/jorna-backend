@@ -204,10 +204,11 @@ def list_vendors(
 
 def search_vendors(
     *,
-    service_name: str,
-    latitude: float,
-    longitude: float,
+    service_name: str = "",
+    latitude: float | None = None,
+    longitude: float | None = None,
     category: str | None = None,
+    state: str | None = None,
     tag: str | None = None,
     min_price: float | None = None,
     max_price: float | None = None,
@@ -217,18 +218,27 @@ def search_vendors(
     offset: int = 0,
     db: Session,
 ) -> dict:
-    """Return vendors offering *service_name* within their travel radius of the
-    given coordinates. Supports filtering by category, tag, price range, and
-    minimum rating. sort_by accepts: distance (default), rating, price.
+    """Search vendors offering a service. When coordinates are given, results are
+    filtered to each vendor's travel radius and can sort by distance. When they
+    aren't (e.g. the swap picker only knows the event's state), the location
+    filter falls back to a `state` match and distance is omitted. `category`
+    matches a vendor's category OR subcategory, so simplified keys like "dj" work
+    alongside canonical ones like "music_entertainment".
     """
+    from sqlalchemy import or_
+
     query = (
         db.query(Vendor, Service, User)
         .join(Service, Vendor.vendor_id == Service.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
-        .filter(Service.name.ilike(f"%{service_name}%"))
     )
+    if service_name:
+        query = query.filter(Service.name.ilike(f"%{service_name}%"))
     if category:
-        query = query.filter(Vendor.category == category)
+        query = query.filter(or_(Vendor.category == category, Vendor.subcategory == category))
+    # No coords → filter by the event's state string instead (best-effort).
+    if state and state.strip() and state.strip().upper() != "TBD":
+        query = query.filter(User.location.ilike(f"%{state.strip()}%"))
     if tag:
         normalized = _normalize_tag(tag)
         query = (
@@ -244,36 +254,43 @@ def search_vendors(
         query = query.filter(Vendor.rating >= min_rating)
 
     results = query.all()
+    have_coords = latitude is not None and longitude is not None
 
     nearby_vendors: list[dict] = []
     for vendor, service, user in results:
-        if user.latitude is None or user.longitude is None:
-            continue
-        distance_miles = calculate_distance_miles(
-            latitude, longitude, user.latitude, user.longitude
-        )
-        if vendor.open_to_long_distance or distance_miles <= vendor.travel_radius_miles:
-            nearby_vendors.append(
-                {
-                    "vendor_id": vendor.vendor_id,
-                    "user_id": user.user_id,
-                    "first_name": user.f_name,
-                    "last_name": user.l_name,
-                    "category": vendor.category,
-                    "service_name": service.name,
-                    "service_price": service.price,
-                    "distance_miles": round(distance_miles, 2),
-                    "rating": vendor.rating,
-                    "travel_radius_miles": vendor.travel_radius_miles,
-                    "open_to_long_distance": vendor.open_to_long_distance,
-                    "tags": [t.name for t in vendor.tags],
-                }
+        distance_miles: float | None = None
+        if have_coords:
+            # Can't place a vendor with no coords relative to the event.
+            if user.latitude is None or user.longitude is None:
+                continue
+            distance_miles = calculate_distance_miles(
+                latitude, longitude, user.latitude, user.longitude
             )
+            if not (vendor.open_to_long_distance or distance_miles <= vendor.travel_radius_miles):
+                continue
+        nearby_vendors.append(
+            {
+                "vendor_id": vendor.vendor_id,
+                "user_id": user.user_id,
+                "first_name": user.f_name,
+                "last_name": user.l_name,
+                "category": vendor.category,
+                "service_name": service.name,
+                "service_price": service.price,
+                "distance_miles": round(distance_miles, 2) if distance_miles is not None else None,
+                "rating": vendor.rating,
+                "location": user.location,
+                "pfp_url": user.pfp_url,
+                "travel_radius_miles": vendor.travel_radius_miles,
+                "open_to_long_distance": vendor.open_to_long_distance,
+                "tags": [t.name for t in vendor.tags],
+            }
+        )
 
     sort_keys = {
         "rating": lambda x: -(x["rating"] or 0),
         "price": lambda x: x["service_price"],
-        "distance": lambda x: x["distance_miles"],
+        "distance": lambda x: x["distance_miles"] if x["distance_miles"] is not None else float("inf"),
     }
     nearby_vendors.sort(key=sort_keys.get(sort_by, sort_keys["distance"]))
 

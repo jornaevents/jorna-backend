@@ -132,10 +132,11 @@ def list_vendors_route(
 @limiter.limit("30/minute")
 def vendor_search(
     request: Request,
-    service_name: str,
-    latitude: float,
-    longitude: float,
-    category: Optional[VendorCategory] = Query(None, description="Filter by vendor category"),
+    service_name: str = "",
+    latitude: Optional[float] = Query(None, description="Event latitude (for distance/travel-radius filtering)"),
+    longitude: Optional[float] = Query(None, description="Event longitude"),
+    category: Optional[str] = Query(None, description="Category or subcategory key (e.g. 'venue', 'dj')"),
+    state: Optional[str] = Query(None, description="Event state/region, used to filter when coords aren't given"),
     tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
     min_price: Optional[float] = Query(None, ge=0, description="Minimum service price"),
     max_price: Optional[float] = Query(None, ge=0, description="Maximum service price"),
@@ -145,14 +146,16 @@ def vendor_search(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Search for vendors offering a service within their travel radius.
-    Filterable by category, tag, price range, and minimum rating.
-    Sort by distance (default), rating, or price."""
+    """Search for vendors offering a service. With coordinates, results are
+    filtered to each vendor's travel radius and can sort by distance; without
+    them, it falls back to a `state` match (used by the bundle swap picker).
+    `category` matches a vendor's category or subcategory."""
     return search_vendors(
         service_name=service_name,
         latitude=latitude,
         longitude=longitude,
-        category=category.value if category else None,
+        category=category,
+        state=state,
         tag=tag,
         min_price=min_price,
         max_price=max_price,
