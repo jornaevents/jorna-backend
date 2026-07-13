@@ -32,8 +32,11 @@ def seeded_db():
     db.commit()
     db.refresh(vendor)
 
+    # Negotiation is a per-service opt-in (default off); these tests exercise the
+    # negotiation flow, so the seeded service must be negotiable.
     service = Service(name="DJ Set", price=1000.0, duration_minutes=240,
-                      vendor_id=vendor.vendor_id, experience="5 years")
+                      vendor_id=vendor.vendor_id, experience="5 years",
+                      negotiable=True)
     db.add(service)
     db.commit()
     db.refresh(service)
