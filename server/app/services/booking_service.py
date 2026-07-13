@@ -76,6 +76,11 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
     # client's event-detail view can match bookings and show the real event name.
     bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    # Effective total (cents) via the single resolver: stored amount, else a
+    # recomputed rate x quantity estimate, else the flat price for event-priced
+    # services. None means rate-priced with an unknown quantity — the price is
+    # pending the guest count / dates, so the UI shows the rate, not a total.
+    total_cents = resolve_total_cents(booking, service)
     return {
         "booking_id": booking.booking_id,
         "user_id": booking.user_id,
@@ -86,8 +91,14 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "service_name": service.name if service else None,
         "service_category": service.category if service else None,
         "service_subcategory": service.subcategory if service else None,
-        # Effective price: the agreed amount if set, otherwise the listed service price.
-        "price": (booking.amount_cents / 100) if booking.amount_cents else (service.price if service else 0.0),
+        # Effective price: the resolved total when known, else the listed rate.
+        "price": (total_cents / 100) if total_cents is not None else (service.price if service else 0.0),
+        # The service's pricing unit (hour/day/event/person) and whether the
+        # total is still pending a quantity, so the client can show "$X /person"
+        # vs a computed total instead of a rate masquerading as a total.
+        "price_unit": service.price_unit if service else None,
+        "price_pending_quantity": total_cents is None,
+        "guest_count": booking.guest_count,
         "bundle_id": booking.bundle_id,
         "event_id": bundle.event_id if bundle else None,
         "event_name": bundle.event_name if bundle else None,
@@ -275,6 +286,54 @@ def estimate_amount_cents(
     return None
 
 
+def resolve_total_cents(booking: Booking, service: Service | None) -> int | None:
+    """The amount to charge for a booking, in cents — the single source of truth
+    for display and payment.
+
+    Order of resolution:
+      1. An explicit ``amount_cents`` (a stored estimate or a negotiated price) wins.
+      2. Otherwise recompute the rate x quantity estimate from the booking's own
+         persisted fields (guest_count / dates / time window).
+      3. Otherwise, for an ``event``-priced (or unpriced) service the flat
+         ``service.price`` IS the total, so charge that.
+
+    Returns ``None`` only when the service is rate-priced (per person/day/hour)
+    and the quantity still can't be determined. Callers must then obtain the
+    quantity before charging rather than bill the bare per-unit rate as a total.
+    """
+    if booking.amount_cents is not None:
+        return booking.amount_cents
+    if not service:
+        return None
+    est = estimate_amount_cents(
+        service,
+        guest_count=booking.guest_count,
+        date_iso=booking.date_iso,
+        date_end=booking.date_end,
+        time_start=booking.time_start,
+        time_end=booking.time_end,
+    )
+    if est is not None:
+        return est
+    unit = _normalize_unit(service.price_unit)
+    if unit in (None, "event"):
+        # Flat price is a genuine total for event/unpriced services.
+        return round((service.price or 0.0) * 100)
+    # Rate-priced (person/day/hour) but quantity unknown → indeterminate.
+    return None
+
+
+def pending_quantity_reason(service: Service | None) -> str:
+    """Human phrase naming the quantity a rate-priced service still needs before
+    its total can be computed — used in the pre-payment guard's error message."""
+    unit = _normalize_unit(service.price_unit) if service else None
+    return {
+        "person": "the guest count",
+        "day": "the event dates",
+        "hour": "the start and end times",
+    }.get(unit, "the event details")
+
+
 def create_booking(
     *,
     user_id: str,
@@ -287,6 +346,8 @@ def create_booking(
     venue_latitude: float | None,
     venue_longitude: float | None,
     bundle_id: str | None = None,
+    date_end: str | None = None,
+    guest_count: int | None = None,
     db: Session,
 ) -> dict:
     """Create a new booking and notify the vendor.
@@ -363,16 +424,24 @@ def create_booking(
         time_end=time_end,
         location=location,
         date_iso=date_iso,
+        date_end=date_end,
+        guest_count=guest_count,
         venue_latitude=venue_latitude,
         venue_longitude=venue_longitude,
         status=BookingStatus.PENDING.value,
         bundle_id=bundle_id,
     )
-    # Best-effort estimate from what a direct booking carries (per-hour from the
-    # time window; per-day single-day). guest_count/date_end aren't available
-    # here, so per-person/multi-day fall back to the flat rate.
+    # Estimate the total = rate x quantity from everything the booking carries.
+    # When the quantity is still unknown (e.g. a per-person service with no guest
+    # count), amount_cents stays nil and the price is resolved/guarded later —
+    # never billed as the bare per-unit rate (see resolve_total_cents + checkout).
     est = estimate_amount_cents(
-        service, date_iso=date_iso, time_start=time_start, time_end=time_end
+        service,
+        guest_count=guest_count,
+        date_iso=date_iso,
+        date_end=date_end,
+        time_start=time_start,
+        time_end=time_end,
     )
     if est is not None:
         booking.amount_cents = est

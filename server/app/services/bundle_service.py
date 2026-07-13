@@ -30,7 +30,12 @@ def _booking_summary(
     Pure (no DB access) so callers can batch-load the Service/Vendor/User once
     via ``_resolve_booking_refs`` instead of issuing three queries per booking.
     """
-    price = (booking.amount_cents / 100) if booking.amount_cents else (service.price if service else 0.0)
+    from app.services.booking_service import resolve_total_cents
+    # Resolved total: stored amount, else recomputed rate x quantity, else the
+    # flat price for event-priced services. None => rate-priced with an unknown
+    # quantity, so show the rate + unit, not a total masquerading as one.
+    total_cents = resolve_total_cents(booking, service)
+    price = (total_cents / 100) if total_cents is not None else (service.price if service else 0.0)
     return {
         "booking_id": booking.booking_id,
         "status": booking.status,
@@ -45,6 +50,8 @@ def _booking_summary(
         "vendor_name": f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else None,
         "vendor_id": booking.vendor_id,
         "price": price,
+        "price_unit": service.price_unit if service else None,
+        "price_pending_quantity": total_cents is None,
         "amount_cents": booking.amount_cents,
         # Negotiation is now per-service (the vendor toggles it per service),
         # not vendor-wide. Key name kept for client compatibility.

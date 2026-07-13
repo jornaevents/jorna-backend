@@ -130,6 +130,10 @@ class Booking(Base):
     location = Column(String(255), nullable=False)
     date_iso = Column(String(50), nullable=False)
     date_end = Column(String(50), nullable=True)   # null means single-day event
+    # Number of guests for the event. Persisted so a per-person service's total
+    # (rate x guests) can be (re)computed and audited at booking + checkout time
+    # instead of silently falling back to the bare per-person rate.
+    guest_count = Column(Integer, nullable=True)
     status = Column(String(50), nullable=False, default="pending")
 
     bundle_id = Column(String(36), ForeignKey("bundles.bundle_id"), nullable=True, index=True)

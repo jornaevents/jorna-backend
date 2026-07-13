@@ -154,10 +154,15 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
     # booking amount when set, else the service's listed price.
     upcoming = [b for b in bookings if b.status == "approved" and b.payment_status == "unpaid"]
 
+    from app.services.booking_service import resolve_total_cents
+
     def upcoming_cents(b: Booking) -> int:
-        if b.amount_cents:
-            return b.amount_cents
         service = db.query(Service).filter(Service.service_id == b.service_id).first()
+        total = resolve_total_cents(b, service)
+        if total is not None:
+            return total
+        # Rate-priced with an unknown quantity — floor the projection at the
+        # listed rate (the real total, once known, can only be higher).
         return round((service.price if service else 0) * 100)
 
     # Per-booking history for everything with payment activity, newest first.
@@ -246,8 +251,18 @@ def create_payment_intent(*, booking_id: str, caller_user_id: str, db: Session) 
             "This vendor has not completed Stripe onboarding and cannot accept payments yet.",
         )
 
-    # Use the negotiated price if one was agreed, otherwise fall back to the listed service price.
-    amount_cents = booking.amount_cents if booking.amount_cents else round(service.price * 100)
+    # Resolve the total via the single source of truth: stored amount, else a
+    # recomputed rate x quantity estimate, else the flat price for event-priced
+    # services. None => rate-priced (per person/day/hour) with an unknown
+    # quantity — refuse rather than charge the bare per-unit rate as a total.
+    from app.services.booking_service import resolve_total_cents, pending_quantity_reason
+    amount_cents = resolve_total_cents(booking, service)
+    if amount_cents is None:
+        raise StripeError(
+            400,
+            f"This booking is priced per {service.price_unit or 'unit'}. Add "
+            f"{pending_quantity_reason(service)} before paying so we can total it correctly.",
+        )
     platform_fee_cents = round(amount_cents * PLATFORM_FEE_PERCENT / 100)
 
     try:
@@ -329,8 +344,17 @@ def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: s
             "This vendor has not completed Stripe onboarding and cannot accept payments yet.",
         )
 
-    # Use the negotiated price if one was agreed, otherwise the listed service price.
-    amount_cents = booking.amount_cents if booking.amount_cents else round(service.price * 100)
+    # Resolve the total via the single source of truth (see create_payment_intent).
+    # None => rate-priced with an unknown quantity — refuse rather than charge the
+    # bare per-unit rate as a total.
+    from app.services.booking_service import resolve_total_cents, pending_quantity_reason
+    amount_cents = resolve_total_cents(booking, service)
+    if amount_cents is None:
+        raise StripeError(
+            400,
+            f"This booking is priced per {service.price_unit or 'unit'}. Add "
+            f"{pending_quantity_reason(service)} before paying so we can total it correctly.",
+        )
     platform_fee_cents = round(amount_cents * PLATFORM_FEE_PERCENT / 100)
 
     base = base_url.rstrip("/")

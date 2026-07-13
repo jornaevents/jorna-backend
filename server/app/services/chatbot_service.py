@@ -1230,6 +1230,7 @@ def _create_bundle_from_chatbot(
             service_id=item.service_id,
             date_iso=date_iso,
             date_end=date_end,
+            guest_count=state.guest_count,
             time_start=state.time_start or "TBD",
             time_end=state.time_end or "TBD",
             location=location,

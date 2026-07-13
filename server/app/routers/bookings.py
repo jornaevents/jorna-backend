@@ -34,6 +34,8 @@ class BookingCreate(BaseModel):
     time_end: str    # e.g. "12:00"
     location: str
     date_iso: str    # e.g. "2026-03-01"
+    date_end: Optional[str] = None    # e.g. "2026-03-03" for a multi-day event
+    guest_count: Optional[int] = None  # lets per-person services price rate x guests
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
     bundle_id: Optional[str] = Field(default=None, examples=[None])
@@ -79,6 +81,8 @@ def create_booking(
             time_end=body.time_end,
             location=body.location,
             date_iso=body.date_iso,
+            date_end=body.date_end,
+            guest_count=body.guest_count,
             venue_latitude=body.venue_latitude,
             venue_longitude=body.venue_longitude,
             bundle_id=body.bundle_id,
