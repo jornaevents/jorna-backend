@@ -671,8 +671,11 @@ REFUND_WINDOW_HOURS = 24
 
 
 def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
-    """Issue a full refund if the customer cancels within 24 hours of
-    the booking being confirmed (vendor approval timestamp).
+    """Issue a full refund if the customer cancels within 24 hours of paying.
+
+    The window runs from when the customer actually paid (``paid_at``), NOT from
+    vendor approval — otherwise a client who pays a day or more after approval
+    would have little or no window left the moment they pay.
 
     Raises StripeError 400 if outside the refund window or not eligible.
     """
@@ -692,21 +695,21 @@ def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict
     if booking.payment_status == "released":
         raise StripeError(400, "Funds have already been released to the vendor")
 
-    # Check 24-hour refund window from when the vendor confirmed the booking
-    if not booking.confirmed_at:
-        raise StripeError(400, "Booking has no confirmation timestamp — cannot process refund")
+    # Check the 24-hour refund window from when the customer actually paid.
+    if not booking.paid_at:
+        raise StripeError(400, "Booking payment has not completed — cannot process refund")
 
     now = datetime.now(timezone.utc)
-    confirmed_at = booking.confirmed_at
+    paid_at = booking.paid_at
     # Make timezone-aware if stored as naive UTC
-    if confirmed_at.tzinfo is None:
-        confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+    if paid_at.tzinfo is None:
+        paid_at = paid_at.replace(tzinfo=timezone.utc)
 
-    if now - confirmed_at > timedelta(hours=REFUND_WINDOW_HOURS):
+    if now - paid_at > timedelta(hours=REFUND_WINDOW_HOURS):
         raise StripeError(
             400,
             f"Refund window has closed. Refunds are only available within "
-            f"{REFUND_WINDOW_HOURS} hours of booking confirmation.",
+            f"{REFUND_WINDOW_HOURS} hours of payment.",
         )
 
     if not booking.payment_intent_id:

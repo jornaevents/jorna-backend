@@ -576,10 +576,31 @@ def update_booking(
             "Changes are only allowed while the booking is pending or under negotiation.",
         )
 
-    allowed_fields = {"date_iso", "date_end", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
+    allowed_fields = {"date_iso", "date_end", "guest_count", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
+    quantity_fields = {"date_iso", "date_end", "guest_count", "time_start", "time_end"}
+    touched_quantity = False
     for field, value in update_data.items():
         if field in allowed_fields:
             setattr(booking, field, value)
+            if field in quantity_fields:
+                touched_quantity = True
+
+    # Re-price when a quantity-affecting field changed, so an edited guest count /
+    # date range / time window re-totals the booking. Safe here because updates are
+    # only allowed while pending or under negotiation — an accepted negotiation is
+    # already 'approved' (and thus not editable), so we never clobber an agreed price.
+    # estimate returns None for flat/event-priced or still-unknown quantities, which
+    # correctly leaves the total to resolve_total_cents' fallback.
+    if touched_quantity:
+        service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+        booking.amount_cents = estimate_amount_cents(
+            service,
+            guest_count=booking.guest_count,
+            date_iso=booking.date_iso,
+            date_end=booking.date_end,
+            time_start=booking.time_start,
+            time_end=booking.time_end,
+        )
 
     db.commit()
     db.refresh(booking)
@@ -587,6 +608,7 @@ def update_booking(
         "booking_id": booking.booking_id,
         "date_iso": booking.date_iso,
         "date_end": booking.date_end,
+        "guest_count": booking.guest_count,
         "time_start": booking.time_start,
         "time_end": booking.time_end,
         "location": booking.location,

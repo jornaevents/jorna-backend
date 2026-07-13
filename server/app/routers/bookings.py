@@ -44,6 +44,7 @@ class BookingCreate(BaseModel):
 class BookingUpdate(BaseModel):
     date_iso: Optional[str] = None
     date_end: Optional[str] = None
+    guest_count: Optional[int] = None
     time_start: Optional[str] = None
     time_end: Optional[str] = None
     location: Optional[str] = None
