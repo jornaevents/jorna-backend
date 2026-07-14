@@ -170,7 +170,7 @@ def test_check_in_no_coordinates():
         headers=headers,
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "Booking has no venue coordinates set"
+    assert response.json()["detail"] == "This event has no venue set yet — check-in becomes available once a venue is booked."
 
 
 def test_check_in_unauthorized_user():

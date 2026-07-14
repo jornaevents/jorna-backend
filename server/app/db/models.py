@@ -358,3 +358,9 @@ class Event(Base):
     guest_count = Column(Integer, nullable=True)
     budget = Column(Float, nullable=True)
     services_needed = Column(JSON, nullable=True)
+    # The event's venue anchor — source of truth for GPS check-in. Synced from the
+    # live venue-category booking (sync_event_venue); cleared when no venue is
+    # booked, so removing/refunding the venue can't leave dependents checking in
+    # against a venue the client no longer has.
+    venue_latitude = Column(Float, nullable=True)
+    venue_longitude = Column(Float, nullable=True)

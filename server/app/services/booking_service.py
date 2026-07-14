@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import Booking, Bundle, User, Vendor, Service
+from app.db.models import Booking, Bundle, Event, User, Vendor, Service
 from app.models.schemas import BookingStatus
 from app.utils.location import calculate_distance_miles
 from app.utils.notifications import notify_booking_status_change, notify_check_in
@@ -132,14 +132,52 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
 
 # ── Service functions ─────────────────────────────────────────────────
 
-def propagate_bundle_venue_location(bundle_id: str | None, db: Session) -> None:
-    """Seed every booking in a bundle with its venue's location + GPS coordinates.
+# A venue booking stops anchoring the event once it's in one of these states.
+_DEAD_BOOKING_STATUSES = ("rejected", "cancelled")
+_DEAD_VENUE_PAYMENT_STATUSES = ("refunded",)
 
-    All vendors in an event attend the same venue, so the venue-category
-    service's stored location/coords anchor the whole event: this fills in any
-    booking (including the venue's own) that lacks coordinates, so the traveling
-    vendors can GPS-check-in. Only fills NULLs — an explicit per-booking pin is
-    never overwritten. No-op when the bundle has no venue service with coords.
+
+def _live_venue_booking(bundle_id: str | None, db: Session) -> tuple[Booking, Service] | None:
+    """The bundle's live venue booking + its service, or None.
+
+    "Live" = a venue-category service with GPS coords, whose booking hasn't been
+    rejected/cancelled or refunded. This is the source of truth for whether the
+    event currently has a venue — computed from the bookings themselves, so it's
+    always correct without relying on a denormalized cache.
+    """
+    if not bundle_id:
+        return None
+    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    service_ids = [b.service_id for b in bookings if b.service_id]
+    services = (
+        {s.service_id: s for s in db.query(Service).filter(Service.service_id.in_(service_ids)).all()}
+        if service_ids else {}
+    )
+    for b in bookings:
+        s = services.get(b.service_id)
+        if (
+            s is not None
+            and s.category == "venue"
+            and s.venue_latitude is not None
+            and s.venue_longitude is not None
+            and b.status not in _DEAD_BOOKING_STATUSES
+            and (b.payment_status or "unpaid") not in _DEAD_VENUE_PAYMENT_STATUSES
+        ):
+            return b, s
+    return None
+
+
+def sync_event_venue(bundle_id: str | None, db: Session) -> None:
+    """Refresh the denormalized venue anchor from the bundle's live venue booking.
+
+    The live venue booking (see _live_venue_booking) is the source of truth; this
+    keeps the convenience copies in step with it: it writes the venue's coords/
+    address onto the linked Event and mirrors the coords onto the traveling
+    vendors' bookings so the client UI can show them. When there's NO live venue —
+    removed, rejected, or refunded — it CLEARS those copies so a venue that's gone
+    can't leave the others displaying a stale check-in target (dependency
+    orphaning). Runs on every booking change; check-in re-derives the anchor
+    directly, so this cache never gates payment.
 
     Does NOT commit — the caller owns the transaction.
     """
@@ -148,30 +186,38 @@ def propagate_bundle_venue_location(bundle_id: str | None, db: Session) -> None:
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     if not bookings:
         return
-    service_ids = [b.service_id for b in bookings if b.service_id]
-    services = (
-        {s.service_id: s for s in db.query(Service).filter(Service.service_id.in_(service_ids)).all()}
-        if service_ids else {}
+
+    live = _live_venue_booking(bundle_id, db)
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+    event = (
+        db.query(Event).filter(Event.event_id == bundle.event_id).first()
+        if bundle and bundle.event_id else None
     )
-    venue = next(
-        (
-            services[b.service_id]
-            for b in bookings
-            if b.service_id in services
-            and services[b.service_id].category == "venue"
-            and services[b.service_id].venue_latitude is not None
-            and services[b.service_id].venue_longitude is not None
-        ),
-        None,
-    )
-    if not venue:
-        return
-    for b in bookings:
-        if b.venue_latitude is None or b.venue_longitude is None:
-            b.venue_latitude = venue.venue_latitude
-            b.venue_longitude = venue.venue_longitude
-            if not b.location and venue.location:
-                b.location = venue.location
+
+    if live:
+        venue_booking, venue_service = live
+        lat, lng = venue_service.venue_latitude, venue_service.venue_longitude
+        if event:
+            event.venue_latitude = lat
+            event.venue_longitude = lng
+            if venue_service.location:
+                event.location = venue_service.location
+        # Mirror onto the traveling vendors' bookings; the venue's own booking
+        # already carries its service coords, so leave it untouched.
+        for b in bookings:
+            if b.booking_id == venue_booking.booking_id:
+                continue
+            b.venue_latitude = lat
+            b.venue_longitude = lng
+            if venue_service.location and not b.location:
+                b.location = venue_service.location
+    else:
+        if event:
+            event.venue_latitude = None
+            event.venue_longitude = None
+        for b in bookings:
+            b.venue_latitude = None
+            b.venue_longitude = None
 
 
 # ── Pricing estimate (rate x quantity) ───────────────────────────────
@@ -462,10 +508,12 @@ def create_booking(
     # it shows up under the client's My Events / Event Portfolio.
     try:
         from app.services.bundle_service import _ensure_bundle_event
-        propagate_bundle_venue_location(booking.bundle_id, db)
         _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
         if _bundle:
             _ensure_bundle_event(_bundle, db)
+        # Anchor the event's venue (and mirror onto the bookings) from the live
+        # venue booking — after the event exists so it's written there too.
+        sync_event_venue(booking.bundle_id, db)
         db.commit()
     except Exception as exc:
         logger.warning("create_booking: failed to ensure bundle event: %s", exc)
@@ -532,6 +580,11 @@ def update_booking_status(
     booking.status = status_str
     if status_str == BookingStatus.APPROVED.value:
         booking.confirmed_at = datetime.now(timezone.utc)
+    # A rejected venue no longer anchors the event — refresh so its cached coords
+    # clear (check-in re-derives regardless, but keep the denormalized copies honest).
+    if status_str == BookingStatus.REJECTED.value:
+        db.flush()
+        sync_event_venue(booking.bundle_id, db)
     db.commit()
     db.refresh(booking)
 
@@ -665,12 +718,23 @@ def check_in(
     if not booking:
         raise BookingError(404, "Booking not found")
 
-    if booking.venue_latitude is None or booking.venue_longitude is None:
-        raise BookingError(400, "Booking has no venue coordinates set")
+    # Re-derive the venue anchor from the bundle's live venue booking (source of
+    # truth) rather than trusting the coords mirrored onto this booking — so a
+    # removed/refunded venue blocks check-in immediately instead of letting a
+    # traveling vendor check in (and release funds) against a venue that's gone.
+    live_venue = _live_venue_booking(booking.bundle_id, db)
+    if live_venue:
+        venue_lat, venue_lng = live_venue[1].venue_latitude, live_venue[1].venue_longitude
+    elif not booking.bundle_id:
+        # Direct, non-bundled booking: its own pin is the anchor.
+        venue_lat, venue_lng = booking.venue_latitude, booking.venue_longitude
+    else:
+        venue_lat = venue_lng = None
 
-    distance = calculate_distance_miles(
-        latitude, longitude, booking.venue_latitude, booking.venue_longitude
-    )
+    if venue_lat is None or venue_lng is None:
+        raise BookingError(400, "This event has no venue set yet — check-in becomes available once a venue is booked.")
+
+    distance = calculate_distance_miles(latitude, longitude, venue_lat, venue_lng)
     if distance > 0.2:
         raise BookingError(
             400,
