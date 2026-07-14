@@ -242,7 +242,9 @@ class TestBundleGeneration:
         bundle = generate_bundle(state)
         assert len(bundle.items) == 2
         assert bundle.estimated_total_min > 0
-        assert bundle.estimated_total_max > bundle.estimated_total_min
+        # Single-price model: each service has one price, so the bundle's min and
+        # max totals are equal (no range).
+        assert bundle.estimated_total_max == bundle.estimated_total_min
 
     def test_budget_friendly_cheaper(self):
         state_budget = ChatbotState(
@@ -461,8 +463,11 @@ class TestSubcategoryTargeting:
             v = Vendor(user_id=u.user_id, bio=f"{label} vendor", category=cat,
                        subcategory=sub, rating=4.8, num_events=20)
             db.add(v); db.commit(); db.refresh(v)
+            # Matching is service-first: the slot filters on Service.category /
+            # subcategory, so the service (not just the vendor) must carry them.
             s = Service(name=label, price=price, duration_minutes=120,
-                        vendor_id=v.vendor_id, experience="exp")
+                        vendor_id=v.vendor_id, experience="exp",
+                        category=cat, subcategory=sub)
             db.add(s); db.commit()
             return v.vendor_id
 

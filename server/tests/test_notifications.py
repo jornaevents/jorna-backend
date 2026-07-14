@@ -422,5 +422,5 @@ class TestBookingNotificationIntegration:
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["message"] == "Check-in successful"
+        assert data["message"] == "Check-in successful."
         assert "notification" in data

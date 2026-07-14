@@ -266,5 +266,5 @@ def test_booking_check_in():
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "Check-in successful"
+    assert data["message"] == "Check-in successful."
     assert "check_in_time" in data
