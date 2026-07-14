@@ -607,6 +607,14 @@ def confirm_event(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     if booking.payment_status != "paid":
         raise StripeError(400, "Cannot confirm an event that has not been paid for")
 
+    # Escrow is held until the event has taken place — neither party can confirm
+    # (and trigger release) before the event date. A TBD date isn't confirmable
+    # until a real date is set. (Admin dispute-resolution release bypasses this.)
+    from app.services.booking_service import event_confirmable_date
+    ok, msg = event_confirmable_date(booking)
+    if not ok:
+        raise StripeError(400, msg)
+
     now = datetime.now(timezone.utc)
 
     if is_vendor:
