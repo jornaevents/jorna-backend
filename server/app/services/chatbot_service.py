@@ -1255,10 +1255,10 @@ def _create_bundle_from_chatbot(
         booking_ids.append(booking.booking_id)
         created_bookings.append(booking)
 
-    # Share the venue's location/coords across every booking so the traveling
-    # vendors (DJ, catering, etc.) can GPS-check-in at the event venue.
-    from app.services.booking_service import propagate_bundle_venue_location
-    propagate_bundle_venue_location(bundle.bundle_id, db)
+    # Anchor the event's venue from the live venue booking and mirror its coords
+    # onto the traveling vendors' bookings (DJ, catering, etc.) for GPS check-in.
+    from app.services.booking_service import sync_event_venue
+    sync_event_venue(bundle.bundle_id, db)
 
     db.commit()
 

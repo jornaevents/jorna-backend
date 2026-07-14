@@ -724,6 +724,13 @@ def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict
         raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
 
     booking.payment_status = "refunded"
+    # If this was the venue, re-sync so its anchor clears and the other vendors
+    # stop being able to check in against a venue that's now refunded.
+    try:
+        from app.services.booking_service import sync_event_venue
+        sync_event_venue(booking.bundle_id, db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("request_refund: venue re-sync failed for %s: %s", booking_id, exc)
     db.commit()
     logger.info("Refund issued for booking %s", booking_id)
 
@@ -790,6 +797,11 @@ def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
         except stripe.StripeError as e:
             raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
         booking.payment_status = "refunded"
+        try:
+            from app.services.booking_service import sync_event_venue
+            sync_event_venue(booking.bundle_id, db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("resolve_dispute: venue re-sync failed for %s: %s", booking_id, exc)
         db.commit()
         logger.info("Dispute resolved: refund issued for booking %s", booking_id)
         return {"message": "Dispute resolved. Customer has been refunded.", "payment_status": "refunded"}

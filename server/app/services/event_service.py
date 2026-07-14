@@ -25,6 +25,8 @@ def _event_dict(event: Event) -> dict:
         "guest_count": event.guest_count,
         "budget": event.budget,
         "services_needed": event.services_needed,
+        "venue_latitude": event.venue_latitude,
+        "venue_longitude": event.venue_longitude,
     }
 
 

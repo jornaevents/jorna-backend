@@ -452,6 +452,11 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
     bundle.updated_at = datetime.now(timezone.utc)
     db.flush()
 
+    # Re-derive the event's venue anchor: if the removed booking was the venue,
+    # this clears the coords so the other vendors don't check in against it.
+    from app.services.booking_service import sync_event_venue
+    sync_event_venue(bundle_id, db)
+
     # Remove vendor from conversations if they have no other bookings in the bundle
     try:
         from app.services.conversation_service import remove_vendor_from_bundle_conversations
