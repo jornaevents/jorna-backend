@@ -705,6 +705,29 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
 
 
+def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
+    """Whether the event's date has arrived, so the booking may be confirmed for
+    escrow release. Returns (ok, error_message).
+
+    Gates on the booking's LAST day (date_end for a multi-day event, else date_iso):
+    funds are held until the event has taken place, so neither party can confirm —
+    and release — before it. A TBD / unparseable date is NOT confirmable: a real
+    date must be set first, so an unscheduled event can never release escrow.
+    """
+    start = _parse_date(booking.date_iso)
+    end = _parse_date(booking.date_end) or start
+    if end is None:
+        return False, (
+            "This booking has no scheduled date yet. Set the event date before "
+            "confirming — the payment is held until the event has taken place."
+        )
+    today = datetime.now(timezone.utc).date()
+    if today < end:
+        human = f"{end.strftime('%B')} {end.day}, {end.year}"
+        return False, f"You can confirm once the event has taken place, on or after {human}."
+    return True, None
+
+
 def check_in(
     *,
     booking_id: str,
@@ -754,10 +777,12 @@ def check_in(
     released = False
     if is_vendor:
         booking.vendor_checked_in_at = current_time
-        # The vendor's GPS check-in doubles as their event-completion
-        # confirmation for escrow release. Release still requires the customer
-        # to confirm too, and only matters once funds are actually held.
-        if booking.payment_status == "paid" and not booking.vendor_confirmed_at:
+        # The vendor's GPS check-in doubles as their event-completion confirmation
+        # for escrow release — but only once the event has actually taken place, so
+        # an early check-in can't release funds before the event. Presence is still
+        # recorded above; the confirmation just waits for the event date to arrive.
+        confirmable, _ = event_confirmable_date(booking)
+        if booking.payment_status == "paid" and not booking.vendor_confirmed_at and confirmable:
             booking.vendor_confirmed_at = datetime.now(timezone.utc)
             if booking.customer_confirmed_at:
                 # Both parties are now in — pay out the vendor. Best-effort: a
