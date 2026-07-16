@@ -37,6 +37,25 @@ def get_current_user(
     return user
 
 
+def user_from_token(token: str | None, db: Session) -> User | None:
+    """Decode a bearer token and return the matching User, or None if invalid.
+
+    The non-raising counterpart to get_current_user, for auth contexts that
+    can't use HTTP exceptions — notably the chat WebSocket, which must close the
+    socket with a policy-violation code rather than return a 401 body.
+    """
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.InvalidTokenError:
+        return None
+    user = db.query(User).filter(User.user_id == payload.get("sub")).first()
+    if not user or payload.get("tv") != user.token_version:
+        return None
+    return user
+
+
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     """Require the authenticated user to have is_admin=True. Returns 403 otherwise."""
     if not current_user.is_admin:
