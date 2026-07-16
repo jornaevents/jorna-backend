@@ -320,16 +320,27 @@ def send_group_message(
 def get_group_messages(
     *, conversation_id: str, caller_user_id: str, limit: int = 50, offset: int = 0, db: Session
 ) -> dict:
-    """Return paginated messages, oldest first. Marks unread messages as read."""
+    """Return a page of messages, newest-window first, in chronological order.
+
+    offset=0 returns the most RECENT `limit` messages; higher offsets page further
+    back into history. Within the page they're ordered oldest→newest for display.
+    (The old ascending+offset paging returned only the OLDEST `limit` messages, so
+    once a conversation passed `limit` the newer ones never loaded.) Marks the
+    returned messages as read.
+    """
     _assert_is_member(conversation_id, caller_user_id, db)
 
-    query = (
-        db.query(GroupMessage)
-        .filter(GroupMessage.conversation_id == conversation_id)
-        .order_by(GroupMessage.created_at.asc())
+    base = db.query(GroupMessage).filter(
+        GroupMessage.conversation_id == conversation_id
     )
-    total = query.count()
-    messages = query.offset(offset).limit(limit).all()
+    total = base.count()
+    messages = (
+        base.order_by(GroupMessage.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    messages.reverse()  # oldest → newest for display
 
     # Mark all fetched messages as read for this user
     now = datetime.now(timezone.utc)
