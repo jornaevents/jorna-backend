@@ -208,6 +208,7 @@ def search_vendors(
     latitude: float | None = None,
     longitude: float | None = None,
     category: str | None = None,
+    subcategory: str | None = None,
     state: str | None = None,
     tag: str | None = None,
     min_price: float | None = None,
@@ -236,6 +237,10 @@ def search_vendors(
         query = query.filter(Service.name.ilike(f"%{service_name}%"))
     if category:
         query = query.filter(or_(Vendor.category == category, Vendor.subcategory == category))
+    if subcategory:
+        # Service-first: narrow to the exact specialty so e.g. a "dj" slot lists
+        # DJ services only, not every music_entertainment service (dhol included).
+        query = query.filter(Service.subcategory == subcategory)
     # No coords → filter by the event's state string instead (best-effort).
     if state and state.strip() and state.strip().upper() != "TBD":
         query = query.filter(User.location.ilike(f"%{state.strip()}%"))
