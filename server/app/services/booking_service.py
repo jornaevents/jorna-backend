@@ -777,12 +777,12 @@ def check_in(
     released = False
     if is_vendor:
         booking.vendor_checked_in_at = current_time
-        # The vendor's GPS check-in doubles as their event-completion confirmation
-        # for escrow release — but only once the event has actually taken place, so
-        # an early check-in can't release funds before the event. Presence is still
-        # recorded above; the confirmation just waits for the event date to arrive.
-        confirmable, _ = event_confirmable_date(booking)
-        if booking.payment_status == "paid" and not booking.vendor_confirmed_at and confirmable:
+        # The vendor's GPS check-in is their event-completion confirmation. Record
+        # it whenever they're at the venue — including early, or on day 1 of a
+        # multi-day booking — so it's never stranded waiting for a second check-in.
+        # This can't release funds prematurely: release also needs the CUSTOMER's
+        # confirmation, and that is gated on the event date (see confirm_event).
+        if booking.payment_status == "paid" and not booking.vendor_confirmed_at:
             booking.vendor_confirmed_at = datetime.now(timezone.utc)
             if booking.customer_confirmed_at:
                 # Both parties are now in — pay out the vendor. Best-effort: a
