@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from main import app
-from app.db.models import User
+from app.db.models import User, Vendor, Service
 from tests.test_api import TestingSessionLocal, make_auth_headers
 from app.models.chatbot_schemas import (
     BudgetTier,
@@ -29,6 +29,7 @@ from app.models.chatbot_schemas import (
     ChatStep,
     StepRequest,
     CHATBOT_CATEGORIES,
+    CHATBOT_SLOTS,
 )
 from app.services.chatbot_service import (
     generate_bundle,
@@ -41,6 +42,50 @@ from app.services.llm_service import (
 )
 
 client = TestClient(app)
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────
+# Mock vendors were removed: the builder only ever fills a slot from a real DB
+# service. So the bundle-generation tests need real supply seeded first. Seed
+# two vendors per chatbot slot — a cheaper (rating 4.5) and a premium (rating
+# 5.0, pricier) one — so budget vs. premium selection is genuinely exercised.
+_SEED_PRICES = [("budget", 900.0, 4.5), ("premium", 2500.0, 5.0)]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _seed_chatbot_services():
+    import uuid
+    db = TestingSessionLocal()
+    for slot_key, slot in CHATBOT_SLOTS.items():
+        cat, sub = slot["category"], slot["subcategory"]
+        for tag, price, rating in _SEED_PRICES:
+            uid = uuid.uuid4().hex[:8]
+            u = User(
+                email=f"seed_{slot_key}_{tag}_{uid}@test.com",
+                username=f"seed_{slot_key}_{tag}_{uid}",
+                password="pw", phone="1", f_name=slot_key, l_name=tag,
+                age=30, location="NJ", gender="F", language="EN", token_version=0,
+            )
+            db.add(u); db.commit(); db.refresh(u)
+            v = Vendor(user_id=u.user_id, bio=f"{slot_key} {tag}", category=cat,
+                       subcategory=sub, rating=rating, num_events=15)
+            db.add(v); db.commit(); db.refresh(v)
+            s = Service(name=f"{slot_key}-{tag}", price=price, duration_minutes=120,
+                        vendor_id=v.vendor_id, experience="exp",
+                        category=cat, subcategory=sub, negotiable=False)
+            db.add(s); db.commit()
+    db.close()
+    yield
+
+
+@pytest.fixture
+def db():
+    """A DB session for tests that build bundles from real seeded supply."""
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -204,49 +249,51 @@ class TestCustomBudgetStep:
 
 @pytest.mark.asyncio
 class TestStylePreferencesStep:
-    async def test_generates_bundle(self):
+    async def test_generates_bundle(self, db):
         state = ChatbotState(
             needed_categories=["dj", "catering", "floral_decor"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant", "pref_local"], state)
+        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant", "pref_local"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.bundle is not None
         assert len(resp.bundle.items) == 3
         assert resp.state.style == ["elegant"]
         assert resp.state.preferences == ["pref_local"]
 
-    async def test_free_text_style(self):
+    async def test_free_text_style(self, db):
         state = ChatbotState(
             needed_categories=["dj"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        resp = await process_step(ChatStep.STYLE_PREFERENCES, "elegant and classy", [], state)
+        resp = await process_step(ChatStep.STYLE_PREFERENCES, "elegant and classy", [], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.bundle is not None
 
-    async def test_bundle_has_correct_categories(self):
+    async def test_bundle_has_correct_categories(self, db):
         cats = ["dj", "mehndi", "dhol"]
         state = ChatbotState(needed_categories=cats, budget_tier=BudgetTier.PREMIUM)
-        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["modern"], state)
+        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["modern"], state, db=db)
         bundle_cats = [item.category for item in resp.bundle.items]
         assert sorted(bundle_cats) == sorted(cats)
 
 
 class TestBundleGeneration:
-    def test_basic_bundle(self):
+    def test_basic_bundle(self, db):
         state = ChatbotState(
             needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        bundle = generate_bundle(state)
+        bundle = generate_bundle(state, db)
         assert len(bundle.items) == 2
         assert bundle.estimated_total_min > 0
         # Single-price model: each service has one price, so the bundle's min and
         # max totals are equal (no range).
         assert bundle.estimated_total_max == bundle.estimated_total_min
+        # Every slot is a real, bookable service (a vendor + service id).
+        assert all(i.vendor_id and i.service_id for i in bundle.items)
 
-    def test_budget_friendly_cheaper(self):
+    def test_budget_friendly_cheaper(self, db):
         state_budget = ChatbotState(
             needed_categories=["dj"],
             budget_tier=BudgetTier.BUDGET_FRIENDLY,
@@ -255,99 +302,103 @@ class TestBundleGeneration:
             needed_categories=["dj"],
             budget_tier=BudgetTier.PREMIUM,
         )
-        budget_bundle = generate_bundle(state_budget)
-        premium_bundle = generate_bundle(state_prem)
+        budget_bundle = generate_bundle(state_budget, db)
+        premium_bundle = generate_bundle(state_prem, db)
         assert budget_bundle.estimated_total_max < premium_bundle.estimated_total_max
 
-    def test_all_categories(self):
+    def test_all_categories(self, db):
         state = ChatbotState(
             needed_categories=list(CHATBOT_CATEGORIES),
             budget_tier=BudgetTier.MID_RANGE,
         )
-        bundle = generate_bundle(state)
+        bundle = generate_bundle(state, db)
         assert len(bundle.items) == len(CHATBOT_CATEGORIES)
+        assert bundle.unfilled_categories == []
 
-    def test_empty_categories(self):
+    def test_empty_categories(self, db):
         state = ChatbotState(needed_categories=[], budget_tier=BudgetTier.MID_RANGE)
-        bundle = generate_bundle(state)
+        bundle = generate_bundle(state, db)
         assert len(bundle.items) == 0
         assert bundle.estimated_total_min == 0
 
-    def test_unknown_category_skipped(self):
+    def test_unknown_category_skipped(self, db):
         state = ChatbotState(
             needed_categories=["dj", "other"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        bundle = generate_bundle(state)
-        assert len(bundle.items) == 1  # "other" has no mock vendors
+        bundle = generate_bundle(state, db)
+        # "other" isn't a real slot → no supply → left out and reported, never
+        # padded with a placeholder vendor.
+        assert len(bundle.items) == 1
+        assert bundle.unfilled_categories == ["other"]
 
 
 @pytest.mark.asyncio
 class TestBundleActionStep:
-    def _make_state_with_bundle(self):
+    def _make_state_with_bundle(self, db):
         state = ChatbotState(
             needed_categories=list(CHATBOT_CATEGORIES),
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
+        state.bundle = generate_bundle(state, db)
         return state
 
-    async def test_keep_goes_to_results(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], state)
+    async def test_keep_goes_to_results(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], state, db=db)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
 
-    async def test_customize_goes_to_manual(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["customize"], state)
+    async def test_customize_goes_to_manual(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["customize"], state, db=db)
         assert resp.next_step == ChatStep.MANUAL_CUSTOMIZE
 
-    async def test_swap_goes_to_swap(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["swap"], state)
+    async def test_swap_goes_to_swap(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["swap"], state, db=db)
         assert resp.next_step == ChatStep.SWAP_VENDOR
 
-    async def test_remove_goes_to_remove(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["remove"], state)
+    async def test_remove_goes_to_remove(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["remove"], state, db=db)
         assert resp.next_step == ChatStep.REMOVE_CATEGORY
 
-    async def test_add_goes_to_add(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["add"], state)
+    async def test_add_goes_to_add(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["add"], state, db=db)
         assert resp.next_step == ChatStep.ADD_CATEGORY
 
-    async def test_cheaper_regenerates(self):
-        state = self._make_state_with_bundle()
+    async def test_cheaper_regenerates(self, db):
+        state = self._make_state_with_bundle(db)
         original_max = state.bundle.estimated_total_max
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["cheaper"], state)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["cheaper"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.state.budget_tier == BudgetTier.BUDGET_FRIENDLY
         assert resp.bundle.estimated_total_max < original_max
 
-    async def test_premium_regenerates(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["premium_bundle"], state)
+    async def test_premium_regenerates(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["premium_bundle"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.state.budget_tier == BudgetTier.PREMIUM
 
-    async def test_start_over(self):
-        state = self._make_state_with_bundle()
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["start_over"], state)
+    async def test_start_over(self, db):
+        state = self._make_state_with_bundle(db)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["start_over"], state, db=db)
         assert resp.next_step == ChatStep.EVENT_DETAILS
 
 
 @pytest.mark.asyncio
 class TestSwapVendor:
-    async def test_swap_changes_vendor(self):
+    async def test_swap_changes_vendor(self, db):
         state = ChatbotState(
             needed_categories=["dj"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
+        state.bundle = generate_bundle(state, db)
         original_name = state.bundle.items[0].vendor_name
 
-        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["dj"], state)
+        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["dj"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         swapped_name = resp.state.bundle.items[0].vendor_name
         assert swapped_name != original_name
@@ -355,15 +406,15 @@ class TestSwapVendor:
 
 @pytest.mark.asyncio
 class TestRemoveCategory:
-    async def test_remove_shrinks_bundle(self):
+    async def test_remove_shrinks_bundle(self, db):
         state = ChatbotState(
             needed_categories=["dj", "mehndi", "dhol"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
+        state.bundle = generate_bundle(state, db)
         assert len(state.bundle.items) == 3
 
-        resp = await process_step(ChatStep.REMOVE_CATEGORY, None, ["mehndi"], state)
+        resp = await process_step(ChatStep.REMOVE_CATEGORY, None, ["mehndi"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert len(resp.state.bundle.items) == 2
         cats = [i.category for i in resp.state.bundle.items]
@@ -373,15 +424,15 @@ class TestRemoveCategory:
 
 @pytest.mark.asyncio
 class TestAddCategory:
-    async def test_add_expands_bundle(self):
+    async def test_add_expands_bundle(self, db):
         state = ChatbotState(
             needed_categories=["dj"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
+        state.bundle = generate_bundle(state, db)
         assert len(state.bundle.items) == 1
 
-        resp = await process_step(ChatStep.ADD_CATEGORY, None, ["mehndi"], state)
+        resp = await process_step(ChatStep.ADD_CATEGORY, None, ["mehndi"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert len(resp.state.bundle.items) == 2
         cats = [i.category for i in resp.state.bundle.items]
@@ -391,50 +442,49 @@ class TestAddCategory:
 
 @pytest.mark.asyncio
 class TestResultsBookingStep:
-    def _make_state(self):
+    def _make_state(self, db):
         state = ChatbotState(
             needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
+        state.bundle = generate_bundle(state, db)
         return state
 
-    async def test_book_all(self):
-        state = self._make_state()
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["book_all"], state)
+    async def test_book_all(self, db):
+        state = self._make_state(db)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["book_all"], state, db=db)
         assert "book" in resp.bot_message.lower() or "Proceeding" in resp.bot_message
 
-    async def test_book_some_goes_to_partial(self):
-        state = self._make_state()
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["book_some"], state)
+    async def test_book_some_goes_to_partial(self, db):
+        state = self._make_state(db)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["book_some"], state, db=db)
         assert resp.next_step == ChatStep.PARTIAL_BOOKING
 
-    async def test_save(self):
-        state = self._make_state()
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["save"], state)
+    async def test_save(self, db):
+        state = self._make_state(db)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["save"], state, db=db)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
 
-    async def test_go_back(self):
-        state = self._make_state()
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["go_back"], state)
+    async def test_go_back(self, db):
+        state = self._make_state(db)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["go_back"], state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
 
-    async def test_contact(self):
-        state = self._make_state()
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["contact"], state)
+    async def test_contact(self, db):
+        state = self._make_state(db)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["contact"], state, db=db)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
 
 
 @pytest.mark.asyncio
 class TestPartialBooking:
-    async def test_selects_categories(self):
+    async def test_selects_categories(self, db):
         state = ChatbotState(
             needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
-        resp = await process_step(ChatStep.PARTIAL_BOOKING, None, ["dj"], state)
-        assert resp.next_step == ChatStep.RESULTS_BOOKING
+        state.bundle = generate_bundle(state, db)
+        resp = await process_step(ChatStep.PARTIAL_BOOKING, None, ["dj"], state, db=db)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
 
 
@@ -515,45 +565,45 @@ class TestSubcategoryTargeting:
 class TestFullFlowNothingBooked:
     """Walk through the complete flow when user has nothing booked yet."""
 
-    async def test_complete_flow(self):
+    async def test_complete_flow(self, db):
         # Step 0: Start
         resp = get_initial_step()
         assert resp.next_step == ChatStep.EVENT_DETAILS
 
         # Step 0 → 0b: Event details
-        resp = await process_step(ChatStep.EVENT_DETAILS, "August 2026, NJ, 200 people", [], resp.state)
+        resp = await process_step(ChatStep.EVENT_DETAILS, "August 2026, NJ, 200 people", [], resp.state, db=db)
         assert resp.next_step == ChatStep.EVENT_TIME
 
         # Step 0b → 1: Event time
-        resp = await process_step(ChatStep.EVENT_TIME, None, ["evening"], resp.state)
+        resp = await process_step(ChatStep.EVENT_TIME, None, ["evening"], resp.state, db=db)
         assert resp.next_step == ChatStep.ALREADY_BOOKED
 
         # Step 1 → 2: Nothing booked → choose what's needed
-        resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["nothing_yet"], resp.state)
+        resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["nothing_yet"], resp.state, db=db)
         assert resp.next_step == ChatStep.STILL_NEED
         assert resp.state.booked_categories == []
 
         # Step 2 → 3: Recommend everything still needed
-        resp = await process_step(ChatStep.STILL_NEED, None, ["recommend_all"], resp.state)
+        resp = await process_step(ChatStep.STILL_NEED, None, ["recommend_all"], resp.state, db=db)
         assert resp.next_step == ChatStep.BUDGET
         assert len(resp.state.needed_categories) == 10
 
         # Step 3 → 4: Budget
-        resp = await process_step(ChatStep.BUDGET, None, ["mid-range"], resp.state)
+        resp = await process_step(ChatStep.BUDGET, None, ["mid-range"], resp.state, db=db)
         assert resp.next_step == ChatStep.STYLE_PREFERENCES
 
         # Step 4 → 5/6: Style → bundle
-        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant"], resp.state)
+        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant"], resp.state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.bundle is not None
         assert len(resp.bundle.items) == 10
 
         # Step 6 → 7: Keep bundle
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], resp.state)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], resp.state, db=db)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
 
         # Step 7: Book all
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["book_all"], resp.state)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["book_all"], resp.state, db=db)
         assert "book" in resp.bot_message.lower() or "Proceeding" in resp.bot_message
 
 
@@ -561,37 +611,37 @@ class TestFullFlowNothingBooked:
 class TestFullFlowWithBooked:
     """Walk through the flow when user has some categories already booked."""
 
-    async def test_complete_flow(self):
+    async def test_complete_flow(self, db):
         resp = get_initial_step()
-        resp = await process_step(ChatStep.EVENT_DETAILS, "Wedding in NJ", [], resp.state)
+        resp = await process_step(ChatStep.EVENT_DETAILS, "Wedding in NJ", [], resp.state, db=db)
         assert resp.next_step == ChatStep.EVENT_TIME
-        resp = await process_step(ChatStep.EVENT_TIME, None, ["full_day"], resp.state)
+        resp = await process_step(ChatStep.EVENT_TIME, None, ["full_day"], resp.state, db=db)
         assert resp.next_step == ChatStep.ALREADY_BOOKED
 
         # Has venue and photographer
-        resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["venue", "photography"], resp.state)
+        resp = await process_step(ChatStep.ALREADY_BOOKED, None, ["venue", "photography"], resp.state, db=db)
         assert resp.next_step == ChatStep.STILL_NEED
 
         # Recommend all remaining
-        resp = await process_step(ChatStep.STILL_NEED, None, ["recommend_all"], resp.state)
+        resp = await process_step(ChatStep.STILL_NEED, None, ["recommend_all"], resp.state, db=db)
         assert resp.next_step == ChatStep.BUDGET
         assert "venue" not in resp.state.needed_categories
         assert "photography" not in resp.state.needed_categories
 
         # Premium budget
-        resp = await process_step(ChatStep.BUDGET, None, ["premium"], resp.state)
-        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["traditional"], resp.state)
+        resp = await process_step(ChatStep.BUDGET, None, ["premium"], resp.state, db=db)
+        resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["traditional"], resp.state, db=db)
         assert resp.bundle is not None
         assert len(resp.bundle.items) == 8  # 10 - venue - photography
 
         # Swap DJ
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["swap"], resp.state)
-        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["dj"], resp.state)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["swap"], resp.state, db=db)
+        resp = await process_step(ChatStep.SWAP_VENDOR, None, ["dj"], resp.state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
 
         # Save for later
-        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], resp.state)
-        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["save"], resp.state)
+        resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], resp.state, db=db)
+        resp = await process_step(ChatStep.RESULTS_BOOKING, None, ["save"], resp.state, db=db)
         assert resp.next_step == ChatStep.RESULTS_BOOKING
 
 
@@ -754,7 +804,7 @@ class TestLLMFallback:
         assert len(resp.state.conversation_history) >= 2
 
     @patch("app.services.chatbot_service.get_llm_response", new_callable=AsyncMock)
-    async def test_llm_modify_bundle_swap(self, mock_llm):
+    async def test_llm_modify_bundle_swap(self, mock_llm, db):
         """LLM can trigger a bundle modification (swap)."""
         mock_llm.return_value = LLMResult(
             bot_message="Sure, let me swap out the DJ for you!",
@@ -765,13 +815,14 @@ class TestLLMFallback:
             needed_categories=["dj", "catering"],
             budget_tier=BudgetTier.MID_RANGE,
         )
-        state.bundle = generate_bundle(state)
+        state.bundle = generate_bundle(state, db)
 
         resp = await process_step(
             ChatStep.BUNDLE_ACTION,
             "Can you swap the DJ for someone else?",
             [],
             state,
+            db=db,
         )
         assert resp.llm_response is True
         assert resp.next_step == ChatStep.SWAP_VENDOR

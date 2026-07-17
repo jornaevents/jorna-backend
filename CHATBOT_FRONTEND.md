@@ -206,13 +206,14 @@ How the user answers each step. "Auto-send" means tapping a chip submits immedia
   - **Start over** (`start_over`)
 
 **Notes:**
-- Items where `vendor_id` is null are mock/placeholder vendors (no real vendor available yet). Consider showing a "coming soon" badge.
+- Every bundle item is a real, bookable service (`vendor_id` and `service_id` are always set) — placeholder/mock vendors were removed.
+- A requested category with no available vendor (no supply, or all booked on the date) is **not** shown as an item. It's listed in `bundle.unfilled_categories` instead — surface a "we couldn't find an available X for your date" note so the user knows it was left out.
 - Cheaper/premium regenerates the bundle with a different tier — the full bundle card updates in place.
 
 **Checklist:**
 - [ ] Bundle card component with vendor photo, name, rating, price range, match reason
 - [ ] Estimated total display
-- [ ] Distinguish real vendors (has `vendor_id`) from mock placeholders
+- [ ] Show a note for any `unfilled_categories` (couldn't find an available vendor)
 - [ ] All action buttons rendered
 - [ ] Cheaper/premium swaps the displayed bundle without changing step
 - [ ] Swap/Remove/Add navigate to sub-screens (6a, 6b, 6c)

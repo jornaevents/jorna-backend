@@ -436,20 +436,14 @@ def _build_bundle_with_strategy(
         v_tags = {t.name.lower() for t in (v.tags or [])} | {t.lower() for t in (v.instagram_tags or [])}
         return len(v_tags & llm_relevant_tags) * 0.1
 
+    unfilled: list[str] = []
     for cat in state.needed_categories:
         rows = _candidate_service_rows(cat, state, db, booked_vendor_ids, price_cap, used_vendor_ids)
 
         if not rows:
-            mock_tier = {
-                "budget": BudgetTier.BUDGET_FRIENDLY,
-                "top_rated": BudgetTier.PREMIUM,
-                "balanced": BudgetTier.MID_RANGE,
-            }.get(strategy, BudgetTier.MID_RANGE)
-            item = _mock_item_for_category(cat, mock_tier)
-            if item:
-                items.append(item)
-                total_min += item.price_min
-                total_max += item.price_max
+            # No real, available vendor for this slot — leave it out and report it
+            # rather than inventing a placeholder.
+            unfilled.append(cat)
             continue
 
         # Rank individual services by the strategy. row = (service, vendor, user).
@@ -494,20 +488,22 @@ def _build_bundle_with_strategy(
         items=items,
         estimated_total_min=round(total_min, 2),
         estimated_total_max=round(total_max, 2),
+        unfilled_categories=unfilled,
     )
 
 
 def generate_multi_bundle(
     req: BundleRequest,
-    db: Session | None = None,
+    db: Session,
     user_id: str | None = None,
 ) -> MultiBundleResponse:
     """Generate 3 bundle options for users who aren't sure what they want.
 
-    When user_id is provided, all 3 bundles and their bookings are persisted
-    to the DB as drafts with a shared bundle_group_id.  The user then calls
-    POST /bundles/{bundle_id}/select to keep one and discard the others.
-    Vendor notifications are NOT sent until the user selects a bundle.
+    Bundles are always built from real DB vendors. When user_id is provided,
+    all 3 bundles and their bookings are persisted to the DB as drafts with a
+    shared bundle_group_id.  The user then calls POST /bundles/{bundle_id}/select
+    to keep one and discard the others. Vendor notifications are NOT sent until
+    the user selects a bundle.
     """
     needed = req.needed_categories or [
         c for c in CHATBOT_CATEGORIES if c not in req.booked_categories
@@ -532,7 +528,7 @@ def generate_multi_bundle(
     ]
 
     options: list[BundleOption] = []
-    group_id = str(uuid.uuid4()) if (db is not None and user_id) else None
+    group_id = str(uuid.uuid4()) if user_id else None
 
     for strategy, tier, label, description, factors in _PRESETS:
         state = ChatbotState(
@@ -550,15 +546,11 @@ def generate_multi_bundle(
             preferences=req.preferences,
         )
 
-        bundle = (
-            _build_bundle_with_strategy(state, strategy, db)
-            if db is not None
-            else _generate_bundle_mock(state)
-        )
+        bundle = _build_bundle_with_strategy(state, strategy, db)
         state.bundle = bundle
 
         db_bundle_id: str | None = None
-        if db is not None and user_id and group_id:
+        if user_id and group_id:
             db_bundle_id, _ = _create_bundle_from_chatbot(
                 state, user_id, None, db,
                 bundle_group_id=group_id,
@@ -620,7 +612,7 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
 
     return StepResponse(
         next_step=ChatStep.BUNDLE_ACTION,
-        bot_message=f"Here's your bundle{date_info}.",
+        bot_message=f"Here's your bundle{date_info}.{_unfilled_note(bundle)}",
         helper_buttons=[
             HelperButton(label="Keep this bundle", value="keep"),
             HelperButton(label="Swap a vendor", value="swap"),
@@ -635,69 +627,33 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
     )
 
 
-# ── Mock bundle generation ───────────────────────────────────────────
+def generate_bundle(state: ChatbotState, db: Session) -> Bundle:
+    """Build a bundle from real DB vendors, one service per needed category.
+
+    Slots with no available vendor are left out and recorded in
+    ``bundle.unfilled_categories`` — the builder never invents placeholder
+    ("mock") vendors, so a client only ever sees real, bookable services.
+    """
+    return _generate_bundle_from_db(state, db)
 
 
-# Mock vendor pool keyed by chatbot slot key (see CHATBOT_SLOTS). Used as a
-# fallback when no real vendor exists for a slot. Every slot must have an entry.
-_MOCK_VENDORS: dict[str, list[dict]] = {
-    "venue": [
-        {"name": "The Grand Mahal Banquet", "price_min": 3000, "price_max": 8000, "rating": 4.8, "reason": "Spacious traditional venue"},
-        {"name": "Sapphire Gardens", "price_min": 5000, "price_max": 12000, "rating": 4.9, "reason": "Elegant outdoor setting"},
-    ],
-    "catering": [
-        {"name": "Spice & Soul Catering", "price_min": 2000, "price_max": 5000, "rating": 5.0, "reason": "Award-winning South Asian cuisine"},
-        {"name": "Royal Feast Kitchen", "price_min": 1500, "price_max": 3500, "rating": 4.7, "reason": "Vegetarian-friendly menu"},
-    ],
-    "photography": [
-        {"name": "Moments in Motion Photography", "price_min": 2000, "price_max": 5000, "rating": 4.9, "reason": "Cinematic storytelling"},
-        {"name": "Desi Lens Studio", "price_min": 1200, "price_max": 3000, "rating": 4.7, "reason": "Traditional + candid specialist"},
-    ],
-    "videography": [
-        {"name": "Golden Hour Films", "price_min": 2000, "price_max": 5000, "rating": 4.9, "reason": "Cinematic wedding films"},
-        {"name": "Reel Shaadi Productions", "price_min": 1200, "price_max": 3000, "rating": 4.7, "reason": "Highlight reels and full-length films"},
-    ],
-    "dj": [
-        {"name": "Beats & Bhangra DJ", "price_min": 800, "price_max": 2000, "rating": 4.9, "reason": "Bollywood & Bhangra specialist"},
-        {"name": "DJ NaachLe", "price_min": 600, "price_max": 1500, "rating": 4.6, "reason": "High energy Punjabi sets"},
-    ],
-    "dhol": [
-        {"name": "BollyDhol Beats", "price_min": 400, "price_max": 1000, "rating": 4.8, "reason": "High-energy baraat dhol performances"},
-        {"name": "Rhythm & Dhol", "price_min": 300, "price_max": 800, "rating": 4.7, "reason": "Traditional Punjabi dhol players"},
-    ],
-    "floral_decor": [
-        {"name": "Marigold Dreams Decor", "price_min": 1500, "price_max": 4000, "rating": 4.9, "reason": "Stunning floral and mandap setups"},
-        {"name": "Desi Glam Décor", "price_min": 800, "price_max": 2500, "rating": 4.6, "reason": "Modern fusion designs"},
-    ],
-    "makeup": [
-        {"name": "Bridal Glow Studio", "price_min": 400, "price_max": 1500, "rating": 4.8, "reason": "Airbrush makeup and hair styling"},
-        {"name": "Glam by Anjali", "price_min": 300, "price_max": 1200, "rating": 4.7, "reason": "Bridal makeup and party glam"},
-    ],
-    "mehndi": [
-        {"name": "Henna by Priya", "price_min": 300, "price_max": 1200, "rating": 5.0, "reason": "Bridal mehndi specialist"},
-        {"name": "MehndiQueens", "price_min": 200, "price_max": 800, "rating": 4.8, "reason": "Intricate Rajasthani designs"},
-    ],
-    "cultural_services": [
-        {"name": "Desi Cultural Collective", "price_min": 600, "price_max": 2000, "rating": 4.7, "reason": "Giddha, bhangra, and cultural acts"},
-        {"name": "Baraat Brigade", "price_min": 500, "price_max": 1800, "rating": 4.6, "reason": "Full baraat procession and performers"},
-    ],
-}
-
-# Budget tier → index into mock list (0 = premium/first, 1 = budget/second)
-_TIER_INDEX = {
-    BudgetTier.BUDGET_FRIENDLY: 1,
-    BudgetTier.MID_RANGE: 0,
-    BudgetTier.PREMIUM: 0,
-    BudgetTier.CUSTOM: 0,
-    BudgetTier.UNKNOWN: 0,
-}
-
-
-def generate_bundle(state: ChatbotState, db: Session | None = None) -> Bundle:
-    """Build a bundle from real DB vendors when db is provided, otherwise use mock data."""
-    if db is not None:
-        return _generate_bundle_from_db(state, db)
-    return _generate_bundle_mock(state)
+def _unfilled_note(bundle: Bundle | None) -> str:
+    """A short sentence naming the categories we couldn't fill, or "" if none."""
+    cats = bundle.unfilled_categories if bundle else []
+    if not cats:
+        return ""
+    labels = [_slot_label(c) for c in cats]
+    if len(labels) == 1:
+        joined = labels[0]
+    elif len(labels) == 2:
+        joined = f"{labels[0]} and {labels[1]}"
+    else:
+        joined = ", ".join(labels[:-1]) + f", and {labels[-1]}"
+    return (
+        f" I couldn't find an available {joined} for your date, so I left "
+        f"{'that' if len(labels) == 1 else 'those'} out — you can add "
+        f"{'it' if len(labels) == 1 else 'them'} later if a vendor opens up."
+    )
 
 
 def _slot_db_filter(slot_key: str) -> tuple[str, str | None] | None:
@@ -915,16 +871,14 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
     price_cap = _per_category_cap(state)
     used_vendor_ids: set[str] = set()
 
+    unfilled: list[str] = []
     for cat in state.needed_categories:
         rows = _candidate_service_rows(cat, state, db, booked_vendor_ids, price_cap, used_vendor_ids)
 
         if not rows:
-            # No real service for this slot — fall back to mock for this category
-            mock_item = _mock_item_for_category(cat, tier)
-            if mock_item:
-                items.append(mock_item)
-                total_min += mock_item.price_min
-                total_max += mock_item.price_max
+            # No real, available vendor for this slot — leave it out and report it
+            # rather than inventing a placeholder.
+            unfilled.append(cat)
             continue
 
         # Score each candidate service by its vendor (price-aware via the single
@@ -962,56 +916,46 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
         items=items,
         estimated_total_min=round(total_min, 2),
         estimated_total_max=round(total_max, 2),
+        unfilled_categories=unfilled,
     )
 
 
-def _mock_item_for_category(cat: str, tier: BudgetTier) -> BundleItem | None:
-    """Return a mock BundleItem for a category when no real vendors exist.
-
-    Gated by CHATBOT_MOCK_VENDORS so fake "coming soon" vendors can be turned
-    off in production; when disabled the category is simply omitted from the
-    bundle (all call sites handle None).
+def _real_item_for_category(
+    cat: str,
+    state: ChatbotState,
+    db: Session,
+    *,
+    exclude_vendor_ids: set[str] | None = None,
+) -> BundleItem | None:
+    """Pick the top real service filling *cat* (highest-rated, cheapest tiebreak),
+    or None when no available vendor exists. Backs the conversational swap/add
+    steps so they only ever surface real, bookable vendors.
     """
-    from app.config import CHATBOT_MOCK_VENDORS
-    if not CHATBOT_MOCK_VENDORS:
-        logger.info("Mock vendors disabled — omitting category '%s' from bundle", cat)
+    booked_vendor_ids = _get_booked_vendor_ids(state, db)
+    rows = _candidate_service_rows(
+        cat, state, db, booked_vendor_ids,
+        _per_category_cap(state), exclude_vendor_ids or set(),
+    )
+    if not rows:
         return None
-    logger.warning("Serving MOCK vendor for category '%s' (no real supply)", cat)
-    pool = _MOCK_VENDORS.get(cat)
-    if not pool:
-        return None
-    vendor_idx = _TIER_INDEX.get(tier, 0)
-    vendor = pool[vendor_idx] if vendor_idx < len(pool) else pool[0]
-    price_mult = 0.8 if tier == BudgetTier.BUDGET_FRIENDLY else (1.3 if tier == BudgetTier.PREMIUM else 1.0)
-    # Single estimated price (midpoint of the mock band) so a placeholder slot
-    # reads like a service, not a range — consistent with real service items.
-    price = round((vendor["price_min"] + vendor["price_max"]) / 2 * price_mult, 2)
+    rows.sort(key=lambda r: (-(r[1].rating or 0.0), r[0].price))
+    service, vendor, user = rows[0]
+    price = round(service.price, 2)
+    match_reason = service.description or service.experience or vendor.bio or ""
     return BundleItem(
         category=cat,
-        vendor_name=vendor["name"],
+        vendor_id=vendor.vendor_id,
+        service_id=service.service_id,
+        service_name=service.name,
+        vendor_name=f"{user.f_name} {user.l_name}",
+        pfp_url=user.pfp_url,
         price_min=price,
         price_max=price,
-        rating=vendor["rating"],
-        match_reason=vendor["reason"],
-    )
-
-
-def _generate_bundle_mock(state: ChatbotState) -> Bundle:
-    """Pure mock bundle — used when no DB session is available."""
-    tier = state.budget_tier or BudgetTier.UNKNOWN
-    items: list[BundleItem] = []
-    total_min = 0.0
-    total_max = 0.0
-    for cat in state.needed_categories:
-        item = _mock_item_for_category(cat, tier)
-        if item:
-            items.append(item)
-            total_min += item.price_min
-            total_max += item.price_max
-    return Bundle(
-        items=items,
-        estimated_total_min=round(total_min, 2),
-        estimated_total_max=round(total_max, 2),
+        rating=vendor.rating or 0.0,
+        match_reason=_rule_based_match_reason(
+            cat, vendor.rating or 0.0, match_reason,
+            list(state.style), list(state.preferences), state.budget_tier,
+        ),
     )
 
 
@@ -1488,20 +1432,16 @@ async def process_step(
 
     # ── STEP 6A: MANUAL CUSTOMIZE ────────────────────────────────────
     if current_step == ChatStep.MANUAL_CUSTOMIZE:
-        # For now: regenerate the selected category with alternate vendor
-        if state.bundle:
-            for item in state.bundle.items:
+        # Swap each selected category to a different real vendor.
+        if state.bundle and db is not None:
+            used = {i.vendor_id for i in state.bundle.items if i.vendor_id}
+            for idx, item in enumerate(state.bundle.items):
                 if item.category in selections:
-                    pool = _MOCK_VENDORS.get(item.category, [])
-                    # Pick alternate vendor (the other one)
-                    alt = [v for v in pool if v["name"] != item.vendor_name]
+                    alt = _real_item_for_category(item.category, state, db, exclude_vendor_ids=used)
                     if alt:
-                        item.vendor_name = alt[0]["name"]
-                        item.price_min = alt[0]["price_min"]
-                        item.price_max = alt[0]["price_max"]
-                        item.rating = alt[0]["rating"]
-                        item.match_reason = alt[0]["reason"]
-            # Recalculate totals
+                        used.discard(item.vendor_id)
+                        used.add(alt.vendor_id)
+                        state.bundle.items[idx] = alt
             state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
             state.bundle.estimated_total_max = sum(i.price_max for i in state.bundle.items)
         resp = _step_bundle_action(state)
@@ -1510,19 +1450,17 @@ async def process_step(
 
     # ── STEP 6B: SWAP VENDOR ─────────────────────────────────────────
     if current_step == ChatStep.SWAP_VENDOR:
-        # Same logic as manual customize for a single category
-        if state.bundle:
+        # Same as manual customize, for a single category.
+        if state.bundle and db is not None:
             cat_to_swap = selection
-            for item in state.bundle.items:
+            used = {i.vendor_id for i in state.bundle.items if i.vendor_id}
+            for idx, item in enumerate(state.bundle.items):
                 if item.category == cat_to_swap:
-                    pool = _MOCK_VENDORS.get(item.category, [])
-                    alt = [v for v in pool if v["name"] != item.vendor_name]
+                    alt = _real_item_for_category(cat_to_swap, state, db, exclude_vendor_ids=used)
                     if alt:
-                        item.vendor_name = alt[0]["name"]
-                        item.price_min = alt[0]["price_min"]
-                        item.price_max = alt[0]["price_max"]
-                        item.rating = alt[0]["rating"]
-                        item.match_reason = alt[0]["reason"]
+                        used.discard(item.vendor_id)
+                        used.add(alt.vendor_id)
+                        state.bundle.items[idx] = alt
             state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
             state.bundle.estimated_total_max = sum(i.price_max for i in state.bundle.items)
         resp = _step_bundle_action(state)
@@ -1547,21 +1485,17 @@ async def process_step(
         new_cats = [v for v in selections if v in CHATBOT_CATEGORIES and v not in state.needed_categories]
         state.needed_categories.extend(new_cats)
 
-        # Generate items for the new categories
-        for cat in new_cats:
-            pool = _MOCK_VENDORS.get(cat)
-            if pool:
-                vendor = pool[0]
-                if state.bundle is None:
-                    state.bundle = Bundle()
-                state.bundle.items.append(BundleItem(
-                    category=cat,
-                    vendor_name=vendor["name"],
-                    price_min=vendor["price_min"],
-                    price_max=vendor["price_max"],
-                    rating=vendor["rating"],
-                    match_reason=vendor["reason"],
-                ))
+        # Fill each new category with a real vendor; skip any with no supply.
+        if db is not None:
+            used = {i.vendor_id for i in (state.bundle.items if state.bundle else []) if i.vendor_id}
+            for cat in new_cats:
+                item = _real_item_for_category(cat, state, db, exclude_vendor_ids=used)
+                if item:
+                    if state.bundle is None:
+                        state.bundle = Bundle()
+                    state.bundle.items.append(item)
+                    if item.vendor_id:
+                        used.add(item.vendor_id)
 
         if state.bundle:
             state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
