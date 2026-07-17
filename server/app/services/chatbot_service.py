@@ -804,10 +804,15 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
         else_=Booking.date_iso,
     )
 
+    # "confirmed" was never a real booking status (the values are pending /
+    # negotiation_ongoing / approved / rejected / payment_confirmed), so the old
+    # filter silently let already-booked vendors back into new bundles. Exclude
+    # vendors who are locked (approved/paid) for the date, plus those with an
+    # in-flight pending request, so the builder doesn't propose a doomed slot.
     rows = (
         db.query(Booking.vendor_id)
         .filter(
-            Booking.status.in_(["pending", "confirmed"]),
+            Booking.status.in_(["pending", "approved", "payment_confirmed"]),
             Booking.date_iso <= req_end,
             booking_end >= req_start,
         )

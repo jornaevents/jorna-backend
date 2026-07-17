@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,55 @@ class BookingError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(detail)
+
+
+# ── Availability / conflict detection ─────────────────────────────────
+
+# A vendor is "locked" for a date once a booking is approved or paid — they're
+# committed to that event and cannot take another on an overlapping date. A
+# pending request is only a lead and does NOT lock the vendor.
+LOCKED_BOOKING_STATUSES = (
+    BookingStatus.APPROVED.value,
+    BookingStatus.PAYMENT_CONFIRMED.value,
+)
+
+
+def vendor_has_conflicting_booking(
+    *,
+    vendor_id: str,
+    date_iso: str | None,
+    date_end: str | None,
+    db: Session,
+    exclude_booking_id: str | None = None,
+) -> Booking | None:
+    """Return an existing locked (approved/paid) booking for *vendor_id* whose
+    date range overlaps ``[date_iso, date_end]``, or ``None`` if the vendor is
+    free for that span.
+
+    A vendor serves one event per day, so two locked bookings may not overlap.
+    Single-day bookings store a null ``date_end`` — treated as ending on
+    ``date_iso``. Overlap holds when the existing booking starts on or before the
+    requested end AND ends on or after the requested start. A TBD/missing date
+    can't conflict (nothing to compare against).
+    """
+    if not date_iso or date_iso == "TBD":
+        return None
+    req_start = date_iso
+    req_end = date_end or date_iso
+
+    existing_end = case(
+        (Booking.date_end.isnot(None), Booking.date_end),
+        else_=Booking.date_iso,
+    )
+    query = db.query(Booking).filter(
+        Booking.vendor_id == vendor_id,
+        Booking.status.in_(LOCKED_BOOKING_STATUSES),
+        Booking.date_iso <= req_end,
+        existing_end >= req_start,
+    )
+    if exclude_booking_id:
+        query = query.filter(Booking.booking_id != exclude_booking_id)
+    return query.first()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -575,6 +625,24 @@ def update_booking_status(
         if booking.status not in _negotiable:
             raise BookingError(
                 400, f"Cannot change status from {booking.status} to {status_str}"
+            )
+
+    # A vendor can't approve two bookings for overlapping dates — one event per
+    # day. Checked only on approval (a pending request is just a lead); checkout
+    # re-checks to catch the race between approval and payment.
+    if status_str == BookingStatus.APPROVED.value:
+        conflict = vendor_has_conflicting_booking(
+            vendor_id=booking.vendor_id,
+            date_iso=booking.date_iso,
+            date_end=booking.date_end,
+            db=db,
+            exclude_booking_id=booking.booking_id,
+        )
+        if conflict:
+            raise BookingError(
+                409,
+                "You already have a confirmed booking on that date. Reject or "
+                "move it before approving another booking for the same day.",
             )
 
     booking.status = status_str

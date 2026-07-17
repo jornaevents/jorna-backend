@@ -333,6 +333,23 @@ def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: s
     if booking.payment_status not in ("unpaid", "processing"):
         raise StripeError(400, f"Booking payment is already '{booking.payment_status}'")
 
+    # Re-check availability at payment time: another booking for this vendor on an
+    # overlapping date may have been approved/paid since this one was approved.
+    # Refuse rather than take escrow for a vendor who's already committed elsewhere.
+    from app.services.booking_service import vendor_has_conflicting_booking
+    if vendor_has_conflicting_booking(
+        vendor_id=booking.vendor_id,
+        date_iso=booking.date_iso,
+        date_end=booking.date_end,
+        db=db,
+        exclude_booking_id=booking.booking_id,
+    ):
+        raise StripeError(
+            409,
+            "This vendor is no longer available on your event date — another "
+            "booking for that day was confirmed first.",
+        )
+
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     if not service:
         raise StripeError(404, "Service not found")
