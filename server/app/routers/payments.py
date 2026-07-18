@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.limiter import limiter
 from sqlalchemy.orm import Session
 
+from app.config import WEB_APP_URL
 from app.db.database import get_db
 from app.dependencies import get_current_user, get_current_admin
 from app.services.stripe_service import (
@@ -122,20 +123,32 @@ def pay_booking(
 def create_booking_checkout_session(
     request: Request,
     booking_id: str,
+    client: str = Query(
+        "ios",
+        description="Which client is paying: 'ios' returns via the app deep-link "
+        "bridge, 'web' returns into the Jorna web app.",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     """Creates a Stripe-hosted Checkout Session and returns its ``checkout_url``.
 
-    The app opens the URL in the browser; on success Stripe redirects to the
+    The client opens the URL in a browser; on success Stripe redirects to a
     ``/payment-complete`` page and the webhook marks the booking paid. Funds are
     held on the platform until both parties confirm the event.
+
+    The return target depends on the caller. iOS returns to this API's own
+    ``/payment-complete``, which bounces into the app via the ``jorna://`` URL
+    scheme — a dead end in a desktop browser. Browser clients pass ``client=web``
+    to land back in the web app instead. That URL comes from WEB_APP_URL, never
+    from the request, so this can't be turned into an open redirect.
     """
+    return_base = WEB_APP_URL if client == "web" else str(request.base_url)
     try:
         return create_checkout_session(
             booking_id=booking_id,
             caller_user_id=current_user.user_id,
-            base_url=str(request.base_url),
+            base_url=return_base,
             db=db,
         )
     except StripeError as e:
