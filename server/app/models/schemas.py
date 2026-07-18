@@ -34,6 +34,34 @@ class VendorCategory(str, Enum):
     OTHER = "other"
 
 
+# Display names for each category. Kept beside the enum so the taxonomy and the
+# words for it live together — clients read these from /vendors/categories rather
+# than each inventing their own.
+CATEGORY_LABELS: dict[str, str] = {
+    "venue": "Venue",
+    "planning": "Planning & Coordination",
+    "catering": "Catering",
+    "bar_beverage": "Bar & Beverage",
+    "cakes_desserts": "Cakes & Desserts",
+    "photography": "Photography",
+    "videography": "Videography",
+    "music_entertainment": "Music & Entertainment",
+    "floral_decor": "Floral & Decor",
+    "rentals": "Rentals",
+    "lighting_av": "Lighting & AV",
+    "beauty": "Beauty",
+    "attire": "Attire",
+    "jewelry": "Jewelry",
+    "stationery": "Stationery",
+    "transportation": "Transportation",
+    "officiants": "Officiants",
+    "guest_hospitality": "Guest Hospitality",
+    "favors_gifts": "Favors & Gifts",
+    "cultural_services": "Cultural Services",
+    "post_wedding": "Post-Wedding",
+    "other": "Other",
+}
+
 # Valid subcategories per category. Categories not listed here have no subcategories.
 VENDOR_SUBCATEGORIES: dict[str, list[str]] = {
     "music_entertainment": [

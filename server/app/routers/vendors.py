@@ -10,7 +10,12 @@ from app.db.database import get_db
 from app.db.models import User, Vendor, Service
 from app.dependencies import get_current_user, get_current_admin
 from app.limiter import limiter
-from app.models.schemas import VendorCategory, VENDOR_SUBCATEGORIES
+from app.models.schemas import (
+    CATEGORY_LABELS,
+    SUBCATEGORY_LABELS,
+    VendorCategory,
+    VENDOR_SUBCATEGORIES,
+)
 from app.services.vendor_service import (
     VendorError,
     create_vendor,
@@ -126,6 +131,32 @@ def list_vendors_route(
         offset=offset,
     )
     return response
+
+
+@router.get("/categories", summary="The vendor category taxonomy")
+def vendor_categories_route():
+    """Return every vendor category with its display name and subcategories.
+
+    The taxonomy is validated server-side (an invalid category/subcategory pair
+    is rejected on create), so clients need the authoritative list to build a
+    vendor form. Serving it here keeps each client from hardcoding its own copy
+    and drifting out of sync. Public — it's reference data, not user data.
+
+    Declared before `/{vendor_id}` so "categories" isn't read as a vendor id.
+    """
+    return {
+        "categories": [
+            {
+                "value": category.value,
+                "label": CATEGORY_LABELS.get(category.value, category.value),
+                "subcategories": [
+                    {"value": sub, "label": SUBCATEGORY_LABELS.get(sub, sub)}
+                    for sub in VENDOR_SUBCATEGORIES.get(category.value, [])
+                ],
+            }
+            for category in VendorCategory
+        ]
+    }
 
 
 @router.get("/search", summary="Search vendors by service and location")
