@@ -56,9 +56,22 @@ def _booking_summary(
         # Negotiation is now per-service (the vendor toggles it per service),
         # not vendor-wide. Key name kept for client compatibility.
         "open_to_price_negotiation": service.negotiable if service else False,
-        # Vendor-approval timestamp — the client uses it to show the 24-hour
-        # refund window on paid bookings.
+        # Vendor-approval timestamp (when the vendor accepted the request).
         "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,
+        # Escrow lifecycle. Clients need these to show the release state honestly:
+        # who still has to confirm, and whether the refund window is open. The
+        # 24-hour refund window runs from paid_at (see request_refund), not from
+        # the vendor's approval.
+        "paid_at": booking.paid_at.isoformat() if booking.paid_at else None,
+        "customer_confirmed_at": (
+            booking.customer_confirmed_at.isoformat() if booking.customer_confirmed_at else None
+        ),
+        "vendor_confirmed_at": (
+            booking.vendor_confirmed_at.isoformat() if booking.vendor_confirmed_at else None
+        ),
+        "funds_released_at": (
+            booking.funds_released_at.isoformat() if booking.funds_released_at else None
+        ),
         # GPS venue check-in timestamps (stored as ISO strings). Lets the client's
         # bundle view show whether the vendor has arrived and checked in.
         "vendor_checked_in_at": booking.vendor_checked_in_at,

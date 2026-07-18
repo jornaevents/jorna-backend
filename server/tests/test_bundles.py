@@ -234,6 +234,30 @@ def test_get_bundle(seeded_db):
     assert "approved" in data["status_breakdown"]
 
 
+def test_bundle_bookings_expose_escrow_timestamps(seeded_db):
+    """Clients need the escrow lifecycle to show release state honestly: who
+    still has to confirm, and whether the 24h refund window (which runs from
+    paid_at) is open."""
+    user = seeded_db["user"]
+    booking1 = seeded_db["booking1"]
+    headers = make_auth_headers(user)
+
+    create_resp = client.post("/bundles", json={
+        "name": "Escrow Fields Bundle",
+        "booking_ids": [booking1.booking_id],
+    }, headers=headers)
+    bundle_id = create_resp.json()["bundle_id"]
+
+    booking = client.get(f"/bundles/{bundle_id}", headers=headers).json()["bookings"][0]
+    for field in (
+        "paid_at",
+        "customer_confirmed_at",
+        "vendor_confirmed_at",
+        "funds_released_at",
+    ):
+        assert field in booking, f"{field} missing from the bundle's booking summary"
+
+
 def test_add_booking_to_bundle(seeded_db):
     user = seeded_db["user"]
     booking1 = seeded_db["booking1"]
