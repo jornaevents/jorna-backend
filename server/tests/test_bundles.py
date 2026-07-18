@@ -258,6 +258,25 @@ def test_bundle_bookings_expose_escrow_timestamps(seeded_db):
         assert field in booking, f"{field} missing from the bundle's booking summary"
 
 
+def test_bundle_bookings_expose_quantity_fields(seeded_db):
+    """A swap re-books the same slot with a different service, so the client has
+    to carry the quantity across. Without these the replacement would be
+    unpayable (price_pending_quantity)."""
+    user = seeded_db["user"]
+    booking1 = seeded_db["booking1"]
+    headers = make_auth_headers(user)
+
+    create_resp = client.post("/bundles", json={
+        "name": "Quantity Fields Bundle",
+        "booking_ids": [booking1.booking_id],
+    }, headers=headers)
+    bundle_id = create_resp.json()["bundle_id"]
+
+    booking = client.get(f"/bundles/{bundle_id}", headers=headers).json()["bookings"][0]
+    for field in ("guest_count", "date_end"):
+        assert field in booking, f"{field} missing from the bundle's booking summary"
+
+
 def test_add_booking_to_bundle(seeded_db):
     user = seeded_db["user"]
     booking1 = seeded_db["booking1"]

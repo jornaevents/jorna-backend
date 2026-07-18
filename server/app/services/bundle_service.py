@@ -41,6 +41,11 @@ def _booking_summary(
         "status": booking.status,
         "payment_status": booking.payment_status,
         "date_iso": booking.date_iso,
+        # The quantity a rate-priced service multiplies by. Exposed so a client
+        # swapping one service for another can carry the quantity across —
+        # dropping it would leave the replacement unpayable (price_pending_quantity).
+        "date_end": booking.date_end,
+        "guest_count": booking.guest_count,
         "time_start": booking.time_start,
         "time_end": booking.time_end,
         "location": booking.location,
