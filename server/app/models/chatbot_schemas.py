@@ -128,7 +128,7 @@ class HelperButton(BaseModel):
 
 class BundleItem(BaseModel):
     category: str
-    vendor_id: Optional[str] = None    # None when falling back to mock data
+    vendor_id: Optional[str] = None
     service_id: Optional[str] = None
     service_name: Optional[str] = None  # the specific service filling this slot
     vendor_name: str
@@ -143,6 +143,12 @@ class Bundle(BaseModel):
     items: list[BundleItem] = []
     estimated_total_min: float = 0.0
     estimated_total_max: float = 0.0
+    unfilled_categories: list[str] = Field(
+        default_factory=list,
+        description="Requested categories with no available vendor for the event "
+        "(no real supply, or all booked on the date) — left out of the bundle so "
+        "the client can be told what couldn't be filled.",
+    )
 
 
 # ── Chatbot state (carried by the client) ────────────────────────────
