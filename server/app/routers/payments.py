@@ -37,18 +37,30 @@ router = APIRouter(prefix="/payments", tags=["payments"])
 def stripe_onboard(
     request: Request,
     vendor_id: str,
+    client: str = Query(
+        "ios",
+        description="Which client is onboarding: 'ios' returns via the app "
+        "deep-link bridge, 'web' returns into the Jorna web app.",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     """Returns a Stripe-hosted onboarding URL the vendor should be redirected to.
     Creates a Connect Express account if one doesn't exist yet.
+
+    Same split as checkout: iOS returns to this API's own landing page, which
+    bounces into the app via ``jorna://`` — a dead end in a desktop browser.
+    Browser clients pass ``client=web`` to land back in the web app instead. The
+    web target is WEB_APP_URL, never the request, so this can't become an open
+    redirect.
     """
+    return_base = WEB_APP_URL if client == "web" else str(request.base_url)
     try:
         return create_vendor_onboarding_url(
             vendor_id=vendor_id,
             caller_user_id=current_user.user_id,
             db=db,
-            base_url=str(request.base_url),
+            base_url=return_base,
         )
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
