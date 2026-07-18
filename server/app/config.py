@@ -33,6 +33,11 @@ GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv(
 # Where the backend redirects the vendor's browser after OAuth completes.
 FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# Base URL of the Jorna web app. Used to build Stripe Checkout return URLs for
+# browser clients, which need to land back in the web app rather than on the
+# iOS deep-link bridge page. Not client-supplied — that would be an open redirect.
+WEB_APP_URL: str = os.getenv("WEB_APP_URL", "https://jornaevents.com/app")
+
 # ── Admin bootstrap ───────────────────────────────────────────────────
 # If set, this email address is automatically promoted to admin on startup.
 # Use this to create the first admin without needing direct DB access.
