@@ -154,8 +154,8 @@ class Booking(Base):
     amount_cents = Column(Integer, nullable=True)       # total charged to customer
     platform_fee_cents = Column(Integer, nullable=True) # Desiconnect's cut
     currency = Column(String(10), nullable=False, default="usd")
-    confirmed_at = Column(DateTime, nullable=True)      # when vendor approved — refund window starts here
-    paid_at = Column(DateTime, nullable=True)           # when Stripe payment succeeded
+    confirmed_at = Column(DateTime, nullable=True)      # when the vendor approved the request
+    paid_at = Column(DateTime, nullable=True)           # when Stripe payment succeeded — the 24h refund window runs from here
     customer_confirmed_at = Column(DateTime, nullable=True)
     vendor_confirmed_at = Column(DateTime, nullable=True)
     funds_released_at = Column(DateTime, nullable=True)
