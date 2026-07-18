@@ -90,6 +90,42 @@ def test_default_client_returns_to_the_api_bridge(paid_ready_booking):
     assert not kwargs["success_url"].startswith(WEB_APP_URL.rstrip("/"))
 
 
+class _FakeLink:
+    url = "https://connect.stripe.com/setup/s/test"
+
+
+def _onboard(paid_ready_booking, query: str = ""):
+    """Call Stripe Connect onboarding with Stripe mocked; return its kwargs."""
+    db = paid_ready_booking["db"]
+    vendor = (
+        db.query(Vendor)
+        .filter(Vendor.vendor_id == paid_ready_booking["booking"].vendor_id)
+        .first()
+    )
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first()
+    with patch("stripe.AccountLink.create", return_value=_FakeLink()) as mock:
+        resp = client.post(
+            f"/payments/vendors/{vendor.vendor_id}/stripe-onboard{query}",
+            headers=make_auth_headers(vendor_user),
+        )
+    assert resp.status_code == 200, resp.text
+    return mock.call_args.kwargs
+
+
+def test_onboarding_web_client_returns_to_the_web_app(paid_ready_booking):
+    """Connect onboarding has the same split as checkout — the iOS landing page
+    bounces to jorna://, which strands a browser mid-setup."""
+    kwargs = _onboard(paid_ready_booking, "?client=web")
+    base = WEB_APP_URL.rstrip("/")
+    assert kwargs["return_url"].startswith(base)
+    assert kwargs["refresh_url"].startswith(base)
+
+
+def test_onboarding_default_client_uses_the_api_bridge(paid_ready_booking):
+    kwargs = _onboard(paid_ready_booking)
+    assert not kwargs["return_url"].startswith(WEB_APP_URL.rstrip("/"))
+
+
 def test_return_url_is_not_client_supplied(paid_ready_booking):
     """An attacker-controlled `client` value can't redirect anywhere else — the
     only web target is the configured WEB_APP_URL."""
