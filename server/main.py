@@ -145,6 +145,9 @@ class RefreshRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    # "web" mails a link into the web app; anything else (default) targets the
+    # iOS deep-link bridge. See _send_password_reset_email.
+    client: Optional[str] = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -522,7 +525,7 @@ def forgot_password_route(request: Request, body: ForgotPasswordRequest, db: Ses
     """Email a single-use password reset link. Always returns 200 so the response
     can't be used to discover which email addresses are registered."""
     try:
-        return request_password_reset(email=body.email, db=db)
+        return request_password_reset(email=body.email, db=db, client=body.client or "ios")
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
