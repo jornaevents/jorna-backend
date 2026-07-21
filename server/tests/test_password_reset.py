@@ -35,7 +35,7 @@ def _request_and_capture_token(email, db):
     """Call request_password_reset, capturing the raw token from the email step."""
     captured = {}
 
-    def _capture(user, raw_token):
+    def _capture(user, raw_token, client="ios"):
         captured["token"] = raw_token
 
     with patch("app.services.auth_service._send_password_reset_email", side_effect=_capture):
@@ -52,6 +52,33 @@ def db():
         yield session
     finally:
         session.close()
+
+
+class TestResetLinkTarget:
+    """The reset email must point where the requesting client can act on it: iOS
+    to the deep-link bridge, web to the web app's own reset page."""
+
+    def _link_for(self, db, client_kind):
+        from app.config import FRONTEND_URL, WEB_APP_URL
+
+        user = _make_user(db)
+        captured = {}
+
+        def _capture_email(**kwargs):
+            captured["body"] = f"{kwargs.get('html', '')} {kwargs.get('text', '')}"
+
+        with patch("app.services.email_service.send_email", side_effect=_capture_email):
+            request_password_reset(email=user.email, db=db, client=client_kind)
+        return captured.get("body", ""), FRONTEND_URL, WEB_APP_URL
+
+    def test_web_client_links_into_the_web_app(self, db):
+        body, frontend, web = self._link_for(db, "web")
+        assert f"{web.rstrip('/')}/reset-password?token=" in body
+        assert f"{frontend.rstrip('/')}/reset-password" not in body
+
+    def test_default_client_links_to_the_frontend_bridge(self, db):
+        body, frontend, web = self._link_for(db, "ios")
+        assert f"{frontend.rstrip('/')}/reset-password?token=" in body
 
 
 class TestRequestReset:

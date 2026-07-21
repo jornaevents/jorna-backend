@@ -18,6 +18,7 @@ from app.config import (
     REFRESH_TOKEN_EXPIRE_DAYS,
     PASSWORD_RESET_EXPIRE_MINUTES,
     FRONTEND_URL,
+    WEB_APP_URL,
 )
 from app.db.models import User, RefreshToken, PasswordResetToken
 
@@ -330,10 +331,17 @@ def change_password(*, user_id: str, current_password: str, new_password: str, d
     return {"message": "Password updated successfully"}
 
 
-def _send_password_reset_email(user: User, raw_token: str) -> None:
-    """Email the user a single-use password reset link. Best-effort."""
+def _send_password_reset_email(user: User, raw_token: str, client: str = "ios") -> None:
+    """Email the user a single-use password reset link. Best-effort.
+
+    ``client`` decides where the link lands. The default targets FRONTEND_URL,
+    whose /reset-password page bounces into the iOS app via jorna://. A browser
+    user passes ``web`` so the link opens the web app's own reset page (under the
+    /app base path) instead of a dead-end deep link.
+    """
     from app.services.email_service import send_email
-    reset_link = f"{FRONTEND_URL.rstrip('/')}/reset-password?token={raw_token}"
+    base = WEB_APP_URL if client == "web" else FRONTEND_URL
+    reset_link = f"{base.rstrip('/')}/reset-password?token={raw_token}"
     subject = "Reset your Desiconnect password"
     html = (
         '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'
@@ -359,7 +367,7 @@ def _send_password_reset_email(user: User, raw_token: str) -> None:
     send_email(to=user.email, subject=subject, html=html, text=text)
 
 
-def request_password_reset(*, email: str, db: Session) -> dict:
+def request_password_reset(*, email: str, db: Session, client: str = "ios") -> dict:
     """Issue a single-use reset token and email a reset link.
 
     Always returns the same generic response so callers can't use this endpoint
@@ -384,7 +392,7 @@ def request_password_reset(*, email: str, db: Session) -> dict:
     db.commit()
 
     try:
-        _send_password_reset_email(user, raw_token)
+        _send_password_reset_email(user, raw_token, client)
     except Exception as exc:  # pragma: no cover - email is best-effort
         import logging
         logging.getLogger(__name__).error("Failed to send reset email: %s", exc)
