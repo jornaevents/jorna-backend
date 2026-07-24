@@ -1,5 +1,6 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
+from datetime import datetime
 from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 
@@ -31,8 +32,8 @@ class User(Base):
     city = Column(String(100), nullable=True)
     state = Column(String(50), nullable=True)
 
-    # Firebase Cloud Messaging token for push notifications
-    fcm_token = Column(String(512), nullable=True)
+    # Push device tokens live in the push_tokens table (one user → many devices:
+    # a phone plus one or more browsers). See PushToken.
 
     # Supabase Auth user id (UUID) when this Jorna account is linked to Google sign-in
     supabase_user_id = Column(String(36), unique=True, nullable=True)
@@ -43,6 +44,26 @@ class User(Base):
     is_admin = Column(Boolean, nullable=False, default=False)
     open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
     flexible_on_location = Column(Boolean, nullable=False, default=False)
+
+
+class PushToken(Base):
+    """A device's FCM registration token for one user.
+
+    One user has many — a phone and one or more browsers — so notifications fan
+    out to every registered device. FCM tokens are the same string shape for
+    native and web (FCM for Web), so a single send path (utils.notifications)
+    delivers to all. Replaces the old single users.fcm_token column.
+    """
+    __tablename__ = "push_tokens"
+
+    id = Column(String(36), primary_key=True, default=uuid_str)
+    # A device belongs to one user at a time; a token is globally unique, so
+    # re-registering a device (e.g. after a re-login) reassigns it.
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    token = Column(String(512), unique=True, nullable=False)
+    platform = Column(String(20), nullable=False, default="ios")  # ios | web | android
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 # Many-to-many join table: one vendor has many tags, one tag belongs to many vendors.

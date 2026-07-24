@@ -1216,7 +1216,7 @@ def _create_bundle_from_chatbot(
         for booking in created_bookings:
             try:
                 client, _, vendor_user, service = _get_booking_parties(db, booking)
-                _dispatch_status_notification("pending", booking, client, vendor_user, service, event_name=event_name)
+                _dispatch_status_notification("pending", booking, client, vendor_user, service, db, event_name=event_name)
             except Exception as exc:
                 logger.warning("Chatbot booking notification failed for %s: %s", booking.booking_id, exc)
 

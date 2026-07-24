@@ -194,6 +194,44 @@ def send_push_to_multiple(
     ]
 
 
+def send_push_to_user(
+    user,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    *,
+    db,
+) -> dict:
+    """Send a push to every device a user has registered, and prune any token FCM
+    reports as unregistered (app uninstalled, browser permission revoked).
+
+    One user has many devices — a phone plus one or more browsers — so this fans
+    out across all of them. Returns ``{"sent": <delivered>, "devices": <tried>}``;
+    ``sent > 0`` means at least one device got it (used to decide email fallback).
+    """
+    if user is None:
+        return {"sent": 0, "devices": 0}
+
+    from app.db.models import PushToken
+
+    tokens = db.query(PushToken).filter(PushToken.user_id == user.user_id).all()
+    sent = 0
+    dead: list = []
+    for pt in tokens:
+        result = send_push_notification(pt.token, title, body, data)
+        if result.get("success"):
+            sent += 1
+        elif result.get("error") == "Token unregistered":
+            dead.append(pt)
+
+    if dead:
+        for pt in dead:
+            db.delete(pt)
+        db.commit()
+
+    return {"sent": sent, "devices": len(tokens)}
+
+
 # ---------------------------------------------------------------------------
 # Email fallback
 # ---------------------------------------------------------------------------
@@ -235,10 +273,9 @@ def notify_booking_status_change(
     service_name: str,
     client_name: str,
     vendor_name: str,
-    client_fcm_token: Optional[str] = None,
-    vendor_fcm_token: Optional[str] = None,
-    client_email: Optional[str] = None,
-    vendor_email: Optional[str] = None,
+    client_user=None,
+    vendor_user=None,
+    db,
 ) -> dict:
     """Send push notifications to the relevant parties when a booking's
     status changes.
@@ -250,9 +287,12 @@ def notify_booking_status_change(
         payment_confirmed.
     booking_id, event_name, service_name, client_name, vendor_name :
         Human-readable context injected into the message body.
-    client_fcm_token, vendor_fcm_token :
-        Firebase device tokens.  If None/empty the notification for that
-        party is skipped silently.
+    client_user, vendor_user :
+        The User rows. Each is pushed to on all their devices; if none received
+        it (no device, or delivery failed) their email is used as a fallback.
+        A None party is skipped silently.
+    db :
+        Session — needed to look up each party's devices and prune dead tokens.
 
     Returns
     -------
@@ -279,34 +319,36 @@ def notify_booking_status_change(
 
     data_payload = {"booking_id": booking_id, "status": status}
 
-    # --- Notify vendor (push, with email fallback) ---
-    vendor_result: dict = {"success": False, "error": "No vendor FCM token"}
-    if vendor_fcm_token:
-        vendor_result = send_push_notification(
-            fcm_token=vendor_fcm_token,
-            title=_fmt(templates["vendor_title"]),
-            body=_fmt(templates["vendor_body"]),
-            data=data_payload,
+    # --- Notify vendor (push to all devices, with email fallback) ---
+    vendor_result: dict = {"sent": 0, "devices": 0}
+    if vendor_user is not None:
+        vendor_result = send_push_to_user(
+            vendor_user,
+            _fmt(templates["vendor_title"]),
+            _fmt(templates["vendor_body"]),
+            data_payload,
+            db=db,
         )
     vendor_email_result = None
-    if vendor_result.get("success") is not True and vendor_email:
+    if vendor_result.get("sent", 0) == 0 and vendor_user is not None and vendor_user.email:
         vendor_email_result = _send_booking_email(
-            vendor_email, _fmt(templates["vendor_title"]), _fmt(templates["vendor_body"])
+            vendor_user.email, _fmt(templates["vendor_title"]), _fmt(templates["vendor_body"])
         )
 
-    # --- Notify client (push, with email fallback) ---
-    client_result: dict = {"success": False, "error": "No client FCM token"}
-    if client_fcm_token:
-        client_result = send_push_notification(
-            fcm_token=client_fcm_token,
-            title=_fmt(templates["client_title"]),
-            body=_fmt(templates["client_body"]),
-            data=data_payload,
+    # --- Notify client (push to all devices, with email fallback) ---
+    client_result: dict = {"sent": 0, "devices": 0}
+    if client_user is not None:
+        client_result = send_push_to_user(
+            client_user,
+            _fmt(templates["client_title"]),
+            _fmt(templates["client_body"]),
+            data_payload,
+            db=db,
         )
     client_email_result = None
-    if client_result.get("success") is not True and client_email:
+    if client_result.get("sent", 0) == 0 and client_user is not None and client_user.email:
         client_email_result = _send_booking_email(
-            client_email, _fmt(templates["client_title"]), _fmt(templates["client_body"])
+            client_user.email, _fmt(templates["client_title"]), _fmt(templates["client_body"])
         )
 
     return {
@@ -324,11 +366,12 @@ def notify_check_in(
     is_vendor: bool,
     client_name: str,
     vendor_name: str,
-    recipient_fcm_token: Optional[str] = None,
+    recipient_user=None,
+    db,
 ) -> dict:
-    """Notify the *other* party that someone has checked in at the venue."""
-    if not recipient_fcm_token:
-        return {"success": False, "error": "No recipient FCM token"}
+    """Notify the *other* party (on all their devices) that someone checked in."""
+    if recipient_user is None:
+        return {"sent": 0, "devices": 0, "error": "No recipient"}
 
     template_key = "vendor_checkin" if is_vendor else "client_checkin"
     template = CHECKIN_TEMPLATES[template_key]
@@ -344,9 +387,10 @@ def notify_check_in(
             text = text.replace(placeholder, value)
         return text
 
-    return send_push_notification(
-        fcm_token=recipient_fcm_token,
-        title=_fmt(template["title"]),
-        body=_fmt(template["body"]),
-        data={"booking_id": booking_id, "event": template_key},
+    return send_push_to_user(
+        recipient_user,
+        _fmt(template["title"]),
+        _fmt(template["body"]),
+        {"booking_id": booking_id, "event": template_key},
+        db=db,
     )

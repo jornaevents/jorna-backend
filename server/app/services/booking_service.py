@@ -96,9 +96,10 @@ def _dispatch_status_notification(
     client: User | None,
     vendor_user: User | None,
     service: Service | None,
+    db: Session,
     event_name: str = "Event",
 ) -> dict:
-    """Send push notifications for a booking status change."""
+    """Send push notifications for a booking status change (to all devices)."""
     result = notify_booking_status_change(
         status=status,
         booking_id=booking.booking_id,
@@ -106,10 +107,9 @@ def _dispatch_status_notification(
         service_name=service.name if service else "Service",
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
-        client_fcm_token=client.fcm_token if client else None,
-        vendor_fcm_token=vendor_user.fcm_token if vendor_user else None,
-        client_email=client.email if client else None,
-        vendor_email=vendor_user.email if vendor_user else None,
+        client_user=client,
+        vendor_user=vendor_user,
+        db=db,
     )
     logger.info("Booking %s status→%s notification: %s", booking.booking_id, status, result)
     return result
@@ -572,7 +572,7 @@ def create_booking(
     client, vendor_obj, vendor_user, _ = _get_booking_parties(db, booking)
     try:
         notification = _dispatch_status_notification(
-            BookingStatus.PENDING.value, booking, client, vendor_user, service,
+            BookingStatus.PENDING.value, booking, client, vendor_user, service, db,
             event_name=event_name,
         )
     except Exception as exc:
@@ -661,7 +661,7 @@ def update_booking_status(
     _event_name = (_bundle.event_name if _bundle else None) or "Event"
     try:
         notification = _dispatch_status_notification(
-            status_str, booking, client, vendor_user, service, event_name=_event_name,
+            status_str, booking, client, vendor_user, service, db, event_name=_event_name,
         )
     except Exception as exc:
         logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
@@ -869,13 +869,9 @@ def check_in(
 
     db.commit()
 
-    # Notify the other party
+    # Notify the other party (on all their devices)
     client, vendor_obj, vendor_user, _ = _get_booking_parties(db, booking)
-    recipient_token = (
-        client.fcm_token
-        if (is_vendor and client)
-        else (vendor_user.fcm_token if vendor_user else None)
-    )
+    recipient_user = client if is_vendor else vendor_user
     _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     checkin_notification = notify_check_in(
         booking_id=booking.booking_id,
@@ -883,7 +879,8 @@ def check_in(
         is_vendor=is_vendor,
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
         vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
-        recipient_fcm_token=recipient_token,
+        recipient_user=recipient_user,
+        db=db,
     )
     logger.info("Check-in notification for booking %s: %s", booking.booking_id, checkin_notification)
 

@@ -74,15 +74,16 @@ def send_message(
     sender = db.query(User).filter(User.user_id == caller_user_id).first()
 
     receiver = db.query(User).filter(User.user_id == receiver_id).first()
-    if receiver and receiver.fcm_token:
+    if receiver:
         try:
-            from app.utils.notifications import send_push_notification
+            from app.utils.notifications import send_push_to_user
             sender_name = f"{sender.f_name} {sender.l_name}" if sender else "Someone"
-            send_push_notification(
-                fcm_token=receiver.fcm_token,
-                title=f"New message from {sender_name}",
-                body=content.strip()[:100],
-                data={"booking_id": booking_id, "type": "message"},
+            send_push_to_user(
+                receiver,
+                f"New message from {sender_name}",
+                content.strip()[:100],
+                {"booking_id": booking_id, "type": "message"},
+                db=db,
             )
         except Exception:
             pass

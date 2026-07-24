@@ -128,15 +128,16 @@ def create_bundle_conversations(*, bundle_id: str, client_user_id: str, db: Sess
 
     # Notify all vendors that they've been added to group chats
     try:
-        from app.utils.notifications import send_push_notification
+        from app.utils.notifications import send_push_to_user
         for uid in vendor_user_ids:
             user = db.query(User).filter(User.user_id == uid).first()
-            if user and user.fcm_token:
-                send_push_notification(
-                    fcm_token=user.fcm_token,
-                    title="You've been added to a group chat",
-                    body=f"You're now part of group chats for bundle '{bundle.name}'.",
-                    data={"bundle_id": bundle_id, "type": "added_to_conversation"},
+            if user:
+                send_push_to_user(
+                    user,
+                    "You've been added to a group chat",
+                    f"You're now part of group chats for bundle '{bundle.name}'.",
+                    {"bundle_id": bundle_id, "type": "added_to_conversation"},
+                    db=db,
                 )
     except Exception as exc:
         logger.warning("Failed to notify vendors of group chat creation: %s", exc)
@@ -166,15 +167,16 @@ def add_vendor_to_bundle_conversations(*, bundle_id: str, vendor_user_id: str, d
 
     # Notify the vendor they've been added
     try:
-        from app.utils.notifications import send_push_notification
+        from app.utils.notifications import send_push_to_user
         bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
         user = db.query(User).filter(User.user_id == vendor_user_id).first()
-        if user and user.fcm_token and bundle:
-            send_push_notification(
-                fcm_token=user.fcm_token,
-                title="You've been added to a group chat",
-                body=f"You're now part of group chats for bundle '{bundle.name}'.",
-                data={"bundle_id": bundle_id, "type": "added_to_conversation"},
+        if user and bundle:
+            send_push_to_user(
+                user,
+                "You've been added to a group chat",
+                f"You're now part of group chats for bundle '{bundle.name}'.",
+                {"bundle_id": bundle_id, "type": "added_to_conversation"},
+                db=db,
             )
     except Exception as exc:
         logger.warning("Failed to notify vendor of conversation addition: %s", exc)
@@ -300,15 +302,16 @@ def send_group_message(
     sender_name = f"{sender.f_name} {sender.l_name}" if sender else "Someone"
 
     try:
-        from app.utils.notifications import send_push_notification
+        from app.utils.notifications import send_push_to_user
         for member in members:
             user = db.query(User).filter(User.user_id == member.user_id).first()
-            if user and user.fcm_token:
-                send_push_notification(
-                    fcm_token=user.fcm_token,
-                    title=f"New message from {sender_name}",
-                    body=content.strip()[:100],
-                    data={"conversation_id": conversation_id, "type": "group_message"},
+            if user:
+                send_push_to_user(
+                    user,
+                    f"New message from {sender_name}",
+                    content.strip()[:100],
+                    {"conversation_id": conversation_id, "type": "group_message"},
+                    db=db,
                 )
     except Exception as exc:
         logger.warning("Group message notification failed: %s", exc)
