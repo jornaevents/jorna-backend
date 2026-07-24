@@ -19,11 +19,12 @@ Run:
 
 import json
 import os
+import uuid
 import pytest
 from unittest.mock import patch
 
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
-from app.db.models import User, Vendor, Service, Booking
+from app.db.models import User, Vendor, Service, Booking, PushToken
 
 # ---------------------------------------------------------------------------
 # Skip the entire module when credential files are missing
@@ -117,10 +118,24 @@ class TestFirebaseCredentials:
 
     @pytest.mark.skipif(not firebase_available, reason="firebase_credentials.json not found")
     def test_full_notification_dispatch_with_invalid_tokens(self):
-        """notify_booking_status_change with fake tokens: Firebase is live,
-        but the tokens don't correspond to real devices."""
+        """notify_booking_status_change fans out to each party's real device
+        tokens: Firebase is live, but the fake tokens reach no real device."""
         import app.utils.notifications as notif_module
         notif_module._firebase_app = None
+
+        db = TestingSessionLocal()
+        uid = str(uuid.uuid4())[:8]
+        client_u = User(email=f"itd_c_{uid}@test.com", username=f"itd_c_{uid}",
+                        password="pw", phone="1", f_name="Test", l_name="Client",
+                        age=25, location="1", gender="F", language="EN")
+        vendor_u = User(email=f"itd_v_{uid}@test.com", username=f"itd_v_{uid}",
+                        password="pw", phone="1", f_name="Test", l_name="Vendor",
+                        age=30, location="2", gender="M", language="EN")
+        db.add_all([client_u, vendor_u])
+        db.commit(); db.refresh(client_u); db.refresh(vendor_u)
+        db.add(PushToken(user_id=client_u.user_id, token=f"fake_client_{uid}"))
+        db.add(PushToken(user_id=vendor_u.user_id, token=f"fake_vendor_{uid}"))
+        db.commit()
 
         result = notif_module.notify_booking_status_change(
             status="pending",
@@ -128,31 +143,45 @@ class TestFirebaseCredentials:
             service_name="Test DJ",
             client_name="Test Client",
             vendor_name="Test Vendor",
-            client_fcm_token="fake_client_token_abc",
-            vendor_fcm_token="fake_vendor_token_xyz",
+            client_user=client_u,
+            vendor_user=vendor_u,
+            db=db,
         )
+        db.close()
         assert "client_result" in result
         assert "vendor_result" in result
-        # Both should have attempted to send (not skipped)
+        # Each party had a device, so delivery was attempted (not skipped); the
+        # fake tokens just didn't correspond to a real device.
         for key in ("client_result", "vendor_result"):
-            assert result[key]["success"] is False
-            assert result[key]["error"] != "Firebase not configured"
+            assert result[key]["devices"] >= 1
+            assert result[key]["sent"] == 0
 
     @pytest.mark.skipif(not firebase_available, reason="firebase_credentials.json not found")
     def test_checkin_notification_with_invalid_token(self):
-        """notify_check_in with a fake token — proves Firebase is live."""
+        """notify_check_in fans out to the recipient's real device tokens."""
         import app.utils.notifications as notif_module
         notif_module._firebase_app = None
+
+        db = TestingSessionLocal()
+        uid = str(uuid.uuid4())[:8]
+        recipient = User(email=f"itc_{uid}@test.com", username=f"itc_{uid}",
+                         password="pw", phone="1", f_name="Test", l_name="Vendor",
+                         age=30, location="2", gender="M", language="EN")
+        db.add(recipient); db.commit(); db.refresh(recipient)
+        db.add(PushToken(user_id=recipient.user_id, token=f"fake_recipient_{uid}"))
+        db.commit()
 
         result = notif_module.notify_check_in(
             booking_id="integration-checkin",
             is_vendor=True,
             client_name="Test Client",
             vendor_name="Test Vendor",
-            recipient_fcm_token="fake_recipient_token_999",
+            recipient_user=recipient,
+            db=db,
         )
-        assert result["success"] is False
-        assert result["error"] != "Firebase not configured"
+        db.close()
+        assert result["devices"] >= 1
+        assert result["sent"] == 0
 
     @pytest.mark.skipif(not firebase_available, reason="firebase_credentials.json not found")
     def test_booking_creation_endpoint_dispatches_real_firebase(self):
@@ -162,12 +191,11 @@ class TestFirebaseCredentials:
         notif_module._firebase_app = None
 
         db = TestingSessionLocal()
-        # Create user + vendor + service
+        # Create user + vendor + service, each with a (fake) registered device.
         user = User(
             email="integ_client@test.com", username="integ_client",
             password="pw", phone="1", f_name="Integ", l_name="Client",
             age=25, location="123", gender="F", language="EN",
-            fcm_token="fake_integ_client_token",
         )
         db.add(user)
         db.commit()
@@ -177,11 +205,14 @@ class TestFirebaseCredentials:
             email="integ_vendor@test.com", username="integ_vendor",
             password="pw", phone="1", f_name="Integ", l_name="Vendor",
             age=30, location="456", gender="M", language="HI",
-            fcm_token="fake_integ_vendor_token",
         )
         db.add(vendor_user)
         db.commit()
         db.refresh(vendor_user)
+
+        db.add(PushToken(user_id=user.user_id, token="fake_integ_client_token"))
+        db.add(PushToken(user_id=vendor_user.user_id, token="fake_integ_vendor_token"))
+        db.commit()
 
         vendor = Vendor(
             user_id=vendor_user.user_id, bio="Integration DJ",
@@ -222,10 +253,11 @@ class TestFirebaseCredentials:
         assert "notification" in data
 
         notif = data["notification"]
-        # With real Firebase, the errors should NOT be "Firebase not configured"
+        # With real Firebase and a registered (fake) device per party, delivery
+        # was attempted — devices were found and tried, even though none succeeded.
         for key in ("client_result", "vendor_result"):
-            assert notif[key].get("error") != "Firebase not configured", (
-                f"Expected real Firebase attempt, got: {notif[key]}"
+            assert notif[key].get("devices", 0) >= 1, (
+                f"Expected a real Firebase attempt, got: {notif[key]}"
             )
 
 

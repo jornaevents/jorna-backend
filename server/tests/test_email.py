@@ -54,8 +54,17 @@ class TestSendEmail:
 # ─────────────────────────────────────────────────────────────────────
 
 class TestBookingEmailFallback:
+    """Email is the fallback when a party's push reached no device (sent == 0)."""
+
+    @staticmethod
+    def _user(email):
+        from types import SimpleNamespace
+        return SimpleNamespace(user_id="u-" + (email or "none"), email=email)
+
     @patch("app.services.email_service.send_email")
-    def test_email_sent_when_no_fcm_token(self, mock_send):
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_email_sent_when_no_devices(self, mock_push, mock_send):
+        mock_push.return_value = {"sent": 0, "devices": 0}   # no device got it
         mock_send.return_value = {"success": True, "id": "e1"}
         from app.utils.notifications import notify_booking_status_change
 
@@ -65,10 +74,9 @@ class TestBookingEmailFallback:
             service_name="DJ",
             client_name="Priya",
             vendor_name="Raj",
-            client_fcm_token=None,          # no push → email fallback
-            vendor_fcm_token=None,
-            client_email="priya@test.com",
-            vendor_email="raj@test.com",
+            client_user=self._user("priya@test.com"),
+            vendor_user=self._user("raj@test.com"),
+            db=None,
         )
 
         assert mock_send.call_count == 2
@@ -78,11 +86,10 @@ class TestBookingEmailFallback:
         subjects = [c.kwargs["subject"] for c in mock_send.call_args_list]
         assert any("Approved" in s for s in subjects)
 
-    @patch("app.utils.notifications._ensure_firebase", return_value=True)
-    @patch("app.utils.notifications.send_push_notification")
     @patch("app.services.email_service.send_email")
-    def test_no_email_when_push_succeeds(self, mock_send, mock_push, _fb):
-        mock_push.return_value = {"success": True, "message_id": "m1"}
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_no_email_when_push_succeeds(self, mock_push, mock_send):
+        mock_push.return_value = {"sent": 1, "devices": 1}   # a device got it
         from app.utils.notifications import notify_booking_status_change
 
         notify_booking_status_change(
@@ -91,16 +98,17 @@ class TestBookingEmailFallback:
             service_name="Photo",
             client_name="A",
             vendor_name="B",
-            client_fcm_token="tok_c",
-            vendor_fcm_token="tok_v",
-            client_email="a@test.com",
-            vendor_email="b@test.com",
+            client_user=self._user("a@test.com"),
+            vendor_user=self._user("b@test.com"),
+            db=None,
         )
-        # Push succeeded for both → no email fallback
+        # Push reached a device for both → no email fallback
         mock_send.assert_not_called()
 
     @patch("app.services.email_service.send_email")
-    def test_no_email_without_address(self, mock_send):
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_no_email_without_address(self, mock_push, mock_send):
+        mock_push.return_value = {"sent": 0, "devices": 0}
         from app.utils.notifications import notify_booking_status_change
         result = notify_booking_status_change(
             status="rejected",
@@ -108,8 +116,9 @@ class TestBookingEmailFallback:
             service_name="Cake",
             client_name="A",
             vendor_name="B",
-            client_fcm_token=None,
-            vendor_fcm_token=None,
+            client_user=self._user(None),
+            vendor_user=self._user(None),
+            db=None,
         )
         mock_send.assert_not_called()
         assert result["client_email_result"] is None

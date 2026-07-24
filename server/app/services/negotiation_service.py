@@ -72,12 +72,12 @@ def _negotiation_dict(neg: Negotiation, offers: list[NegotiationOffer], db: Sess
 
 
 def _notify(receiver_id: str, title: str, body: str, data: dict, db: Session) -> None:
-    """Fire a push notification to the other party — best effort."""
+    """Fire a push notification to the other party (all devices) — best effort."""
     try:
         receiver = db.query(User).filter(User.user_id == receiver_id).first()
-        if receiver and receiver.fcm_token:
-            from app.utils.notifications import send_push_notification
-            send_push_notification(fcm_token=receiver.fcm_token, title=title, body=body, data=data)
+        if receiver:
+            from app.utils.notifications import send_push_to_user
+            send_push_to_user(receiver, title, body, data, db=db)
     except Exception as exc:
         logger.warning("Negotiation notification failed: %s", exc)
 

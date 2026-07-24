@@ -1,16 +1,19 @@
 """
 Tests for the notification system:
- - FCM token registration / removal / status endpoints
- - Notification wrapper functions (mocked Firebase)
+ - Push token registration / removal / status endpoints (push_tokens table)
+ - send_push_to_user fan-out + dead-token pruning
+ - Notification wrapper functions (mocked)
  - Integration: booking creation and status updates trigger notifications
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from app.db.models import Booking, User, Service, Vendor
-from app.models.schemas import BookingStatus
-from tests.test_api import TestingSessionLocal, client, make_auth_headers
 import uuid
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from app.db.models import Booking, PushToken, User, Service, Vendor
+from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -27,7 +30,7 @@ def seeded_db():
         username=f"notif_client_{uid}",
         password="pw", phone="1", f_name="Priya", l_name="Patel",
         age=25, location="123", gender="F", language="EN",
-        fcm_token="fake_client_fcm_token_123", token_version=0,
+        token_version=0,
     )
     db.add(user)
     db.commit()
@@ -38,7 +41,7 @@ def seeded_db():
         username=f"notif_vendor_{uid}",
         password="pw", phone="1", f_name="Raj", l_name="Kumar",
         age=30, location="456", gender="M", language="HI",
-        fcm_token="fake_vendor_fcm_token_456", token_version=0,
+        token_version=0,
     )
     db.add(vendor_user)
     db.commit()
@@ -67,11 +70,16 @@ def seeded_db():
     db.close()
 
 
+def _add_token(db, user, token, platform="ios"):
+    db.add(PushToken(user_id=user.user_id, token=token, platform=platform))
+    db.commit()
+
+
 # ─────────────────────────────────────────────────────────────────────
-# 1. FCM Token Registration Endpoints
+# 1. Push-token registration endpoints (push_tokens table)
 # ─────────────────────────────────────────────────────────────────────
 
-class TestFCMTokenEndpoints:
+class TestPushTokenEndpoints:
 
     def test_register_token(self, seeded_db):
         user = seeded_db["user"]
@@ -79,17 +87,31 @@ class TestFCMTokenEndpoints:
 
         response = client.post(
             "/notifications/register-token",
-            json={"fcm_token": "new_device_token_xyz"},
+            json={"fcm_token": "new_device_token_xyz", "platform": "web"},
             headers=headers,
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["message"] == "FCM token registered successfully"
+        assert data["message"] == "Push token registered successfully"
         assert data["user_id"] == user.user_id
 
         db = seeded_db["db"]
-        db.refresh(user)
-        assert user.fcm_token == "new_device_token_xyz"
+        row = db.query(PushToken).filter(PushToken.token == "new_device_token_xyz").first()
+        assert row is not None
+        assert row.user_id == user.user_id
+        assert row.platform == "web"
+
+    def test_register_token_defaults_to_ios(self, seeded_db):
+        user = seeded_db["user"]
+        headers = make_auth_headers(user)
+        client.post(
+            "/notifications/register-token",
+            json={"fcm_token": f"tok_default_{user.user_id}"},
+            headers=headers,
+        )
+        db = seeded_db["db"]
+        row = db.query(PushToken).filter(PushToken.token == f"tok_default_{user.user_id}").first()
+        assert row is not None and row.platform == "ios"
 
     def test_register_token_requires_auth(self):
         response = client.post(
@@ -99,19 +121,33 @@ class TestFCMTokenEndpoints:
         assert response.status_code in (401, 403)
 
     def test_remove_token(self, seeded_db):
-        user = seeded_db["user"]
-        headers = make_auth_headers(user)
+        user, db = seeded_db["user"], seeded_db["db"]
+        _add_token(db, user, f"tok_remove_{user.user_id}")
 
+        headers = make_auth_headers(user)
         response = client.delete(
             f"/notifications/remove-token/{user.user_id}",
             headers=headers,
         )
         assert response.status_code == 200
-        assert response.json()["message"] == "FCM token removed successfully"
+        assert response.json()["message"] == "Push token(s) removed successfully"
 
-        db = seeded_db["db"]
-        db.refresh(user)
-        assert user.fcm_token is None
+        remaining = db.query(PushToken).filter(PushToken.user_id == user.user_id).count()
+        assert remaining == 0
+
+    def test_remove_single_token_leaves_others(self, seeded_db):
+        user, db = seeded_db["user"], seeded_db["db"]
+        _add_token(db, user, f"tok_a_{user.user_id}")
+        _add_token(db, user, f"tok_b_{user.user_id}", platform="web")
+
+        headers = make_auth_headers(user)
+        response = client.delete(
+            f"/notifications/remove-token/{user.user_id}?token=tok_a_{user.user_id}",
+            headers=headers,
+        )
+        assert response.status_code == 200
+        tokens = {t.token for t in db.query(PushToken).filter(PushToken.user_id == user.user_id).all()}
+        assert tokens == {f"tok_b_{user.user_id}"}
 
     def test_remove_token_forbidden_for_other_user(self, seeded_db):
         user = seeded_db["user"]
@@ -125,11 +161,8 @@ class TestFCMTokenEndpoints:
         assert response.status_code == 403
 
     def test_token_status_has_token(self, seeded_db):
-        user = seeded_db["user"]
-        # Ensure token is set
-        db = seeded_db["db"]
-        user.fcm_token = "fake_client_fcm_token_123"
-        db.commit()
+        user, db = seeded_db["user"], seeded_db["db"]
+        _add_token(db, user, f"tok_status_{user.user_id}")
 
         headers = make_auth_headers(user)
         response = client.get(
@@ -142,11 +175,7 @@ class TestFCMTokenEndpoints:
         assert data["has_token"] is True
 
     def test_token_status_no_token(self, seeded_db):
-        user = seeded_db["user"]
-        db = seeded_db["db"]
-        user.fcm_token = None
-        db.commit()
-
+        user = seeded_db["user"]  # freshly created, no tokens
         headers = make_auth_headers(user)
         response = client.get(
             f"/notifications/token-status/{user.user_id}",
@@ -168,40 +197,52 @@ class TestFCMTokenEndpoints:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 2. Notification Utility Functions (Unit Tests with Mocks)
+# 2. send_push_to_user — fan-out across devices + prune dead tokens
 # ─────────────────────────────────────────────────────────────────────
 
+class TestSendPushToUser:
+
+    @patch("app.utils.notifications.send_push_notification")
+    def test_fans_out_and_prunes_unregistered(self, mock_send, seeded_db):
+        user, db = seeded_db["user"], seeded_db["db"]
+        _add_token(db, user, f"live_{user.user_id}")
+        _add_token(db, user, f"dead_{user.user_id}", platform="web")
+
+        def _result(token, *_a, **_k):
+            if token.startswith("dead_"):
+                return {"success": False, "error": "Token unregistered"}
+            return {"success": True, "message_id": "m"}
+
+        mock_send.side_effect = _result
+
+        from app.utils.notifications import send_push_to_user
+        summary = send_push_to_user(user, "Hi", "there", {"k": "v"}, db=db)
+
+        assert summary == {"sent": 1, "devices": 2}
+        assert mock_send.call_count == 2
+        # The unregistered token was pruned; the live one remains.
+        remaining = {t.token for t in db.query(PushToken).filter(PushToken.user_id == user.user_id).all()}
+        assert remaining == {f"live_{user.user_id}"}
+
+    def test_no_devices_is_a_noop(self, seeded_db):
+        user, db = seeded_db["user"], seeded_db["db"]
+        from app.utils.notifications import send_push_to_user
+        assert send_push_to_user(user, "t", "b", db=db) == {"sent": 0, "devices": 0}
+
+    def test_none_user_is_a_noop(self, seeded_db):
+        from app.utils.notifications import send_push_to_user
+        assert send_push_to_user(None, "t", "b", db=seeded_db["db"]) == {"sent": 0, "devices": 0}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 3. Notification wrapper functions (mocked dispatch)
+# ─────────────────────────────────────────────────────────────────────
+
+def _fake_user(email="x@test.com"):
+    return SimpleNamespace(user_id=str(uuid.uuid4()), email=email)
+
+
 class TestNotificationUtils:
-
-    def test_notify_booking_status_no_firebase(self):
-        from app.utils.notifications import notify_booking_status_change
-        result = notify_booking_status_change(
-            status="pending",
-            booking_id="test-booking-id",
-            service_name="DJ",
-            client_name="Priya Patel",
-            vendor_name="Raj Kumar",
-            client_fcm_token="token_client",
-            vendor_fcm_token="token_vendor",
-        )
-        assert "client_result" in result
-        assert "vendor_result" in result
-        assert result["client_result"]["success"] is False
-        assert result["vendor_result"]["success"] is False
-
-    def test_notify_booking_no_tokens(self):
-        from app.utils.notifications import notify_booking_status_change
-        result = notify_booking_status_change(
-            status="approved",
-            booking_id="test-id",
-            service_name="Photo",
-            client_name="A",
-            vendor_name="B",
-            client_fcm_token=None,
-            vendor_fcm_token=None,
-        )
-        assert result["client_result"]["error"] == "No client FCM token"
-        assert result["vendor_result"]["error"] == "No vendor FCM token"
 
     def test_notify_booking_unknown_status(self):
         from app.utils.notifications import notify_booking_status_change
@@ -211,110 +252,118 @@ class TestNotificationUtils:
             service_name="S",
             client_name="C",
             vendor_name="V",
+            db=None,  # returns before touching the DB
         )
         assert "No template for status" in result["client_result"]["error"]
         assert "No template for status" in result["vendor_result"]["error"]
 
-    def test_notify_checkin_no_token(self):
-        from app.utils.notifications import notify_check_in
-        result = notify_check_in(
-            booking_id="bid",
-            is_vendor=True,
-            client_name="C",
-            vendor_name="V",
-            recipient_fcm_token=None,
-        )
-        assert result["success"] is False
-        assert result["error"] == "No recipient FCM token"
-
-    @patch("app.utils.notifications._ensure_firebase", return_value=True)
-    @patch("app.utils.notifications.send_push_notification")
-    def test_notify_booking_pending_calls_send(self, mock_send, mock_firebase):
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_notify_booking_no_devices(self, mock_push):
+        mock_push.return_value = {"sent": 0, "devices": 0}
         from app.utils.notifications import notify_booking_status_change
-        mock_send.return_value = {"success": True, "message_id": "msg_123"}
-
         result = notify_booking_status_change(
+            status="approved",
+            booking_id="test-id",
+            service_name="Photo",
+            client_name="A",
+            vendor_name="B",
+            client_user=_fake_user(email=None),
+            vendor_user=_fake_user(email=None),
+            db=None,
+        )
+        assert result["client_result"]["sent"] == 0
+        assert result["vendor_result"]["sent"] == 0
+
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_notify_booking_pending_calls_send(self, mock_push):
+        mock_push.return_value = {"sent": 1, "devices": 1}
+        from app.utils.notifications import notify_booking_status_change
+
+        client_user, vendor_user = _fake_user(), _fake_user()
+        notify_booking_status_change(
             status="pending",
             booking_id="b1",
             service_name="DJ Services",
             client_name="Priya Patel",
             vendor_name="Raj Kumar",
-            client_fcm_token="tok_c",
-            vendor_fcm_token="tok_v",
+            client_user=client_user,
+            vendor_user=vendor_user,
+            db=None,
         )
-        assert mock_send.call_count == 2
+        assert mock_push.call_count == 2
 
-        vendor_call = mock_send.call_args_list[0]
-        assert vendor_call.kwargs["fcm_token"] == "tok_v"
-        assert "New Booking Request" in vendor_call.kwargs["title"]
-        assert "Priya Patel" in vendor_call.kwargs["body"]
-        assert "DJ Services" in vendor_call.kwargs["body"]
+        # notify_ pushes the vendor first, then the client.
+        vendor_call = mock_push.call_args_list[0]
+        assert vendor_call.args[0] is vendor_user
+        assert "New Booking Request" in vendor_call.args[1]
+        assert "Priya Patel" in vendor_call.args[2]
+        assert "DJ Services" in vendor_call.args[2]
 
-        client_call = mock_send.call_args_list[1]
-        assert client_call.kwargs["fcm_token"] == "tok_c"
-        assert "Booking Submitted" in client_call.kwargs["title"]
+        client_call = mock_push.call_args_list[1]
+        assert client_call.args[0] is client_user
+        assert "Booking Submitted" in client_call.args[1]
 
-    @patch("app.utils.notifications._ensure_firebase", return_value=True)
-    @patch("app.utils.notifications.send_push_notification")
-    def test_notify_booking_approved_templates(self, mock_send, mock_firebase):
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_notify_booking_approved_templates(self, mock_push):
+        mock_push.return_value = {"sent": 1, "devices": 1}
         from app.utils.notifications import notify_booking_status_change
-        mock_send.return_value = {"success": True, "message_id": "msg_456"}
-
         notify_booking_status_change(
-            status="approved",
-            booking_id="b2",
-            service_name="Photography",
-            client_name="Alice",
-            vendor_name="Bob",
-            client_fcm_token="c_tok",
-            vendor_fcm_token="v_tok",
+            status="approved", booking_id="b2", service_name="Photography",
+            client_name="Alice", vendor_name="Bob",
+            client_user=_fake_user(), vendor_user=_fake_user(), db=None,
         )
-        client_call = mock_send.call_args_list[1]
-        assert "Booking Approved" in client_call.kwargs["title"]
-        assert "Bob" in client_call.kwargs["body"]
+        client_call = mock_push.call_args_list[1]
+        assert "Booking Approved" in client_call.args[1]
+        assert "Bob" in client_call.args[2]
 
-    @patch("app.utils.notifications._ensure_firebase", return_value=True)
-    @patch("app.utils.notifications.send_push_notification")
-    def test_notify_booking_rejected_templates(self, mock_send, mock_firebase):
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_notify_booking_rejected_templates(self, mock_push):
+        mock_push.return_value = {"sent": 1, "devices": 1}
         from app.utils.notifications import notify_booking_status_change
-        mock_send.return_value = {"success": True, "message_id": "msg_789"}
-
         notify_booking_status_change(
-            status="rejected",
-            booking_id="b3",
-            service_name="Catering",
-            client_name="X",
-            vendor_name="Y",
-            client_fcm_token="c",
-            vendor_fcm_token="v",
+            status="rejected", booking_id="b3", service_name="Catering",
+            client_name="X", vendor_name="Y",
+            client_user=_fake_user(), vendor_user=_fake_user(), db=None,
         )
-        client_call = mock_send.call_args_list[1]
-        assert "Declined" in client_call.kwargs["title"]
+        assert "Declined" in mock_push.call_args_list[1].args[1]
 
-    @patch("app.utils.notifications._ensure_firebase", return_value=True)
-    @patch("app.utils.notifications.send_push_notification")
-    def test_notify_booking_payment_confirmed_templates(self, mock_send, mock_firebase):
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_notify_booking_payment_confirmed_templates(self, mock_push):
+        mock_push.return_value = {"sent": 1, "devices": 1}
         from app.utils.notifications import notify_booking_status_change
-        mock_send.return_value = {"success": True, "message_id": "msg_pay"}
-
         notify_booking_status_change(
-            status="payment_confirmed",
-            booking_id="b4",
-            service_name="Sound System",
-            client_name="P",
-            vendor_name="Q",
-            client_fcm_token="c",
-            vendor_fcm_token="v",
+            status="payment_confirmed", booking_id="b4", service_name="Sound System",
+            client_name="P", vendor_name="Q",
+            client_user=_fake_user(), vendor_user=_fake_user(), db=None,
         )
-        client_call = mock_send.call_args_list[1]
-        assert "Payment Confirmed" in client_call.kwargs["title"]
+        assert "Payment Confirmed" in mock_push.call_args_list[1].args[1]
+        assert "Payment Received" in mock_push.call_args_list[0].args[1]
 
-        vendor_call = mock_send.call_args_list[0]
-        assert "Payment Received" in vendor_call.kwargs["title"]
+    @patch("app.utils.notifications.send_push_to_user")
+    def test_notify_checkin_calls_send(self, mock_push):
+        mock_push.return_value = {"sent": 1, "devices": 1}
+        from app.utils.notifications import notify_check_in
+        recipient = _fake_user()
+        notify_check_in(
+            booking_id="bid", is_vendor=True,
+            client_name="C", vendor_name="V",
+            recipient_user=recipient, db=None,
+        )
+        call = mock_push.call_args_list[0]
+        assert call.args[0] is recipient
+
+    def test_notify_checkin_no_recipient(self):
+        from app.utils.notifications import notify_check_in
+        result = notify_check_in(
+            booking_id="bid", is_vendor=True,
+            client_name="C", vendor_name="V",
+            recipient_user=None, db=None,
+        )
+        assert result["sent"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. Integration: Bookings trigger notifications
+# 4. Integration: bookings trigger notifications
 # ─────────────────────────────────────────────────────────────────────
 
 class TestBookingNotificationIntegration:
@@ -352,7 +401,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id,            time_start="19:00", time_end="23:00", location="Park",
+            service_id=service.service_id, time_start="19:00", time_end="23:00", location="Park",
             date_iso="2026-10-15", status="pending",
         )
         db.add(booking)
@@ -379,7 +428,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id,            time_start="09:00", time_end="11:00", location="Venue",
+            service_id=service.service_id, time_start="09:00", time_end="11:00", location="Venue",
             date_iso="2026-04-01", status="pending",
         )
         db.add(booking)
@@ -405,7 +454,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id,            time_start="10:00", time_end="12:00", location="Hall",
+            service_id=service.service_id, time_start="10:00", time_end="12:00", location="Hall",
             date_iso="2026-06-01",
             venue_latitude=34.05, venue_longitude=-118.24,
             status="approved",

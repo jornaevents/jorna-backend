@@ -583,7 +583,7 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
         for booking in chosen_bookings:
             try:
                 client, _, vendor_user, service = _get_booking_parties(db, booking)
-                _dispatch_status_notification("pending", booking, client, vendor_user, service, event_name=event_name)
+                _dispatch_status_notification("pending", booking, client, vendor_user, service, db, event_name=event_name)
             except Exception as exc:
                 logger.warning("select_bundle notification failed for %s: %s", booking.booking_id, exc)
     except Exception as exc:
