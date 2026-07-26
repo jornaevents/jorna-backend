@@ -18,7 +18,10 @@ class User(Base):
     username = Column(String(255), unique=True, nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     phone = Column(String(50), nullable=True)
-    password = Column(String(255), nullable=False)
+    # NULL = no password has ever been set, i.e. a Google-only account. Readers
+    # must guard on it (see login_user / change_password) rather than assume a
+    # hash is present.
+    password = Column(String(255), nullable=True)
     f_name = Column(String(255), nullable=False)
     l_name = Column(String(255), nullable=False)
     age = Column(Integer, nullable=True)
