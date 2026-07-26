@@ -44,6 +44,7 @@ from app.services.auth_service import (
     logout_user,
     change_password,
     google_sign_in_or_create,
+    google_register,
     complete_profile,
     refresh_access_token,
     request_password_reset,
@@ -466,6 +467,22 @@ def auth_google_lookup(request: Request, body: GoogleLookupRequest, db: Session 
     """After Google OAuth, check if this Supabase identity is linked to a Jorna user; if so, return a FastAPI JWT."""
     try:
         return google_sign_in_or_create(access_token=body.access_token, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/auth/google/register")
+@limiter.limit("5/minute")
+def auth_google_register(request: Request, body: GoogleLookupRequest, db: Session = Depends(get_db)):
+    """Sign in with Google, creating the account on first use — the whole sign-up in one tap.
+
+    Separate from /auth/google/lookup, which still creates nothing: a client that
+    shows a registration form after looking up must keep calling lookup, or it
+    will try to register an address that now exists. Callers of this endpoint skip
+    the form entirely.
+    """
+    try:
+        return google_register(access_token=body.access_token, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

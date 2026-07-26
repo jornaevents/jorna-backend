@@ -28,6 +28,10 @@ def _user_dict(user: User) -> dict:
         "gender": user.gender,
         "language": user.language,
         "pfp_url": user.pfp_url,
+        # False for a Google-only account (users.password is NULL), so account
+        # settings can offer "set a password" instead of asking for a current one
+        # that does not exist. Never the hash itself.
+        "has_password": user.password is not None,
         "open_to_price_negotiation": user.open_to_price_negotiation,
         "flexible_on_location": user.flexible_on_location,
     }

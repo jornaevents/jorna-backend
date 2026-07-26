@@ -238,6 +238,69 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     }
 
 
+def google_register(*, access_token: str, db: Session) -> dict:
+    """Sign in with Google, creating the account on first use. Returns a JWT pair.
+
+    This is what lets "Continue with Google" be the whole sign-up: everything a
+    Jorna account strictly needs is either in the token (email, name, avatar) or
+    derivable (a unique username from the email prefix). ``age``, ``location``,
+    ``gender`` and ``language`` are nullable and get filled in later via
+    ``complete_profile``; ``password`` is NULL, meaning Google-only.
+
+    Deliberately separate from ``google_sign_in_or_create``, which still creates
+    nothing. Auto-creating inside that lookup is what broke sign-up in April
+    (69faa5c): clients that post a registration form *after* looking up then hit
+    "email already taken". iOS still works that way, so lookup must stay pure and
+    only callers that skip the form call this.
+
+    Idempotent — a repeated call (double tap, retry after a dropped response)
+    returns a session for the account it already made instead of failing.
+    """
+    existing = google_sign_in_or_create(access_token=access_token, db=db)
+    if not existing.get("is_new_user"):
+        return existing
+
+    claims = _decode_supabase_access_token(access_token)
+    sub = (claims.get("sub") or "").lower()
+    email = (claims.get("email") or "").lower()
+    if not sub:
+        raise AuthError(401, "Invalid token: missing sub")
+    if not email:
+        raise AuthError(400, "Google account has no email address")
+
+    meta = claims.get("user_metadata") or {}
+    # Google sends one display name; f_name/l_name are NOT NULL, so split on the
+    # first space and fall back to the email prefix when there's no name at all.
+    full_name = (meta.get("full_name") or meta.get("name") or "").strip()
+    first, _, last = full_name.partition(" ")
+    f_name = first or email.split("@")[0]
+    l_name = last.strip() or "-"
+
+    user = User(
+        email=email,
+        username=_unique_username_from_email(email, db),
+        password=None,  # Google-only: no password has ever been set
+        f_name=f_name[:255],
+        l_name=l_name[:255],
+        supabase_user_id=sub,
+        pfp_url=meta.get("avatar_url") or meta.get("picture") or None,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    access = _make_token(user.user_id, user.email, user.token_version)
+    refresh = _make_refresh_token(user.user_id, db)
+    db.commit()
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "user_id": user.user_id,
+        "email": user.email,
+        "is_new_user": True,
+    }
+
 
 def register_user(
     *,
@@ -323,6 +386,14 @@ def change_password(*, user_id: str, current_password: str, new_password: str, d
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise AuthError(404, "User not found")
+    # A Google-only account has no current password to verify against, so this is
+    # the wrong door: point at the reset flow, which sets one from scratch.
+    if not user.password:
+        raise AuthError(
+            400,
+            "This account signs in with Google and has no password yet. "
+            "Use the password reset to set one.",
+        )
     if not bcrypt.checkpw(current_password.encode(), user.password.encode()):
         raise AuthError(401, "Current password is incorrect")
     user.password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
@@ -487,8 +558,13 @@ def login_user(*, identifier: str, password: str, db: Session) -> dict:
         user = db.query(User).filter(User.email == identifier.lower()).first()
     else:
         user = db.query(User).filter(User.username == identifier).first()
-    if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
-        raise AuthError(401, "Invalid credentials")
+    # `user.password` is NULL for Google-only accounts — check before calling
+    # .encode() on it, or a password attempt against one 500s instead of 401ing.
+    # The message stays generic for every failure (unknown address, wrong
+    # password, Google-only account) so it can't be used to test whether an
+    # email is registered; the Google hint is safe because everyone sees it.
+    if not user or not user.password or not bcrypt.checkpw(password.encode(), user.password.encode()):
+        raise AuthError(401, "Invalid credentials. If you signed up with Google, use Continue with Google.")
 
     access = _make_token(user.user_id, user.email, user.token_version)
     refresh = _make_refresh_token(user.user_id, db)
