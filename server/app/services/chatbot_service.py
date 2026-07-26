@@ -329,12 +329,13 @@ def _candidate_service_rows(
 
     Filters by the slot's Service.category (and Service.subcategory when the slot
     specifies one, e.g. dj vs dhol). Applies, in order: the one-vendor-per-bundle
-    dedup (skip vendors already used in this bundle), travel radius, already-booked
-    vendors, and the per-category budget cap (kept only if some service survives).
+    dedup (skip vendors already used in this bundle), distance (a venue by where
+    it stands, everyone else by their travel radius), already-booked vendors, and
+    the per-category budget cap (kept only if some service survives).
     Returns [] when nothing qualifies so the caller can fall back to a mock item.
     """
     from app.db.models import Vendor, Service, User
-    from app.utils.location import calculate_distance_miles
+    from app.utils.location import VENUE_MAX_DISTANCE_MILES, calculate_distance_miles
 
     flt = _slot_db_filter(cat)
     if not flt:
@@ -360,14 +361,38 @@ def _candidate_service_rows(
     if used_vendor_ids:
         rows = [(s, v, u) for s, v, u in rows if v.vendor_id not in used_vendor_ids]
 
-    # Travel radius (only when the event has coordinates)
+    # Distance (only when the event has coordinates). A venue and a traveling
+    # vendor are different questions, and answering them the same way is what
+    # let venues in the wrong city into a bundle:
+    #
+    #   - A traveling vendor comes to the event, so the test is how far the
+    #     event is from where *they* are based, against their own radius —
+    #     and open_to_long_distance waives it, because they said it would.
+    #   - A venue cannot travel; it is the location. So it qualifies only on
+    #     where the building actually stands (Service.venue_*, required of
+    #     every venue service). The owner's home address is irrelevant — they
+    #     may live nowhere near it — and open_to_long_distance must NOT waive
+    #     this, or a building "travels" across the country.
     if state.latitude is not None and state.longitude is not None:
-        rows = [
-            (s, v, u) for s, v, u in rows
-            if u.latitude is None or u.longitude is None
-            or v.open_to_long_distance
-            or calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
-        ]
+        if db_category == "venue":
+            rows = [
+                (s, v, u) for s, v, u in rows
+                # No coordinates means the distance is unknowable, and an
+                # unknown-distance venue is exactly what this filter exists to
+                # exclude. Venue services created through the API always carry
+                # them (service_service._require_venue_location).
+                if s.venue_latitude is not None and s.venue_longitude is not None
+                and calculate_distance_miles(
+                    state.latitude, state.longitude, s.venue_latitude, s.venue_longitude
+                ) <= VENUE_MAX_DISTANCE_MILES
+            ]
+        else:
+            rows = [
+                (s, v, u) for s, v, u in rows
+                if u.latitude is None or u.longitude is None
+                or v.open_to_long_distance
+                or calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
+            ]
 
     # Drop vendors already booked on the event date
     if booked_vendor_ids:

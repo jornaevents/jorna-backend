@@ -1,5 +1,13 @@
 import math
 
+# How far a venue may sit from the event's location and still be offered.
+# A venue is not a vendor who travels to you — it *is* where the event happens —
+# so the vendor's own travel_radius_miles says nothing about it. This is the
+# client's willingness to drive, which is a property of the event, not the
+# supplier. Lives here so search and the bundle builder can't drift apart.
+VENUE_MAX_DISTANCE_MILES = 50
+
+
 def calculate_distance_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     Calculate the great-circle distance between two geographic coordinates

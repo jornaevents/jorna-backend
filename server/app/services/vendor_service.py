@@ -220,13 +220,17 @@ def search_vendors(
     db: Session,
 ) -> dict:
     """Search vendors offering a service. When coordinates are given, results are
-    filtered to each vendor's travel radius and can sort by distance. When they
-    aren't (e.g. the swap picker only knows the event's state), the location
-    filter falls back to a `state` match and distance is omitted. `category`
+    filtered by distance and can sort by it — a traveling vendor against their own
+    travel radius from where they're based, a venue against where the building
+    actually stands. When they aren't (e.g. the swap picker only knows the event's
+    state), the location filter falls back to a `state` match against the vendor's
+    own location — coarse, and see the note there — and distance is omitted. `category`
     matches a vendor's category OR subcategory, so simplified keys like "dj" work
     alongside canonical ones like "music_entertainment".
     """
     from sqlalchemy import or_
+
+    from app.utils.location import VENUE_MAX_DISTANCE_MILES
 
     query = (
         db.query(Vendor, Service, User)
@@ -242,6 +246,15 @@ def search_vendors(
         # DJ services only, not every music_entertainment service (dhol included).
         query = query.filter(Service.subcategory == subcategory)
     # No coords → filter by the event's state string instead (best-effort).
+    #
+    # KNOWN GAP: for a venue this asks the wrong question — it matches the
+    # owner's home state, and they may live nowhere near the building. Matching
+    # Service.location instead was tried and reverted: it's a free-text street
+    # address, so a two-letter code substring-matches inside ordinary words
+    # ("MA" in "1 Market St"), trading a wrong-state venue for a wrong-state
+    # match. Fixing it properly needs a structured state on the service rather
+    # than a heuristic over an address. The coordinate path below is exact and
+    # is what the app uses whenever a city is picked rather than free-typed.
     if state and state.strip() and state.strip().upper() != "TBD":
         query = query.filter(User.location.ilike(f"%{state.strip()}%"))
     if tag:
@@ -265,14 +278,30 @@ def search_vendors(
     for vendor, service, user in results:
         distance_miles: float | None = None
         if have_coords:
-            # Can't place a vendor with no coords relative to the event.
-            if user.latitude is None or user.longitude is None:
-                continue
-            distance_miles = calculate_distance_miles(
-                latitude, longitude, user.latitude, user.longitude
-            )
-            if not (vendor.open_to_long_distance or distance_miles <= vendor.travel_radius_miles):
-                continue
+            if service.category == "venue":
+                # A venue is where the event happens, so it qualifies on where
+                # the building stands — never on its owner's address or their
+                # travel radius, and open_to_long_distance cannot waive it (a
+                # building does not travel). Same rule as the bundle builder.
+                # No coordinates means an unknowable distance, which is exactly
+                # what this excludes; venue services created through the API
+                # always carry them.
+                if service.venue_latitude is None or service.venue_longitude is None:
+                    continue
+                distance_miles = calculate_distance_miles(
+                    latitude, longitude, service.venue_latitude, service.venue_longitude
+                )
+                if distance_miles > VENUE_MAX_DISTANCE_MILES:
+                    continue
+            else:
+                # Can't place a vendor with no coords relative to the event.
+                if user.latitude is None or user.longitude is None:
+                    continue
+                distance_miles = calculate_distance_miles(
+                    latitude, longitude, user.latitude, user.longitude
+                )
+                if not (vendor.open_to_long_distance or distance_miles <= vendor.travel_radius_miles):
+                    continue
         nearby_vendors.append(
             {
                 "vendor_id": vendor.vendor_id,
