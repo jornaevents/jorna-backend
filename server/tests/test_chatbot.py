@@ -952,3 +952,154 @@ class TestChatbotEndpoints:
         data = response.json()
         assert "llm_response" in data
         assert data["llm_response"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# VENUE DISTANCE
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestVenueDistance:
+    """A venue is where the event happens, so it qualifies on where the building
+    stands — not on its owner's home address or their travel radius.
+
+    The regression these cover: the slot filter used to judge every category by
+    the vendor's User coords + travel_radius_miles, so a venue three states away
+    was offered whenever its owner happened to live near the event (or had
+    open_to_long_distance set, which waived the check entirely).
+    """
+
+    # Event anchor and two venues: one across town, one ~250 miles away. Both
+    # owned by vendors living right next to the event, so the *old* filter kept
+    # both — that's what makes this a regression test rather than a tautology.
+    EVENT_LAT, EVENT_LNG = 40.7128, -74.0060      # New York, NY
+    NEAR_LAT, NEAR_LNG = 40.7357, -74.1724        # Newark, NJ — ~10 mi
+    FAR_LAT, FAR_LNG = 42.3601, -71.0589          # Boston, MA — ~190 mi
+
+    @pytest.fixture
+    def venues(self, db):
+        """Two venue services, near and far, owned by locally-based vendors."""
+        import uuid
+        from app.db.models import User, Vendor, Service
+
+        made = []
+        for tag, vlat, vlng, long_distance in [
+            ("near", self.NEAR_LAT, self.NEAR_LNG, False),
+            ("far", self.FAR_LAT, self.FAR_LNG, True),
+        ]:
+            uid = uuid.uuid4().hex[:8]
+            u = User(
+                email=f"venuedist_{tag}_{uid}@test.com",
+                username=f"venuedist_{tag}_{uid}",
+                password="pw", phone="1", f_name="Venue", l_name=tag,
+                age=30, location="NY", gender="F", language="EN", token_version=0,
+                # Owner sits next to the event either way, so only the venue's
+                # own coordinates can tell the two apart.
+                latitude=self.EVENT_LAT, longitude=self.EVENT_LNG,
+            )
+            db.add(u); db.commit(); db.refresh(u)
+            v = Vendor(
+                user_id=u.user_id, bio=f"venue {tag}", category="venue",
+                subcategory=None, rating=4.8, num_events=10,
+                travel_radius_miles=30, open_to_long_distance=long_distance,
+            )
+            db.add(v); db.commit(); db.refresh(v)
+            s = Service(
+                name=f"venuedist-{tag}-{uid}", price=1000.0, vendor_id=v.vendor_id,
+                experience="exp", category="venue", subcategory=None,
+                negotiable=False, location=f"{tag} hall",
+                venue_latitude=vlat, venue_longitude=vlng,
+            )
+            db.add(s); db.commit(); db.refresh(s)
+            made.append(s)
+
+        yield made
+
+        for s in made:
+            db.delete(s)
+        db.commit()
+
+    def _venue_names(self, db, state):
+        from app.services.chatbot_service import _candidate_service_rows
+        rows = _candidate_service_rows(
+            "venue", state, db,
+            booked_vendor_ids=set(), price_cap=float("inf"), used_vendor_ids=set(),
+        )
+        return {s.name for s, _v, _u in rows}
+
+    def test_far_venue_is_excluded(self, db, venues):
+        near, far = venues
+        state = ChatbotState(latitude=self.EVENT_LAT, longitude=self.EVENT_LNG)
+        names = self._venue_names(db, state)
+        assert near.name in names
+        # Excluded despite open_to_long_distance — a building does not travel.
+        assert far.name not in names
+
+    def test_no_event_coords_filters_nothing(self, db, venues):
+        """A free-typed city gives no coordinates, so there is nothing to measure
+        against — the filter stays out of the way rather than emptying the slot."""
+        near, far = venues
+        names = self._venue_names(db, ChatbotState())
+        assert {near.name, far.name} <= names
+
+    def test_venue_without_coordinates_is_excluded(self, db):
+        """Unknown distance is exactly what this filter exists to exclude."""
+        import uuid
+        from app.db.models import User, Vendor, Service
+
+        uid = uuid.uuid4().hex[:8]
+        u = User(
+            email=f"venuedist_nocoord_{uid}@test.com",
+            username=f"venuedist_nocoord_{uid}",
+            password="pw", phone="1", f_name="Venue", l_name="nocoord",
+            age=30, location="NY", gender="F", language="EN", token_version=0,
+            latitude=self.EVENT_LAT, longitude=self.EVENT_LNG,
+        )
+        db.add(u); db.commit(); db.refresh(u)
+        v = Vendor(user_id=u.user_id, bio="venue nocoord", category="venue",
+                   subcategory=None, rating=4.8, num_events=10)
+        db.add(v); db.commit(); db.refresh(v)
+        s = Service(name=f"venuedist-nocoord-{uid}", price=1000.0,
+                    vendor_id=v.vendor_id, experience="exp", category="venue",
+                    subcategory=None, negotiable=False)
+        db.add(s); db.commit(); db.refresh(s)
+
+        try:
+            state = ChatbotState(latitude=self.EVENT_LAT, longitude=self.EVENT_LNG)
+            assert s.name not in self._venue_names(db, state)
+        finally:
+            db.delete(s); db.commit()
+
+    def test_traveling_vendor_still_uses_travel_radius(self, db):
+        """The non-venue path is untouched: a DJ based far away but open to long
+        distance is still offered, which is the rule a venue must not inherit."""
+        import uuid
+        from app.db.models import User, Vendor, Service
+
+        uid = uuid.uuid4().hex[:8]
+        u = User(
+            email=f"djdist_{uid}@test.com", username=f"djdist_{uid}",
+            password="pw", phone="1", f_name="DJ", l_name="far",
+            age=30, location="MA", gender="F", language="EN", token_version=0,
+            latitude=self.FAR_LAT, longitude=self.FAR_LNG,
+        )
+        db.add(u); db.commit(); db.refresh(u)
+        v = Vendor(user_id=u.user_id, bio="dj far", category="music_entertainment",
+                   subcategory="dj", rating=4.8, num_events=10,
+                   travel_radius_miles=30, open_to_long_distance=True)
+        db.add(v); db.commit(); db.refresh(v)
+        s = Service(name=f"djdist-{uid}", price=1000.0, vendor_id=v.vendor_id,
+                    experience="exp", category="music_entertainment",
+                    subcategory="dj", negotiable=False)
+        db.add(s); db.commit(); db.refresh(s)
+
+        try:
+            from app.services.chatbot_service import _candidate_service_rows
+            state = ChatbotState(latitude=self.EVENT_LAT, longitude=self.EVENT_LNG)
+            rows = _candidate_service_rows(
+                "dj", state, db,
+                booked_vendor_ids=set(), price_cap=float("inf"), used_vendor_ids=set(),
+            )
+            assert s.name in {r[0].name for r in rows}
+        finally:
+            db.delete(s); db.commit()
