@@ -39,13 +39,6 @@ logger = logging.getLogger(__name__)
 
 MAX_HISTORY = 6  # keep conversation_history compact
 
-# How far a venue may sit from the event's location and still be offered.
-# A venue is not a vendor who travels to you — it *is* where the event happens —
-# so the vendor's own travel_radius_miles says nothing about it. This is the
-# client's willingness to drive, which is a property of the event, not the
-# supplier. One number, deliberately: tune it here.
-VENUE_MAX_DISTANCE_MILES = 50
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -342,7 +335,7 @@ def _candidate_service_rows(
     Returns [] when nothing qualifies so the caller can fall back to a mock item.
     """
     from app.db.models import Vendor, Service, User
-    from app.utils.location import calculate_distance_miles
+    from app.utils.location import VENUE_MAX_DISTANCE_MILES, calculate_distance_miles
 
     flt = _slot_db_filter(cat)
     if not flt:
