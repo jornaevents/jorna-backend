@@ -203,3 +203,125 @@ def test_check_in_unauthorized_user():
     )
     # get_current_user returns 401 (user not in DB), or 403 if booking unauthorized
     assert response.status_code in (401, 403)
+
+
+# ── Who may link a calendar, and where the flow lands ──────────────────
+
+
+def _vendor_with_owner(email: str):
+    """A fresh vendor and auth headers for the account behind it."""
+    from tests.test_api import make_auth_headers_from_parts
+
+    db = TestingSessionLocal()
+    user = User(
+        email=email, username=email.split("@")[0], password="pw",
+        phone="1", f_name="A", l_name="B", age=30, location="123",
+        gender="M", language="EN", token_version=0,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    vendor = Vendor(user_id=user.user_id, bio="bio", rating=5.0, num_events=1)
+    db.add(vendor)
+    db.commit()
+    db.refresh(vendor)
+    vendor_id, user_id, user_email = vendor.vendor_id, user.user_id, user.email
+    db.close()
+    return vendor_id, make_auth_headers_from_parts(user_id, user_email, 0)
+
+
+def test_google_auth_requires_a_signed_in_caller():
+    """Anonymous callers can't start a link — the URL they'd get is a valid,
+    signed authorization for somebody else's vendor row."""
+    vendor_id, _ = _vendor_with_owner("cal_owner1@test.com")
+    assert client.get(f"/vendors/{vendor_id}/google-auth").status_code in (401, 403)
+
+
+def test_google_auth_refuses_another_vendor():
+    """Signed in is not enough: completing the flow writes tokens onto the
+    vendor named in the state, so it must be the caller's own."""
+    victim_id, _ = _vendor_with_owner("cal_victim@test.com")
+    _, attacker_headers = _vendor_with_owner("cal_attacker@test.com")
+    r = client.get(f"/vendors/{victim_id}/google-auth", headers=attacker_headers)
+    assert r.status_code == 403
+
+
+def test_calendar_status_is_not_public():
+    """Which accounts a vendor has linked isn't a browsing client's business."""
+    vendor_id, headers = _vendor_with_owner("cal_status@test.com")
+    assert client.get(f"/vendors/{vendor_id}/calendar-status").status_code in (401, 403)
+
+    _, other = _vendor_with_owner("cal_status_other@test.com")
+    assert client.get(f"/vendors/{vendor_id}/calendar-status", headers=other).status_code == 403
+
+    ok = client.get(f"/vendors/{vendor_id}/calendar-status", headers=headers)
+    assert ok.status_code == 200
+    assert ok.json() == {"google_calendar_connected": False}
+
+
+def test_callback_returns_a_browser_to_the_web_app(mocker):
+    """A browser has no app to bounce into, so client=web lands in the web app."""
+    from app.config import WEB_APP_URL
+
+    vendor_id, _ = _vendor_with_owner("cal_web@test.com")
+    flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
+    flow.return_value.credentials.token = "tok"
+    flow.return_value.credentials.refresh_token = "refresh"
+
+    state = _encode_state(vendor_id, "test-code-verifier", "web")
+    r = client.get(
+        f"/vendors/auth/callback?state={state}&code=abc", follow_redirects=False
+    )
+    assert r.status_code in (302, 307)
+    location = r.headers["location"]
+    assert location.startswith(f"{WEB_APP_URL}/calendar-connected/")
+    assert "success=true" in location
+
+
+def test_callback_still_returns_ios_to_the_bridge_page(mocker):
+    """The app's route is unchanged, including for states issued before the
+    client was recorded at all."""
+    from app.config import FRONTEND_URL
+
+    vendor_id, _ = _vendor_with_owner("cal_ios@test.com")
+    flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
+    flow.return_value.credentials.token = "tok"
+    flow.return_value.credentials.refresh_token = "refresh"
+
+    for state in (
+        _encode_state(vendor_id, "test-code-verifier", "ios"),
+        _encode_state(vendor_id, "test-code-verifier"),  # no client — an older state
+    ):
+        r = client.get(
+            f"/vendors/auth/callback?state={state}&code=abc", follow_redirects=False
+        )
+        assert r.status_code in (302, 307)
+        assert r.headers["location"].startswith(f"{FRONTEND_URL}/calendar-connected?")
+
+
+def test_a_failed_web_link_comes_back_to_the_web_app(mocker):
+    """The error has to reach the vendor where they are, not on a host they've
+    never heard of."""
+    from app.config import WEB_APP_URL
+
+    vendor_id, _ = _vendor_with_owner("cal_web_fail@test.com")
+    flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
+    flow.return_value.fetch_token.side_effect = Exception("Invalid grant")
+
+    state = _encode_state(vendor_id, "test-code-verifier", "web")
+    r = client.get(
+        f"/vendors/auth/callback?state={state}&code=bad", follow_redirects=False
+    )
+    location = r.headers["location"]
+    assert location.startswith(f"{WEB_APP_URL}/calendar-connected/")
+    assert "success=false" in location
+
+
+def test_an_unreadable_state_still_redirects():
+    """Nothing to read means nothing to route by, so it goes to the default and
+    says what happened rather than throwing a 500 at Google."""
+    r = client.get(
+        "/vendors/auth/callback?state=garbage&code=abc", follow_redirects=False
+    )
+    assert r.status_code in (302, 307)
+    assert "success=false" in r.headers["location"]
