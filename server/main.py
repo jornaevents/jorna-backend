@@ -168,6 +168,7 @@ class LogoutRequest(BaseModel):
 # ── Background tasks ──────────────────────────────────────────────────
 
 _TOKEN_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+_ESCROW_RELEASE_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 
 
 async def _periodic_token_cleanup():
@@ -186,6 +187,27 @@ async def _periodic_token_cleanup():
         except Exception as exc:
             logger.warning("Token cleanup failed: %s", exc)
         await asyncio.sleep(_TOKEN_CLEANUP_INTERVAL_SECONDS)
+
+
+async def _periodic_escrow_release():
+    """Release escrow a client has left unanswered since the event, once a day.
+
+    Same shape as the token sweep: immediately on startup, then every 24h, its
+    own session each pass, failures logged rather than fatal. Daily is the right
+    cadence for a seven-day deadline — a few hours either side of the boundary
+    changes nothing, and the sweep is idempotent because releasing sets the
+    status it filters on.
+    """
+    from app.db.database import SessionLocal
+    from app.services.stripe_service import auto_release_due
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                auto_release_due(db=session)
+        except Exception as exc:
+            logger.warning("Escrow auto-release sweep failed: %s", exc)
+        await asyncio.sleep(_ESCROW_RELEASE_INTERVAL_SECONDS)
 
 
 # ── App setup ─────────────────────────────────────────────────────────
@@ -249,17 +271,22 @@ async def lifespan(app: FastAPI):
                     INITIAL_ADMIN_EMAIL,
                 )
 
-    # Start the daily expired-token sweep.
-    cleanup_task = asyncio.create_task(_periodic_token_cleanup())
+    # Start the daily sweeps.
+    background = [
+        asyncio.create_task(_periodic_token_cleanup()),
+        asyncio.create_task(_periodic_escrow_release()),
+    ]
 
     yield
 
-    # Shutdown: stop the background sweep.
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    # Shutdown: stop them.
+    for task in background:
+        task.cancel()
+    for task in background:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

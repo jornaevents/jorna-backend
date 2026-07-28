@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import stripe
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, FRONTEND_URL, PLATFORM_FEE_PERCENT
@@ -688,6 +689,76 @@ def _release_funds(booking: Booking, db: Session) -> None:
         booking.vendor_id,
         booking.booking_id,
     )
+
+
+# ── Automatic release ─────────────────────────────────────────────────
+
+# How long after the event a vendor waits on a silent client before the money
+# moves anyway.
+AUTO_RELEASE_DAYS = 7
+
+
+def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
+    """Release escrow that a client has left unanswered since the event.
+
+    Release needs both parties to confirm, which means a client who simply
+    stops opening the app holds a vendor's money indefinitely. The vendor did
+    the work, the event has happened, and there was no route to being paid that
+    didn't go through an admin. After a week, silence reads as assent.
+
+    A vendor's own confirmation is still required, and deliberately: it is their
+    statement that they turned up, and their GPS check-in makes it for them.
+    Without it this would pay a vendor who never claimed to have delivered, to a
+    client who merely wasn't looking — a worse failure than the one being fixed,
+    and the only one of the two that can't be undone.
+
+    Anything the client HAS said stops it. A dispute freezes the booking, as
+    raise_dispute has always said it would; a refund has already taken the money
+    back. Both leave payment_status somewhere other than 'paid', which is the
+    only status this touches. An event with no real date never qualifies — 'TBD'
+    sorts above any ISO date, so the comparison excludes it.
+
+    Returns a summary rather than raising: one vendor's missing Stripe account
+    must not stop the rest of the sweep.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=AUTO_RELEASE_DAYS)).date().isoformat()
+
+    # Dates are stored as ISO strings, which compare correctly as text.
+    last_day = func.coalesce(Booking.date_end, Booking.date_iso)
+    due = (
+        db.query(Booking)
+        .filter(
+            Booking.payment_status == "paid",
+            Booking.vendor_confirmed_at.isnot(None),
+            Booking.customer_confirmed_at.is_(None),
+            last_day.isnot(None),
+            last_day <= cutoff,
+        )
+        .all()
+    )
+
+    released, failed = [], []
+    for booking in due:
+        try:
+            # customer_confirmed_at is deliberately left null. The client didn't
+            # confirm, and writing a timestamp saying they did would put a
+            # falsehood in the record every support question later reads. A
+            # released booking with no customer confirmation is an auto-release,
+            # legibly.
+            _release_funds(booking, db)
+            released.append(booking.booking_id)
+        except Exception as exc:
+            db.rollback()
+            failed.append(booking.booking_id)
+            logger.warning("Auto-release failed for booking %s: %s", booking.booking_id, exc)
+
+    if released or failed:
+        logger.info(
+            "Auto-release sweep: %d released, %d failed (cutoff %s)",
+            len(released), len(failed), cutoff,
+        )
+    return {"released": released, "failed": failed, "cutoff": cutoff}
 
 
 # ── Refund ────────────────────────────────────────────────────────────
