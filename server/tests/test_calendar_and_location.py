@@ -170,7 +170,10 @@ def test_check_in_no_coordinates():
         headers=headers,
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "This event has no venue set yet — check-in becomes available once a venue is booked."
+    # A booked venue is no longer the only way to have a place: an event with a
+    # geocoded address of its own can be checked into too, so the refusal is
+    # about not having either.
+    assert response.json()["detail"] == "This event has no address on it yet — check-in opens once the plan has a place to be."
 
 
 def test_check_in_unauthorized_user():
@@ -325,3 +328,155 @@ def test_an_unreadable_state_still_redirects():
     )
     assert r.status_code in (302, 307)
     assert "success=false" in r.headers["location"]
+
+
+# ── Checking in at an address, with no venue booked through Jorna ──────
+#
+# A wedding in a family hall has a full address and no venue booking. Until the
+# event carried its own pin, nobody in that plan could check in at all, so every
+# vendor's payout waited on a confirmation there was no way to give.
+
+
+def _plan_at(address_pin, *, venue_service_pin=None):
+    """A bundle, its event, and a booking — with or without a venue service."""
+    import uuid
+    from app.db.models import Bundle, Event
+    from datetime import datetime, timezone
+    from tests.test_api import make_auth_headers_from_parts
+
+    db = TestingSessionLocal()
+    uid = str(uuid.uuid4())[:8]
+    now = datetime.now(timezone.utc)
+
+    client_user = User(
+        email=f"pin_c_{uid}@test.com", username=f"pin_c_{uid}", password="pw",
+        phone="1", f_name="C", l_name="L", age=30, location="x",
+        gender="M", language="EN", token_version=0,
+    )
+    vendor_user = User(
+        email=f"pin_v_{uid}@test.com", username=f"pin_v_{uid}", password="pw",
+        phone="1", f_name="V", l_name="N", age=30, location="x",
+        gender="F", language="EN", token_version=0,
+    )
+    db.add_all([client_user, vendor_user])
+    db.commit()
+    db.refresh(client_user)
+    db.refresh(vendor_user)
+
+    vendor = Vendor(user_id=vendor_user.user_id, bio="b", rating=5.0, num_events=1)
+    db.add(vendor)
+    db.commit()
+    db.refresh(vendor)
+
+    dj = Service(name="DJ", price=500.0, duration_minutes=180,
+                 vendor_id=vendor.vendor_id, experience="5y")
+    db.add(dj)
+    db.commit()
+    db.refresh(dj)
+
+    event = Event(
+        user_id=client_user.user_id, name="Hall Wedding", date_iso="2026-09-05",
+        location="12 Maple Ave, Evanston, IL 60201", event_type="wedding",
+        address_latitude=address_pin[0] if address_pin else None,
+        address_longitude=address_pin[1] if address_pin else None,
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+
+    bundle = Bundle(user_id=client_user.user_id, name="Plan", status="confirmed",
+                    event_id=event.event_id, created_at=now, updated_at=now)
+    db.add(bundle)
+    db.commit()
+    db.refresh(bundle)
+
+    booking = Booking(
+        user_id=client_user.user_id, vendor_id=vendor.vendor_id, service_id=dj.service_id,
+        time_start="18:00", time_end="23:00", location="12 Maple Ave",
+        date_iso="2026-09-05", status="approved", bundle_id=bundle.bundle_id,
+    )
+    db.add(booking)
+
+    if venue_service_pin:
+        venue_service = Service(
+            name="Grand Hall", price=5000.0, duration_minutes=600,
+            vendor_id=vendor.vendor_id, experience="10y", category="venue",
+            location="99 Other St", venue_latitude=venue_service_pin[0],
+            venue_longitude=venue_service_pin[1],
+        )
+        db.add(venue_service)
+        db.commit()
+        db.refresh(venue_service)
+        db.add(Booking(
+            user_id=client_user.user_id, vendor_id=vendor.vendor_id,
+            service_id=venue_service.service_id, time_start="12:00", time_end="23:59",
+            location="99 Other St", date_iso="2026-09-05", status="approved",
+            bundle_id=bundle.bundle_id,
+            venue_latitude=venue_service_pin[0], venue_longitude=venue_service_pin[1],
+        ))
+
+    db.commit()
+    db.refresh(booking)
+    out = {
+        "booking_id": booking.booking_id,
+        "headers": make_auth_headers_from_parts(
+            client_user.user_id, client_user.email, 0
+        ),
+    }
+    db.close()
+    return out
+
+
+def test_check_in_uses_the_events_own_address_when_no_venue_is_booked():
+    plan = _plan_at((42.0451, -87.6877))
+    r = client.post(
+        f"/bookings/{plan['booking_id']}/check-in",
+        json={"latitude": 42.0451, "longitude": -87.6877},
+        headers=plan["headers"],
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_the_address_pin_is_still_a_place_you_have_to_be():
+    """It's a fallback for where, not a way around being there."""
+    plan = _plan_at((42.0451, -87.6877))
+    r = client.post(
+        f"/bookings/{plan['booking_id']}/check-in",
+        json={"latitude": 41.8781, "longitude": -87.6298},  # Chicago, ~12 miles
+        headers=plan["headers"],
+    )
+    assert r.status_code == 400
+    assert "at the venue to check in" in r.json()["detail"]
+
+
+def test_a_booked_venue_still_outranks_the_typed_address():
+    """The venue is the source of truth where there is one — otherwise removing
+    it would stop mattering, which is what the clearing exists to prevent."""
+    plan = _plan_at((42.0451, -87.6877), venue_service_pin=(41.8781, -87.6298))
+
+    # At the typed address, but the plan's venue is elsewhere: refused.
+    at_address = client.post(
+        f"/bookings/{plan['booking_id']}/check-in",
+        json={"latitude": 42.0451, "longitude": -87.6877},
+        headers=plan["headers"],
+    )
+    assert at_address.status_code == 400
+
+    # At the booked venue: fine.
+    at_venue = client.post(
+        f"/bookings/{plan['booking_id']}/check-in",
+        json={"latitude": 41.8781, "longitude": -87.6298},
+        headers=plan["headers"],
+    )
+    assert at_venue.status_code == 200, at_venue.text
+
+
+def test_no_venue_and_no_address_says_so():
+    plan = _plan_at(None)
+    r = client.post(
+        f"/bookings/{plan['booking_id']}/check-in",
+        json={"latitude": 42.0451, "longitude": -87.6877},
+        headers=plan["headers"],
+    )
+    assert r.status_code == 400
+    assert "no address on it yet" in r.json()["detail"]

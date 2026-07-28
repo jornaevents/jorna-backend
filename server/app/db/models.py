@@ -388,3 +388,9 @@ class Event(Base):
     # against a venue the client no longer has.
     venue_latitude = Column(Float, nullable=True)
     venue_longitude = Column(Float, nullable=True)
+    # Where the client says it is: their own address, geocoded. Kept apart from
+    # the pair above because that pair is derived and is cleared along with the
+    # booking it came from — this one is the client's, and outlives any venue.
+    # Used for check-in only when no venue is booked (see check_in).
+    address_latitude = Column(Float, nullable=True)
+    address_longitude = Column(Float, nullable=True)
