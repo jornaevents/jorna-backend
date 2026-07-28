@@ -37,6 +37,10 @@ class UpdateEventRequest(BaseModel):
     guest_count: Optional[int] = None
     budget: Optional[float] = None
     services_needed: Optional[list[str]] = None
+    # The client's own address, geocoded. Distinct from venue_latitude/longitude,
+    # which are derived from a booked venue and are not client-settable.
+    address_latitude: Optional[float] = None
+    address_longitude: Optional[float] = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────

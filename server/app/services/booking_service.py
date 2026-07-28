@@ -217,6 +217,25 @@ def _live_venue_booking(bundle_id: str | None, db: Session) -> tuple[Booking, Se
     return None
 
 
+def _event_address_pin(
+    bundle_id: str | None, db: Session
+) -> tuple[float | None, float | None]:
+    """The coordinates of the address the client typed, via the bundle's event.
+
+    Untouched by sync_event_venue, so a venue coming and going doesn't disturb
+    it. Returns (None, None) when there's no event or it was never geocoded.
+    """
+    if not bundle_id:
+        return None, None
+    bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+    if not bundle or not bundle.event_id:
+        return None, None
+    event = db.query(Event).filter(Event.event_id == bundle.event_id).first()
+    if not event:
+        return None, None
+    return event.address_latitude, event.address_longitude
+
+
 def sync_event_venue(bundle_id: str | None, db: Session) -> None:
     """Refresh the denormalized venue anchor from the bundle's live venue booking.
 
@@ -820,10 +839,18 @@ def check_in(
         # Direct, non-bundled booking: its own pin is the anchor.
         venue_lat, venue_lng = booking.venue_latitude, booking.venue_longitude
     else:
-        venue_lat = venue_lng = None
+        # No venue booked through Jorna. The client's own address is the anchor
+        # then — a wedding in a family hall is still somewhere, and without this
+        # nobody in the bundle could ever check in, so every vendor's payout sat
+        # waiting on a confirmation that had no way of being given.
+        #
+        # Below the booked venue, never beside it: a venue that's been removed
+        # or refunded must still block, which is why that branch comes first and
+        # why this pin is stored where the venue sync can't reach it.
+        venue_lat, venue_lng = _event_address_pin(booking.bundle_id, db)
 
     if venue_lat is None or venue_lng is None:
-        raise BookingError(400, "This event has no venue set yet — check-in becomes available once a venue is booked.")
+        raise BookingError(400, "This event has no address on it yet — check-in opens once the plan has a place to be.")
 
     distance = calculate_distance_miles(latitude, longitude, venue_lat, venue_lng)
     if distance > 0.2:

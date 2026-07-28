@@ -27,6 +27,8 @@ def _event_dict(event: Event) -> dict:
         "services_needed": event.services_needed,
         "venue_latitude": event.venue_latitude,
         "venue_longitude": event.venue_longitude,
+        "address_latitude": event.address_latitude,
+        "address_longitude": event.address_longitude,
     }
 
 
