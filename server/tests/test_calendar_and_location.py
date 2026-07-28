@@ -480,3 +480,32 @@ def test_no_venue_and_no_address_says_so():
     )
     assert r.status_code == 400
     assert "no address on it yet" in r.json()["detail"]
+
+
+def test_the_payload_names_the_point_check_in_will_use():
+    """Clients gate their button on checkin_latitude, so it has to resolve the
+    same way check_in does — otherwise the button appears for a call the server
+    refuses, or hides for one it would allow."""
+    plan = _plan_at((42.0451, -87.6877))
+    r = client.get(f"/bookings/{plan['booking_id']}", headers=plan["headers"])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # No venue booked, so the booking's own venue pin is empty...
+    assert body["venue_latitude"] is None
+    # ...but the plan still has a place to be.
+    assert body["checkin_latitude"] == 42.0451
+    assert body["checkin_longitude"] == -87.6877
+
+
+def test_a_booked_venue_is_the_point_the_payload_names():
+    plan = _plan_at((42.0451, -87.6877), venue_service_pin=(41.8781, -87.6298))
+    r = client.get(f"/bookings/{plan['booking_id']}", headers=plan["headers"])
+    assert r.status_code == 200
+    assert r.json()["checkin_latitude"] == 41.8781
+
+
+def test_no_place_at_all_names_no_point():
+    plan = _plan_at(None)
+    r = client.get(f"/bookings/{plan['booking_id']}", headers=plan["headers"])
+    assert r.status_code == 200
+    assert r.json()["checkin_latitude"] is None
