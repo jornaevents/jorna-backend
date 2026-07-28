@@ -524,19 +524,27 @@ def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db
     bundle.updated_at = datetime.now(timezone.utc)
     db.commit()
 
-    # Create group chats when the bundle is confirmed for the first time
     if status == "confirmed" and prev_status == "draft":
-        try:
-            from app.services.conversation_service import create_bundle_conversations
-            create_bundle_conversations(
-                bundle_id=bundle_id, client_user_id=caller_user_id, db=db
-            )
-        except Exception as exc:
-            db.rollback()
-            logger.warning("Failed to create bundle conversations on confirm: %s", exc)
+        _open_bundle_conversations(bundle_id, caller_user_id, db)
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     return _bundle_dict(bundle, bookings, db)
+
+
+def _open_bundle_conversations(bundle_id: str, caller_user_id: str, db: Session) -> None:
+    """Group chats for a bundle that has just become real.
+
+    Shared by the two ways that happens — an explicit status change, and sending
+    the bundle to its vendors — so the second doesn't quietly skip them.
+    """
+    try:
+        from app.services.conversation_service import create_bundle_conversations
+        create_bundle_conversations(
+            bundle_id=bundle_id, client_user_id=caller_user_id, db=db
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Failed to create bundle conversations on confirm: %s", exc)
 
 
 def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
@@ -553,6 +561,9 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
     Only bookings still waiting for an answer are notified. Sending a bundle
     that already has approvals in it should reach the vendors who haven't
     replied, not ask the ones who have to look again.
+
+    Sending also moves the bundle out of "draft", which nothing else did — see
+    the comment at the status change.
     """
     bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
     if not bundle:
@@ -577,12 +588,26 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
         # Cleared so the chosen bundle behaves like any other from here on.
         bundle.bundle_group_id = None
 
+    # Sending is what makes a bundle real, so this is where it stops being a
+    # draft. Nothing used to move a bundle off "draft" at all — it was created
+    # as one and stayed one for life, which left the clients unable to tell a
+    # plan nobody had seen from a plan already half accepted. Both kept
+    # offering to send it.
+    was_draft = bundle.status == "draft"
+    if was_draft:
+        bundle.status = "confirmed"
+
     bundle.updated_at = datetime.now(timezone.utc)
 
     # Back the chosen bundle with a real Event so its services show up under the
     # client's My Events / Event Portfolio.
     _ensure_bundle_event(bundle, db)
     db.commit()
+
+    # The same thing confirming a bundle does, for the same reason: the people
+    # in it now have something to talk about.
+    if was_draft:
+        _open_bundle_conversations(bundle_id, caller_user_id, db)
 
     # Now notify vendors for the chosen bundle's bookings
     chosen_bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
