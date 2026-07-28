@@ -787,3 +787,49 @@ def test_sending_somebody_elses_bundle_is_still_refused(seeded_db):
         f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(stranger)
     )
     assert r.status_code in (403, 404)
+
+
+def test_sending_takes_a_bundle_out_of_draft(seeded_db):
+    """Nothing used to move a bundle off "draft" — it was created as one and
+    stayed one for life, so both clients went on offering to send a plan whose
+    vendors had already accepted."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [seeded_db["booking2"]])
+    assert bundle.status == "draft"
+
+    r = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert r.status_code == 200
+    assert r.json()["status"] == "confirmed"
+
+    fresh = TestingSessionLocal()
+    assert fresh.query(Bundle).filter(Bundle.bundle_id == bundle.bundle_id).first().status == "confirmed"
+    fresh.close()
+
+
+def test_sending_again_leaves_the_status_alone(seeded_db):
+    """A second send reaches the vendors who haven't replied; it isn't a fresh
+    confirmation and mustn't re-open the group chats."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [seeded_db["booking2"]])
+
+    client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    second = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert second.status_code == 200
+    assert second.json()["status"] == "confirmed"
+
+
+def test_sending_opens_the_group_chats(mocker, seeded_db):
+    """Confirming a bundle is what creates its conversations. Sending is the
+    same moment, and used to skip them."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [seeded_db["booking2"]])
+    make = mocker.patch(
+        "app.services.conversation_service.create_bundle_conversations"
+    )
+
+    client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert make.call_count == 1
+
+    # ...once. The second send is not a second confirmation.
+    client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert make.call_count == 1
