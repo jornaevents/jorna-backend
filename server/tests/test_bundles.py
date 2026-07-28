@@ -692,3 +692,98 @@ def test_other_user_cannot_access_bundle(seeded_db):
 
     response = client.get(f"/bundles/{bundle_id}", headers=make_auth_headers(vendor_user))
     assert response.status_code == 403
+
+
+# ── Sending a bundle to its vendors ────────────────────────────────────
+#
+# POST /bundles/{id}/select is what the clients call "Send to vendors": it
+# notifies the vendors, and where the bundle came from a builder comparison it
+# also discards the options that weren't chosen. It used to require the group,
+# which made sending impossible for any bundle that wasn't built that way.
+
+
+def _bundle_with(db, user, bookings, *, group_id=None, name="Send Test"):
+    now = datetime.now(timezone.utc)
+    bundle = Bundle(
+        user_id=user.user_id, name=name, status="draft",
+        bundle_group_id=group_id, created_at=now, updated_at=now,
+    )
+    db.add(bundle)
+    db.commit()
+    db.refresh(bundle)
+    for b in bookings:
+        b.bundle_id = bundle.bundle_id
+    db.commit()
+    return bundle
+
+
+def test_send_a_bundle_that_was_never_a_comparison(seeded_db):
+    """A bundle assembled service by service from the marketplace has no group.
+    Sending it is the same act and used to be refused outright."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [seeded_db["booking2"]])
+
+    r = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert r.status_code == 200, r.text
+    assert r.json()["bundle_id"] == bundle.bundle_id
+
+
+def test_sending_twice_is_allowed(seeded_db):
+    """Choosing clears the group, so a second send — after adding another
+    service, say — hit the same refusal on a bundle that had just worked."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [seeded_db["booking2"]], group_id=str(uuid.uuid4()))
+
+    first = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert first.status_code == 200
+    second = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert second.status_code == 200
+
+
+def test_choosing_still_discards_the_other_options(seeded_db):
+    """The comparison behaviour is unchanged where there is a comparison."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    group = str(uuid.uuid4())
+    chosen = _bundle_with(db, user, [seeded_db["booking2"]], group_id=group, name="Chosen")
+    discarded = _bundle_with(db, user, [], group_id=group, name="Discarded")
+    discarded_id = discarded.bundle_id
+
+    r = client.post(f"/bundles/{chosen.bundle_id}/select", headers=make_auth_headers(user))
+    assert r.status_code == 200
+
+    fresh = TestingSessionLocal()
+    assert fresh.query(Bundle).filter(Bundle.bundle_id == discarded_id).first() is None
+    kept = fresh.query(Bundle).filter(Bundle.bundle_id == chosen.bundle_id).first()
+    assert kept is not None
+    assert kept.bundle_group_id is None  # behaves like any other bundle now
+    fresh.close()
+
+
+def test_sending_only_asks_vendors_who_havent_answered(mocker, seeded_db):
+    """booking1 is already approved. Re-sending must not ask that vendor to
+    look at a request they've already accepted."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [seeded_db["booking1"], seeded_db["booking2"]])
+    approved_id = seeded_db["booking1"].booking_id
+    pending_id = seeded_db["booking2"].booking_id
+
+    dispatch = mocker.patch(
+        "app.services.booking_service._dispatch_status_notification"
+    )
+    r = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert r.status_code == 200
+
+    notified = {call.args[1].booking_id for call in dispatch.call_args_list}
+    assert pending_id in notified
+    assert approved_id not in notified
+
+
+def test_sending_somebody_elses_bundle_is_still_refused(seeded_db):
+    db, user = seeded_db["db"], seeded_db["user"]
+    bundle = _bundle_with(db, user, [])
+    stranger = seeded_db["vendor_user"]
+
+    r = client.post(
+        f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(stranger)
+    )
+    assert r.status_code in (403, 404)

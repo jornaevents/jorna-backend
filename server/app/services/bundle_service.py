@@ -540,34 +540,43 @@ def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db
 
 
 def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
-    """Pick one bundle from a comparison group, delete the other two, and notify vendors.
+    """Send a bundle to its vendors, and — if it came from a comparison group —
+    discard the options that weren't chosen.
 
-    The chosen bundle has its bundle_group_id cleared so it behaves like a normal
-    draft bundle going forward.
+    Notifying the vendors is what this call is for; the group is incidental.
+    Refusing a bundle without one meant "Send to vendors" failed outright for
+    every bundle assembled service by service from the marketplace, and again
+    for any bundle sent a second time after another service was added, since
+    choosing clears the group. Both told the client it wasn't part of a
+    comparison group, which is true and is not their problem.
+
+    Only bookings still waiting for an answer are notified. Sending a bundle
+    that already has approvals in it should reach the vendors who haven't
+    replied, not ask the ones who have to look again.
     """
     bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
     if not bundle:
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
 
-    if not bundle.bundle_group_id:
-        raise BundleError(400, "This bundle is not part of a comparison group")
-
-    # Delete the unchosen bundles and their bookings
-    others = (
-        db.query(Bundle)
-        .filter(
-            Bundle.bundle_group_id == bundle.bundle_group_id,
-            Bundle.bundle_id != bundle_id,
-            Bundle.user_id == caller_user_id,
+    if bundle.bundle_group_id:
+        # Delete the unchosen bundles and their bookings
+        others = (
+            db.query(Bundle)
+            .filter(
+                Bundle.bundle_group_id == bundle.bundle_group_id,
+                Bundle.bundle_id != bundle_id,
+                Bundle.user_id == caller_user_id,
+            )
+            .all()
         )
-        .all()
-    )
-    for other in others:
-        db.query(Booking).filter(Booking.bundle_id == other.bundle_id).delete()
-        db.delete(other)
+        for other in others:
+            db.query(Booking).filter(Booking.bundle_id == other.bundle_id).delete()
+            db.delete(other)
 
-    bundle.bundle_group_id = None
+        # Cleared so the chosen bundle behaves like any other from here on.
+        bundle.bundle_group_id = None
+
     bundle.updated_at = datetime.now(timezone.utc)
 
     # Back the chosen bundle with a real Event so its services show up under the
@@ -578,9 +587,12 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
     # Now notify vendors for the chosen bundle's bookings
     chosen_bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
     event_name = bundle.event_name or bundle.name
+    # A vendor who has already answered doesn't need asking again — that's what
+    # a second send would otherwise do to every approval in the bundle.
+    unanswered = [b for b in chosen_bookings if b.status == "pending"]
     try:
         from app.services.booking_service import _get_booking_parties, _dispatch_status_notification
-        for booking in chosen_bookings:
+        for booking in unanswered:
             try:
                 client, _, vendor_user, service = _get_booking_parties(db, booking)
                 _dispatch_status_notification("pending", booking, client, vendor_user, service, db, event_name=event_name)
