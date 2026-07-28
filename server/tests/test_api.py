@@ -192,9 +192,12 @@ def test_google_auth_redirect():
     db.add(vendor)
     db.commit()
     vendor_id = vendor.vendor_id
+    headers = make_auth_headers(user)
     db.close()
 
-    response = client.get(f"/vendors/{vendor_id}/google-auth")
+    # Signed in: the URL this returns is a valid authorization for the vendor
+    # named in its state, so it isn't handed to anonymous callers.
+    response = client.get(f"/vendors/{vendor_id}/google-auth", headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert "https://accounts.google.com/o/oauth2/auth" in data["auth_url"]

@@ -49,21 +49,31 @@ def _sign(payload: str) -> str:
     return hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
-def _encode_state(vendor_id: str, code_verifier: str) -> str:
-    """Pack vendor_id + code_verifier into a signed state param for the OAuth flow.
+def _encode_state(vendor_id: str, code_verifier: str, client: str = "ios") -> str:
+    """Pack vendor_id + code_verifier + client into a signed state param.
 
     Format: <base64-payload>.<hmac-signature>
     The signature prevents forged state params (CSRF protection).
+
+    ``client`` rides along because the callback is the only place that knows
+    where to send the browser afterwards, and by then the request that started
+    the flow is long gone — Google is the caller. Signed with the rest, so it
+    can't be swapped in transit to redirect the vendor somewhere else.
     """
     payload = base64.urlsafe_b64encode(
-        json.dumps({"vendor_id": vendor_id, "code_verifier": code_verifier}).encode()
+        json.dumps(
+            {"vendor_id": vendor_id, "code_verifier": code_verifier, "client": client}
+        ).encode()
     ).decode()
     return f"{payload}.{_sign(payload)}"
 
 
-def decode_state(state: str) -> tuple[str, str]:
-    """Verify the HMAC signature and decode state back into (vendor_id, code_verifier).
+def decode_state(state: str) -> tuple[str, str, str]:
+    """Verify the HMAC signature and decode state into (vendor_id, code_verifier, client).
+
     Raises CalendarError 400 if the state is malformed or the signature is invalid.
+    A state without a client is one issued before web support existed, or by an
+    older app — those are iOS, which is where the flow used to end.
     """
     try:
         payload, sig = state.rsplit(".", 1)
@@ -75,7 +85,7 @@ def decode_state(state: str) -> tuple[str, str]:
 
     try:
         data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
-        return data["vendor_id"], data["code_verifier"]
+        return data["vendor_id"], data["code_verifier"], data.get("client", "ios")
     except Exception:
         raise CalendarError(400, "Invalid OAuth state parameter")
 
@@ -83,7 +93,7 @@ def decode_state(state: str) -> tuple[str, str]:
 # ── OAuth flow ────────────────────────────────────────────────────────
 
 
-def get_google_auth_url(*, vendor_id: str, redirect_uri: str) -> dict:
+def get_google_auth_url(*, vendor_id: str, redirect_uri: str, client: str = "ios") -> dict:
     """Build a Google OAuth authorization URL for the vendor.
 
     Uses PKCE (code_verifier / code_challenge) to satisfy Google's requirement.
@@ -101,7 +111,7 @@ def get_google_auth_url(*, vendor_id: str, redirect_uri: str) -> dict:
     # include code_challenge + code_challenge_method=S256 in the auth URL.
     flow.code_verifier = code_verifier
 
-    state = _encode_state(vendor_id, code_verifier)
+    state = _encode_state(vendor_id, code_verifier, client)
 
     auth_url, _ = flow.authorization_url(
         access_type="offline",
