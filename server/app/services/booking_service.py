@@ -131,6 +131,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
     # services. None means rate-priced with an unknown quantity — the price is
     # pending the guest count / dates, so the UI shows the rate, not a total.
     total_cents = resolve_total_cents(booking, service)
+    # The point check-in will actually be measured against — the same call
+    # check_in makes, so a client can gate its button on it and never offer an
+    # action the server has to refuse.
+    checkin_lat, checkin_lng = checkin_anchor(booking, db)
     return {
         "booking_id": booking.booking_id,
         "user_id": booking.user_id,
@@ -159,6 +163,8 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "location": booking.location,
         "venue_latitude": booking.venue_latitude,
         "venue_longitude": booking.venue_longitude,
+        "checkin_latitude": checkin_lat,
+        "checkin_longitude": checkin_lng,
         "status": booking.status,
         "payment_status": booking.payment_status,
         "amount_cents": booking.amount_cents,
@@ -215,6 +221,32 @@ def _live_venue_booking(bundle_id: str | None, db: Session) -> tuple[Booking, Se
         ):
             return b, s
     return None
+
+
+def checkin_anchor(
+    booking: Booking, db: Session
+) -> tuple[float | None, float | None]:
+    """Where this booking's check-in is measured from, or (None, None).
+
+    The one definition of that, used both to enforce check-in and to tell the
+    clients what it will enforce — so a button is never offered for a call that
+    must fail, or withheld from one that would succeed.
+
+    In order: the bundle's live venue booking, which is the source of truth and
+    must keep blocking once that venue is removed or refunded; then, for a
+    booking with no bundle, its own pin; then the address the client typed on
+    the event, for a plan held somewhere they arranged themselves.
+
+    Deliberately not the coordinates mirrored onto the booking row. Those are a
+    cache that sync_event_venue refreshes, and reading them here would let the
+    answer drift from the one check_in gives.
+    """
+    live_venue = _live_venue_booking(booking.bundle_id, db)
+    if live_venue:
+        return live_venue[1].venue_latitude, live_venue[1].venue_longitude
+    if not booking.bundle_id:
+        return booking.venue_latitude, booking.venue_longitude
+    return _event_address_pin(booking.bundle_id, db)
 
 
 def _event_address_pin(
@@ -832,22 +864,7 @@ def check_in(
     # truth) rather than trusting the coords mirrored onto this booking — so a
     # removed/refunded venue blocks check-in immediately instead of letting a
     # traveling vendor check in (and release funds) against a venue that's gone.
-    live_venue = _live_venue_booking(booking.bundle_id, db)
-    if live_venue:
-        venue_lat, venue_lng = live_venue[1].venue_latitude, live_venue[1].venue_longitude
-    elif not booking.bundle_id:
-        # Direct, non-bundled booking: its own pin is the anchor.
-        venue_lat, venue_lng = booking.venue_latitude, booking.venue_longitude
-    else:
-        # No venue booked through Jorna. The client's own address is the anchor
-        # then — a wedding in a family hall is still somewhere, and without this
-        # nobody in the bundle could ever check in, so every vendor's payout sat
-        # waiting on a confirmation that had no way of being given.
-        #
-        # Below the booked venue, never beside it: a venue that's been removed
-        # or refunded must still block, which is why that branch comes first and
-        # why this pin is stored where the venue sync can't reach it.
-        venue_lat, venue_lng = _event_address_pin(booking.bundle_id, db)
+    venue_lat, venue_lng = checkin_anchor(booking, db)
 
     if venue_lat is None or venue_lng is None:
         raise BookingError(400, "This event has no address on it yet — check-in opens once the plan has a place to be.")
