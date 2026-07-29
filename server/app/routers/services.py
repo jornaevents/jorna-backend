@@ -67,6 +67,17 @@ class UpdateServiceRequest(BaseModel):
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
 
+    @field_validator("price_unit")
+    @classmethod
+    def _check_price_unit(cls, v):
+        # Read forgivingly, stored canonical — see canonical_price_unit. The
+        # column holds one of four strings so the function that decides a
+        # request may be sent and the one that works out what to charge can
+        # never again disagree about what a vendor typed.
+        from app.services.booking_service import canonical_price_unit
+
+        return canonical_price_unit(v)
+
     @field_validator("category")
     @classmethod
     def _check_category(cls, v):
@@ -93,6 +104,17 @@ class CreateServiceRequest(BaseModel):
     location: Optional[str] = None
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
+
+    @field_validator("price_unit")
+    @classmethod
+    def _check_price_unit(cls, v):
+        # Read forgivingly, stored canonical — see canonical_price_unit. The
+        # column holds one of four strings so the function that decides a
+        # request may be sent and the one that works out what to charge can
+        # never again disagree about what a vendor typed.
+        from app.services.booking_service import canonical_price_unit
+
+        return canonical_price_unit(v)
 
     @field_validator("category")
     @classmethod

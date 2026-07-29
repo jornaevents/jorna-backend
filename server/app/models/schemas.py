@@ -9,6 +9,30 @@ class BookingStatus(str, Enum):
     PAYMENT_CONFIRMED = "payment_confirmed"
 
 
+class PriceUnit(str, Enum):
+    """What a service's rate multiplies by.
+
+    The column behind this was free text, and two functions read it with
+    different ideas of what counted as per-person: a caterer priced "per head"
+    passed the check that decides whether a request may be sent, then failed the
+    one that works out what to charge. The request went out, the vendor
+    accepted, and nobody could pay them.
+
+    Four values, and the column now holds nothing else. What arrives is still
+    read forgivingly — clients have been sending "Per Hour" for years — but it
+    is stored canonical, so there is only one string for anything downstream to
+    have an opinion about.
+    """
+
+    PERSON = "person"
+    HOUR = "hour"
+    DAY = "day"
+    EVENT = "event"
+
+
+PRICE_UNITS = tuple(u.value for u in PriceUnit)
+
+
 class VendorCategory(str, Enum):
     VENUE = "venue"
     PLANNING = "planning"

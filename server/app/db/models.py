@@ -1,7 +1,7 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -131,6 +131,17 @@ class Vendor(Base):
 
 class Service(Base):
     __tablename__ = "services"
+    __table_args__ = (
+        # The column used to be free text, and two functions read it with
+        # different ideas of what counted as per person — see 0039. Declared on
+        # the model as well as in the migration so the schema the tests build
+        # from Base.metadata is the schema production runs, and a value that
+        # would be refused in production is refused in a test too.
+        CheckConstraint(
+            "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event')",
+            name="ck_services_price_unit",
+        ),
+    )
 
     service_id = Column(String(36), primary_key=True, default=uuid_str)
     name = Column(String(255), nullable=False)

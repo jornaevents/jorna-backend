@@ -415,10 +415,10 @@ def test_the_payload_says_which_fields_are_locked(plan):
 
 # ── Every word a vendor might price by ────────────────────────────────
 #
-# price_unit is free text with no validation, and the pricer accepts far more
-# than the readiness check used to. A caterer priced "per head" therefore sent
-# with no guest count and arrived at checkout unpayable — the request out, the
-# vendor committed, and nobody able to pay them.
+# price_unit is now one of four strings and the column refuses anything else
+# (0039). But an alias can still arrive — from iOS, from an old client, from
+# anything posting to the API — so the boundary canonicalises it and the two
+# functions that read the column are checked against each other regardless.
 
 
 PER_PERSON_WORDS = [
@@ -428,24 +428,112 @@ PER_PERSON_WORDS = [
 ]
 
 
-@pytest.mark.parametrize("unit", PER_PERSON_WORDS)
-def test_every_per_person_word_demands_a_headcount(plan, unit):
-    """The readiness check and the pricer have to agree on one string.
+@pytest.mark.parametrize("word", PER_PERSON_WORDS)
+def test_a_per_person_alias_is_stored_as_person(word):
+    """Read forgivingly, stored canonical.
 
-    If the pricer reads it as per person and the gate doesn't, the plan sends
-    and the booking can never be charged.
+    A caterer whose client sends "per head" gets a service priced per person —
+    not a service priced flat, which is what happened before and is off by
+    however many people are coming.
     """
-    from app.services.booking_service import _normalize_unit, resolve_total_cents
+    from app.routers.services import CreateServiceRequest
+
+    body = CreateServiceRequest(
+        name="Catering", price=40.0, experience="5y", price_unit=word
+    )
+    assert body.price_unit == "person"
+
+
+@pytest.mark.parametrize("word", ["hour", "hours", "hourly", "per hour", "Per Hourly"])
+def test_an_hourly_alias_is_stored_as_hour(word):
+    from app.routers.services import CreateServiceRequest
+
+    body = CreateServiceRequest(name="DJ", price=200.0, experience="5y", price_unit=word)
+    assert body.price_unit == "hour"
+
+
+@pytest.mark.parametrize("word", ["day", "days", "per day"])
+def test_a_daily_alias_is_stored_as_day(word):
+    from app.routers.services import CreateServiceRequest
+
+    body = CreateServiceRequest(name="Tent", price=300.0, experience="5y", price_unit=word)
+    assert body.price_unit == "day"
+
+
+@pytest.mark.parametrize("word", [None, "", "   ", "event", "per event"])
+def test_no_unit_and_flat_pricing_both_end_up_meaning_flat(word):
+    from app.routers.services import CreateServiceRequest
+
+    body = CreateServiceRequest(name="DJ", price=500.0, experience="5y", price_unit=word)
+    assert body.price_unit in (None, "event")
+
+
+@pytest.mark.parametrize("word", ["widgets", "per widget", "banana", "monthly"])
+def test_a_word_we_cannot_charge_against_is_refused(word):
+    """It used to be accepted and priced flat, so a vendor could type a word and
+    quietly get a total two hundred times smaller than they meant."""
+    from pydantic import ValidationError
+
+    from app.routers.services import CreateServiceRequest
+
+    with pytest.raises(ValidationError) as e:
+        CreateServiceRequest(name="X", price=1.0, experience="5y", price_unit=word)
+    assert "person, hour, day, event" in str(e.value)
+
+
+def test_the_same_rule_guards_an_edit(plan):
+    from pydantic import ValidationError
+
+    from app.routers.services import UpdateServiceRequest
+
+    assert UpdateServiceRequest(price_unit="per head").price_unit == "person"
+    with pytest.raises(ValidationError):
+        UpdateServiceRequest(price_unit="widgets")
+
+
+def test_the_column_itself_refuses_anything_else(plan):
+    """Belt and braces. The validator is the door; this is the wall — so a code
+    path that never goes near the router still can't reintroduce the ambiguity.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["flat_service_id"]
+        ).first()
+        service.price_unit = "per head"
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("unit", ["person", "hour", "day", "event", None])
+def test_the_four_and_nothing_are_all_accepted(plan, unit):
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["flat_service_id"]
+        ).first()
+        service.price_unit = unit
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_a_per_person_service_still_demands_a_headcount(plan):
+    """The rule the whole thing exists for, on the value the column now holds."""
+    from app.services.booking_service import resolve_total_cents
 
     db = _db()
     try:
         service = db.query(Service).filter(
             Service.service_id == plan["per_head_service_id"]
         ).first()
-        service.price_unit = unit
+        service.price_unit = "person"
         db.commit()
-
-        assert _normalize_unit(unit) == "person", "the pricer reads this as per person"
 
         created = _book(
             plan, db, service_id=plan["per_head_service_id"], guest_count=None
@@ -456,7 +544,6 @@ def test_every_per_person_word_demands_a_headcount(plan, unit):
             )
         assert "guest count" in e.value.detail
 
-        # And the reason it matters: without a count there is no total.
         booking = db.query(Booking).filter(
             Booking.booking_id == created["booking_id"]
         ).first()
@@ -465,14 +552,13 @@ def test_every_per_person_word_demands_a_headcount(plan, unit):
         db.close()
 
 
-@pytest.mark.parametrize("unit", ["hour", "hourly", "per hour", "Per Hourly", "hours"])
-def test_every_per_hour_word_demands_a_time_window(plan, unit):
+def test_an_hourly_service_demands_a_time_window(plan):
     db = _db()
     try:
         service = db.query(Service).filter(
             Service.service_id == plan["flat_service_id"]
         ).first()
-        service.price_unit = unit
+        service.price_unit = "hour"
         db.commit()
 
         created = _book(plan, db, time_start="", time_end="")
@@ -485,9 +571,8 @@ def test_every_per_hour_word_demands_a_time_window(plan, unit):
         db.close()
 
 
-@pytest.mark.parametrize("unit", ["event", "per event", "flat", None, "", "widgets"])
+@pytest.mark.parametrize("unit", ["event", None])
 def test_a_flat_rate_service_asks_for_no_quantity(plan, unit):
-    """Unknown words price flat, and a flat rate needs nothing multiplying it."""
     db = _db()
     try:
         service = db.query(Service).filter(
@@ -509,9 +594,10 @@ def test_a_flat_rate_service_asks_for_no_quantity(plan, unit):
 def test_the_gate_and_the_pricer_never_disagree():
     """The property, rather than a list of examples.
 
-    Anything the pricer treats as needing a quantity must be something the gate
-    demands that quantity for. These were two separate lists once, and the
-    difference between them was a booking nobody could pay for.
+    Kept even though the column is constrained now: an alias still arrives at
+    the boundary, and the day these two functions disagree about a string is the
+    day a booking goes out that nobody can pay for. Examples go stale; this
+    doesn't.
     """
     from app.services.booking_service import _normalize_unit
     from app.services.plan_readiness import _price_unit_kind
