@@ -74,8 +74,17 @@ def _default_function(event: Event, db: Session) -> EventFunction:
     return fn
 
 
-def list_functions(*, event_id: str, user_id: str, db: Session) -> list[dict]:
-    """The celebration's functions, creating the default one on first ask."""
+def list_functions(
+    *, event_id: str, user_id: str, db: Session, create_default: bool = False,
+) -> list[dict]:
+    """The celebration's functions.
+
+    `create_default` is off for reads. Opening a plan shouldn't write a row to
+    the database, and an event that has no guest list yet genuinely has no
+    functions — that's what the UI needs to know to offer starting one. The
+    default is created by the first act that needs something to invite people
+    to: adding a guest, or minting the shared link.
+    """
     event = _own_event(event_id, user_id, db)
     rows = (
         db.query(EventFunction)
@@ -83,7 +92,7 @@ def list_functions(*, event_id: str, user_id: str, db: Session) -> list[dict]:
         .order_by(EventFunction.sort_order, EventFunction.created_at)
         .all()
     )
-    if not rows:
+    if not rows and create_default:
         rows = [_default_function(event, db)]
     return [_function_dict(f) for f in rows]
 
@@ -202,8 +211,14 @@ def add_guest(
     functions = _valid_function_ids(event_id, function_ids, db)
     if not functions:
         # Nobody is invited to nothing. Falling back to every function is what a
-        # host means by adding a guest without saying which parts.
-        functions = [f["function_id"] for f in list_functions(event_id=event_id, user_id=user_id, db=db)]
+        # host means by adding a guest without saying which parts — and this is
+        # the moment a celebration with no functions gets its first one.
+        functions = [
+            f["function_id"]
+            for f in list_functions(
+                event_id=event_id, user_id=user_id, db=db, create_default=True
+            )
+        ]
 
     guest = Guest(
         event_id=event.event_id,
@@ -325,7 +340,7 @@ def _guest_dict(guest: Guest, db: Session) -> dict:
 
 def list_guests(*, event_id: str, user_id: str, db: Session) -> dict:
     """The list, its functions, and what the replies add up to per function."""
-    _own_event(event_id, user_id, db)
+    event = _own_event(event_id, user_id, db)
     functions = list_functions(event_id=event_id, user_id=user_id, db=db)
     guests = (
         db.query(Guest)
@@ -337,6 +352,10 @@ def list_guests(*, event_id: str, user_id: str, db: Session) -> dict:
         "functions": functions,
         "guests": [_guest_dict(g, db) for g in guests],
         "headcount": headcount(event_id=event_id, db=db),
+        # Whether a shared link is already out there. Without this the UI can
+        # only offer to make one, and would go on offering after a reload — a
+        # host would have no way to tell a live link from none at all.
+        "invite_link": event.invite_token,
     }
 
 
@@ -396,7 +415,7 @@ def open_link_token(*, event_id: str, user_id: str, db: Session) -> dict:
     # There has to be something to RSVP to before the link goes out — minting it
     # is the last moment we can still create the default function without doing
     # it on a stranger's GET.
-    list_functions(event_id=event_id, user_id=user_id, db=db)
+    list_functions(event_id=event_id, user_id=user_id, db=db, create_default=True)
     if not event.invite_token:
         event.invite_token = _token()
         db.commit()

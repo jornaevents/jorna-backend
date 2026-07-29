@@ -78,16 +78,42 @@ def _db():
 # ── Functions ─────────────────────────────────────────────────────────
 
 
-def test_a_celebration_starts_with_one_function(host):
-    """A host who never thinks about functions still has something to invite to."""
+def test_reading_the_list_does_not_create_anything(host):
+    """Opening a plan shouldn't write to the database, and an event with no
+    guest list genuinely has no functions — that's what tells the UI to offer
+    starting one."""
     db = _db()
     try:
+        assert list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db) == []
+        assert list_guests(event_id=host["event_id"], user_id=host["user_id"],
+                           db=db)["functions"] == []
+        assert db.query(EventFunction).filter(
+            EventFunction.event_id == host["event_id"]
+        ).count() == 0
+    finally:
+        db.close()
+
+
+def test_the_first_guest_creates_the_default_function(host):
+    """A host who never thinks about functions still has something to invite to,
+    named after the celebration so they never see the word."""
+    db = _db()
+    try:
+        guest = add_guest(
+            event_id=host["event_id"], user_id=host["user_id"], name="Anita", email=None,
+            phone=None, party_size=2, function_ids=[], note=None, db=db,
+        )
         functions = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)
         assert len(functions) == 1
         assert functions[0]["name"] == "Sharma Wedding"
-        # Asking twice doesn't make two.
-        again = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)
-        assert [f["function_id"] for f in again] == [f["function_id"] for f in functions]
+        assert [i["function_id"] for i in guest["invites"]] == [functions[0]["function_id"]]
+
+        # A second guest joins the same one rather than making another.
+        add_guest(
+            event_id=host["event_id"], user_id=host["user_id"], name="Raj", email=None,
+            phone=None, party_size=1, function_ids=[], note=None, db=db,
+        )
+        assert len(list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)) == 1
     finally:
         db.close()
 
@@ -95,7 +121,8 @@ def test_a_celebration_starts_with_one_function(host):
 def test_the_last_function_cannot_be_deleted(host):
     db = _db()
     try:
-        only = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        only = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         with pytest.raises(GuestError) as e:
             delete_function(function_id=only["function_id"], user_id=host["user_id"], db=db)
         assert e.value.status_code == 400
@@ -108,7 +135,8 @@ def test_deleting_a_function_keeps_the_guests(host):
     kind of disaster."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         sangeet = add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Sangeet",
             date_iso="2027-06-04", time_start="19:00", time_end="23:00",
@@ -137,7 +165,8 @@ def test_a_guest_with_no_functions_named_is_invited_to_all(host):
     """What a host means by adding somebody without saying which parts."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         mehndi = add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Mehndi",
             date_iso="2027-06-03", time_start=None, time_end=None, location=None, db=db,
@@ -207,7 +236,8 @@ def test_editing_a_guests_functions_keeps_replies_already_given(host):
     the fact that they said yes."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         sangeet = add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Sangeet",
             date_iso=None, time_start=None, time_end=None, location=None, db=db,
@@ -261,7 +291,8 @@ def test_headcount_counts_people_not_invitations(host):
     """"The Kapoor family, 4" is one line on a list and four plates at a table."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         fid = base["function_id"]
 
         yes_with_number = add_guest(
@@ -305,7 +336,8 @@ def test_headcount_is_per_function(host):
     """The number a caterer bills against is for their function, not the week."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         mehndi = add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Mehndi",
             date_iso="2027-06-03", time_start=None, time_end=None, location=None, db=db,
@@ -376,7 +408,8 @@ def test_an_invitation_shows_the_reader_and_nobody_else(host):
     invitation should say."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         reader = add_guest(
             event_id=host["event_id"], user_id=host["user_id"], name="Anita", email=None,
             phone=None, party_size=2, function_ids=[base["function_id"]], note=None, db=db,
@@ -403,7 +436,8 @@ def test_an_invitation_shows_the_reader_and_nobody_else(host):
 def test_a_guest_only_sees_the_functions_they_are_invited_to(host):
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Family only mehndi",
             date_iso=None, time_start=None, time_end=None, location=None, db=db,
@@ -437,7 +471,8 @@ def test_reading_an_invitation_does_not_answer_it(host):
     """Mail scanners and link previews fetch URLs before a person sees them."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         guest = add_guest(
             event_id=host["event_id"], user_id=host["user_id"], name="Anita", email=None,
             phone=None, party_size=2, function_ids=[base["function_id"]], note=None, db=db,
@@ -462,7 +497,8 @@ def test_reading_an_invitation_does_not_answer_it(host):
 def test_a_guest_can_change_their_answer(host):
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         fid = base["function_id"]
         guest = add_guest(
             event_id=host["event_id"], user_id=host["user_id"], name="Anita", email=None,
@@ -485,7 +521,8 @@ def test_a_guest_can_change_their_answer(host):
 def test_a_reply_to_a_function_you_were_not_invited_to_is_ignored(host):
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         private = add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Family only",
             date_iso=None, time_start=None, time_end=None, location=None, db=db,
@@ -532,7 +569,8 @@ def test_the_open_link_exists_only_once_a_host_asks(host):
 def test_joining_through_the_open_link_adds_a_guest_who_can_come_back(host):
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         link = open_link_token(event_id=host["event_id"], user_id=host["user_id"], db=db)
 
         # A stranger with the link sees the celebration but is nobody yet.
@@ -566,7 +604,8 @@ def test_someone_joining_is_invited_to_everything_they_did_not_answer(host):
     """Skipping the reception means undecided about it, not uninvited from it."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         mehndi = add_function(
             event_id=host["event_id"], user_id=host["user_id"], name="Mehndi",
             date_iso=None, time_start=None, time_end=None, location=None, db=db,
@@ -608,7 +647,8 @@ def test_the_rsvp_route_accepts_either_kind_of_link(host):
     """One URL shape, because a guest can't tell which kind they were sent."""
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         guest = add_guest(
             event_id=host["event_id"], user_id=host["user_id"], name="Anita", email=None,
             phone=None, party_size=2, function_ids=[base["function_id"]], note=None, db=db,
@@ -629,7 +669,8 @@ def test_the_rsvp_route_accepts_either_kind_of_link(host):
 def test_answering_over_http_updates_the_headcount(host):
     db = _db()
     try:
-        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db)[0]
+        base = list_functions(event_id=host["event_id"], user_id=host["user_id"], db=db,
+                               create_default=True)[0]
         guest = add_guest(
             event_id=host["event_id"], user_id=host["user_id"], name="Anita", email=None,
             phone=None, party_size=4, function_ids=[base["function_id"]], note=None, db=db,
@@ -649,3 +690,21 @@ def test_answering_over_http_updates_the_headcount(host):
     counts = seen.json()["headcount"][0]
     assert counts["attending"] == 3
     assert counts["expected"] == 4
+
+
+def test_the_list_says_whether_a_shared_link_is_live(host):
+    """A host can't tell a live link from none at all unless the list says so."""
+    db = _db()
+    try:
+        assert list_guests(event_id=host["event_id"], user_id=host["user_id"],
+                           db=db)["invite_link"] is None
+
+        link = open_link_token(event_id=host["event_id"], user_id=host["user_id"], db=db)
+        assert list_guests(event_id=host["event_id"], user_id=host["user_id"],
+                           db=db)["invite_link"] == link["token"]
+
+        retire_open_link(event_id=host["event_id"], user_id=host["user_id"], db=db)
+        assert list_guests(event_id=host["event_id"], user_id=host["user_id"],
+                           db=db)["invite_link"] is None
+    finally:
+        db.close()
