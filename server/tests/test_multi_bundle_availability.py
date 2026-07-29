@@ -147,3 +147,63 @@ def test_a_pending_request_does_not_keep_a_vendor_out():
 
     for names in _options(user_id):
         assert len(names) == 2, names
+
+
+# ── Optional hours ─────────────────────────────────────────────────────
+
+
+def _options_at(user_id, time_start=None, time_end=None):
+    db = TestingSessionLocal()
+    try:
+        req = BundleRequest(
+            needed_categories=SLOTS, booked_categories=[], event_date=DAY,
+            time_start=time_start, time_end=time_end,
+        )
+        res = generate_multi_bundle(req, db=db, user_id=user_id)
+        return [[i.vendor_name for i in o.bundle.items] for o in res.options]
+    finally:
+        db.close()
+
+
+def test_the_hours_reach_the_bookings():
+    """Given times, the builder writes them instead of TBD — which is what lets
+    a vendor with a morning job be offered an evening one."""
+    user_id, _ = _world(vendors_per_category=1)
+    _options_at(user_id, "18:00", "23:00")
+
+    db = TestingSessionLocal()
+    made = db.query(Booking).filter(Booking.user_id == user_id).all()
+    assert made, "the builder should have written bookings"
+    assert all(b.time_start == "18:00" and b.time_end == "23:00" for b in made)
+    db.close()
+
+
+def test_without_times_the_bookings_are_tbd():
+    """Optional means optional: the bundle still builds."""
+    user_id, _ = _world(vendors_per_category=1)
+    filled = _options_at(user_id)
+    assert [len(n) for n in filled] == [2, 2, 2]
+
+    db = TestingSessionLocal()
+    made = db.query(Booking).filter(Booking.user_id == user_id).all()
+    assert all(b.time_start == "TBD" for b in made)
+    db.close()
+
+
+def test_a_vendor_busy_in_the_morning_is_offered_for_the_evening():
+    """The point of asking. Whole-day availability turned this vendor down."""
+    user_id, made = _world(vendors_per_category=1)
+    videographer = next(v for v, cat in made if cat == SLOTS[0])
+    _book(videographer, user_id, "approved", time_start="09:00", time_end="13:00")
+
+    for names in _options_at(user_id, "18:00", "23:00"):
+        assert len(names) == 2, names
+
+
+def test_and_still_turned_down_for_a_clashing_evening():
+    user_id, made = _world(vendors_per_category=1)
+    videographer = next(v for v, cat in made if cat == SLOTS[0])
+    _book(videographer, user_id, "approved", time_start="17:00", time_end="21:00")
+
+    for names in _options_at(user_id, "18:00", "23:00"):
+        assert len(names) == 1, names

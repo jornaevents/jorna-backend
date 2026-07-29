@@ -577,6 +577,8 @@ def generate_multi_bundle(
         ChatbotState(
             event_date=req.event_date,
             date_range=req.date_range,
+            time_start=req.time_start,
+            time_end=req.time_end,
             needed_categories=needed,
         ),
         db,
@@ -590,6 +592,8 @@ def generate_multi_bundle(
             latitude=req.latitude,
             longitude=req.longitude,
             guest_count=req.guest_count,
+            time_start=req.time_start,
+            time_end=req.time_end,
             booked_categories=req.booked_categories,
             needed_categories=needed,
             budget_tier=tier,
@@ -638,6 +642,8 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
         latitude=req.latitude,
         longitude=req.longitude,
         guest_count=req.guest_count,
+        time_start=req.time_start,
+        time_end=req.time_end,
         booked_categories=req.booked_categories,
         needed_categories=req.needed_categories or [
             c for c in CHATBOT_CATEGORIES if c not in req.booked_categories
