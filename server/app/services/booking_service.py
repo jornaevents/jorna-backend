@@ -486,6 +486,35 @@ def _normalize_unit(price_unit: str | None) -> str | None:
     return None
 
 
+def canonical_price_unit(value: str | None) -> str | None:
+    """The one of the four this input means, or a refusal.
+
+    Read forgivingly, stored canonical. Clients have been sending "Per Hour" and
+    "per head" for years and there is no reason to break them — but what lands
+    in the column is one of person/hour/day/event and nothing else, so nothing
+    downstream has to have an opinion about a string again.
+
+    None and empty stay None: a service that never said how it charges is
+    priced flat, which is what the absence has always meant.
+
+    Anything unrecognisable is refused rather than quietly stored. It used to be
+    accepted and priced flat, which meant a vendor could type a word and get a
+    total two hundred times smaller than they meant.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    unit = _normalize_unit(text)
+    if unit is None:
+        raise ValueError(
+            f"'{value}' isn't a pricing unit we can charge against. "
+            "Use one of: person, hour, day, event."
+        )
+    return unit
+
+
 def _parse_clock(value: str | None) -> float | None:
     """Parse a clock string ("5:00 PM", "17:00", "5 pm") to fractional hours
     (0..24). Returns None for vague values ("evening", "TBD", "")."""
