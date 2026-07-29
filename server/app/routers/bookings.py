@@ -192,6 +192,38 @@ def get_vendor_bookings_by_id_route(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+@router.post(
+    "/{booking_id}/resend-checkin",
+    summary="Send this vendor their check-in email again",
+)
+@limiter.limit("10/minute")
+def resend_checkin(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """The client's nudge, for one booking.
+
+    Per booking rather than per plan, because that's the shape of the problem:
+    four vendors are here and the fifth hasn't checked in. Sending all five
+    another email to reach one of them is how a marketplace teaches its vendors
+    to filter its mail.
+
+    The cooldown lives in resend_state alongside every other condition, so this
+    and the button the client sees agree by construction.
+    """
+    from app.services.reminder_service import (
+        ReminderError,
+        resend_checkin_reminder as svc_resend,
+    )
+
+    try:
+        return svc_resend(booking_id=booking_id, user_id=current_user.user_id, db=db)
+    except ReminderError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 @router.post("/{booking_id}/check-in", summary="Verify and check into an event venue")
 def booking_check_in(
     booking_id: str,

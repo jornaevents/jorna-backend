@@ -17,15 +17,20 @@ from app.db.models import Booking, Bundle, Event, Service, User, Vendor
 from app.services.reminder_service import (
     REMINDER_GRACE,
     REMINDER_LEAD,
+    RESEND_CLOSES,
+    RESEND_COOLDOWN,
+    RESEND_OPENS,
     ReminderError,
     booking_for_token,
     checkin_token,
     due_for_reminder,
+    resend_checkin_reminder,
+    resend_state,
     send_checkin_reminder,
     send_due_reminders,
     starts_at,
 )
-from tests.test_api import TestingSessionLocal, client
+from tests.test_api import TestingSessionLocal, client, make_auth_headers_from_parts
 
 # Evanston, and the reception is at six in the evening. Chicago is UTC-5 in
 # June, so six o'clock local is 23:00 UTC — the number every time below is
@@ -427,3 +432,259 @@ def test_a_nonsense_link_is_refused():
         ).status_code
         == 401
     )
+
+
+# ── The client's resend ───────────────────────────────────────────────
+
+
+def _resend(world, now=None, user_id=None):
+    db = _db()
+    try:
+        return resend_checkin_reminder(
+            booking_id=world["booking_id"],
+            user_id=user_id or world["client_user_id"],
+            db=db,
+            now=now or (START_UTC - timedelta(minutes=10)),
+        )
+    finally:
+        db.close()
+
+
+def _state(world, now=None):
+    db = _db()
+    try:
+        return resend_state(_booking(db, world), db, now=now or START_UTC)
+    finally:
+        db.close()
+
+
+def test_the_client_can_send_the_email_again(booking_world, mocker):
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    result = _resend(booking_world)
+    assert result["sent"] is True
+    assert sender.call_args.kwargs["to"] == booking_world["vendor_email"]
+
+
+def test_a_resend_does_not_cancel_the_scheduled_reminder(booking_world, mocker):
+    """The trap this has its own column for.
+
+    The sweep sends only where checkin_reminder_sent_at is null. If a resend
+    wrote into that column, a client nudging a vendor early would have switched
+    off the real half-hour reminder by doing them a favour.
+    """
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+
+    def mine():
+        return [
+            c for c in sender.call_args_list
+            if c.kwargs.get("to") == booking_world["vendor_email"]
+        ]
+
+    # A nudge well before the automatic window.
+    _resend(booking_world, now=START_UTC - timedelta(hours=3))
+    assert len(mine()) == 1
+
+    db = _db()
+    try:
+        booking = _booking(db, booking_world)
+        assert booking.checkin_reminder_resent_at is not None
+        assert booking.checkin_reminder_sent_at is None, "the sweep's marker is untouched"
+
+        # The scheduled reminder still goes out at its own moment.
+        send_due_reminders(db=db, now=START_UTC - REMINDER_LEAD)
+    finally:
+        db.close()
+    assert len(mine()) == 2
+
+
+def test_only_the_client_can_resend(booking_world, mocker):
+    mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    with pytest.raises(ReminderError) as e:
+        _resend(booking_world, user_id=booking_world["vendor_user_id"])
+    assert e.value.status_code == 403
+
+
+def test_a_vendor_cannot_summon_their_own_reminder(booking_world):
+    """Over HTTP, with the vendor's own account."""
+    headers = make_auth_headers_from_parts(
+        booking_world["vendor_user_id"], "irrelevant@t.com", 0
+    )
+    r = client.post(
+        f"/bookings/{booking_world['booking_id']}/resend-checkin", headers=headers
+    )
+    assert r.status_code == 403
+
+
+def test_pressing_twice_sends_once(booking_world, mocker):
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    now = START_UTC - timedelta(minutes=10)
+    _resend(booking_world, now=now)
+    assert sender.call_count == 1
+
+    with pytest.raises(ReminderError) as e:
+        _resend(booking_world, now=now + timedelta(minutes=1))
+    assert e.value.status_code == 400
+    assert sender.call_count == 1
+
+    # Once the cooldown is up it works again.
+    _resend(booking_world, now=now + RESEND_COOLDOWN + timedelta(seconds=1))
+    assert sender.call_count == 2
+
+
+def test_the_scheduled_email_starts_the_cooldown_too(booking_world, mocker):
+    """A resend a minute after the automatic one is the same email twice."""
+    mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    db = _db()
+    try:
+        send_due_reminders(db=db, now=START_UTC - REMINDER_LEAD)
+    finally:
+        db.close()
+
+    with pytest.raises(ReminderError):
+        _resend(booking_world, now=START_UTC - REMINDER_LEAD + timedelta(minutes=1))
+
+
+# ── When the button is offered ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "offset,available",
+    [
+        (timedelta(days=-3), False),      # a fortnight out, nothing to nudge about
+        (-RESEND_OPENS - timedelta(minutes=1), False),
+        (-RESEND_OPENS + timedelta(minutes=1), True),
+        (timedelta(0), True),             # the moment it starts
+        (RESEND_CLOSES - timedelta(minutes=1), True),
+        (RESEND_CLOSES + timedelta(minutes=1), False),
+    ],
+)
+def test_the_button_is_offered_around_the_day(booking_world, offset, available):
+    assert _state(booking_world, now=START_UTC + offset)["can_resend"] is available
+
+
+def test_no_button_once_they_have_checked_in(booking_world):
+    db = _db()
+    try:
+        booking = _booking(db, booking_world)
+        booking.vendor_checked_in_at = datetime.now(timezone.utc).isoformat()
+        db.commit()
+    finally:
+        db.close()
+    state = _state(booking_world)
+    assert state["can_resend"] is False
+    assert "already checked in" in state["reason"]
+
+
+def test_no_button_for_a_vendor_who_never_accepted(booking_world):
+    db = _db()
+    try:
+        booking = _booking(db, booking_world)
+        booking.status = "pending"
+        db.commit()
+    finally:
+        db.close()
+    assert _state(booking_world)["can_resend"] is False
+
+
+def test_no_button_when_there_is_nowhere_to_check_in(booking_world):
+    """The same contract checkin_anchor keeps — never offer a call that must fail."""
+    db = _db()
+    try:
+        booking = _booking(db, booking_world)
+        bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+        event = db.query(Event).filter(Event.event_id == bundle.event_id).first()
+        event.address_latitude = None
+        event.address_longitude = None
+        db.commit()
+    finally:
+        db.close()
+    state = _state(booking_world)
+    assert state["can_resend"] is False
+    assert "address" in state["reason"]
+
+
+def test_the_booking_payload_carries_the_answer(booking_world):
+    """The client draws its button from this, and it comes from the same
+    function the endpoint enforces."""
+    db = _db()
+    try:
+        from app.services.booking_service import _booking_dict
+
+        payload = _booking_dict(_booking(db, booking_world), db)
+    finally:
+        db.close()
+    assert "can_resend_checkin" in payload
+    assert "resend_checkin_reason" in payload
+    assert "checkin_reminded_at" in payload
+
+
+# ── What the resent email says ────────────────────────────────────────
+
+
+def test_a_resend_after_the_start_does_not_claim_it_is_coming(booking_world, mocker):
+    """"in about half an hour", sent at eight to a vendor whose set began at
+    six, is the kind of small lie that costs an app its vendors."""
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    _resend(booking_world, now=START_UTC + timedelta(hours=2))
+    body = sender.call_args.kwargs["html"] + sender.call_args.kwargs["text"]
+    assert "started at 6:00 PM" in body
+    assert "minutes from now" not in body
+
+
+def test_a_resend_well_before_gives_the_time_and_no_countdown(booking_world, mocker):
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    _resend(booking_world, now=START_UTC - timedelta(hours=5))
+    body = sender.call_args.kwargs["html"] + sender.call_args.kwargs["text"]
+    assert "starts at 6:00 PM" in body
+    assert "minutes from now" not in body
+    assert "started at" not in body
+
+
+def test_a_resend_close_to_the_start_counts_down(booking_world, mocker):
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    _resend(booking_world, now=START_UTC - timedelta(minutes=20))
+    body = sender.call_args.kwargs["html"] + sender.call_args.kwargs["text"]
+    assert "about 20 minutes from now" in body
+
+
+def test_the_bundle_payload_carries_the_answer_too(booking_world):
+    """The one the web actually reads.
+
+    A bundle builds its own booking summaries rather than going through
+    _booking_dict — so a field added to that one alone never reaches the run
+    sheet where the button lives.
+    """
+    from app.services.bundle_service import get_bundle
+
+    db = _db()
+    try:
+        booking = _booking(db, booking_world)
+        payload = get_bundle(
+            bundle_id=booking.bundle_id,
+            caller_user_id=booking_world["client_user_id"], db=db
+        )
+    finally:
+        db.close()
+
+    row = next(
+        b for b in payload["bookings"] if b["booking_id"] == booking_world["booking_id"]
+    )
+    assert "can_resend_checkin" in row
+    assert "resend_checkin_reason" in row
+    assert "checkin_reminded_at" in row

@@ -194,7 +194,34 @@ def _local_time(booking: Booking, start: Optional[datetime]) -> str:
     return f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
 
 
-def _body(*, vendor_name: str, service_name: str, event_name: str, when: str,
+def _lead_phrase(*, when: str, now: datetime, start: Optional[datetime]) -> str:
+    """How the email describes the timing.
+
+    The automatic send is always half an hour out, so it could say so. A resend
+    is whenever the client pressed the button, and "in about half an hour" sent
+    at eight in the evening to a vendor whose set began at six is the kind of
+    small lie that costs an app its credibility with the people it depends on.
+    """
+    if start is None:
+        return f"starts at {when}"
+    minutes = round((start - now).total_seconds() / 60)
+    if minutes > 90:
+        return f"starts at {when}"
+    if minutes > 1:
+        return f"starts at {when} — about {minutes} minutes from now"
+    if minutes >= -5:
+        return f"starts at {when} — any moment now"
+    return f"started at {when}"
+
+
+def _subject(*, where: str, now: datetime, start: Optional[datetime]) -> str:
+    place = where or "check in when you arrive"
+    if start is not None and now >= start:
+        return f"Check in — {place}"
+    return f"You're on shortly — {place}"
+
+
+def _body(*, vendor_name: str, service_name: str, event_name: str, lead: str,
           where: str, url: str) -> tuple[str, str]:
     """The email, in both the shapes Resend wants.
 
@@ -205,7 +232,7 @@ def _body(*, vendor_name: str, service_name: str, event_name: str, when: str,
     html = f"""
       <div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:480px;color:#35101b">
         <p>{greeting}</p>
-        <p><strong>{service_name}</strong> for {event_name} starts at {when}, in about half an hour.</p>
+        <p><strong>{service_name}</strong> for {event_name} {lead}.</p>
         <p style="color:#6b5c50">{where}</p>
         <p style="margin:28px 0">
           <a href="{url}"
@@ -224,7 +251,7 @@ def _body(*, vendor_name: str, service_name: str, event_name: str, when: str,
 
     text = (
         f"{greeting}\n\n"
-        f"{service_name} for {event_name} starts at {when}, in about half an hour.\n"
+        f"{service_name} for {event_name} {lead}.\n"
         f"{where}\n\n"
         f"Check in when you arrive: {url}\n\n"
         "The link checks that you're at the venue, so open it once you're there. "
@@ -235,25 +262,14 @@ def _body(*, vendor_name: str, service_name: str, event_name: str, when: str,
     return html, text
 
 
-def send_checkin_reminder(booking: Booking, db: Session, *, now: Optional[datetime] = None) -> bool:
-    """Email one vendor. Returns whether it went.
-
-    Marks the booking either way. A send that failed is not retried on the next
-    sweep by design — the sweep runs every few minutes, and a retry loop against
-    a bad address would mean a vendor's inbox filling up if it ever started
-    working. The window is half an hour wide; a reminder that missed it has
-    missed it, and the app still has the button.
-    """
-    now = now or datetime.now(timezone.utc)
-
+def _deliver(booking: Booking, db: Session, *, now: datetime) -> bool:
+    """Build and send the email. Records nothing — the callers own their markers."""
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     user = (
         db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
     )
     if not user or not user.email:
         logger.info("No email for the vendor on booking %s", booking.booking_id)
-        booking.checkin_reminder_sent_at = now
-        db.commit()
         return False
 
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
@@ -268,27 +284,39 @@ def send_checkin_reminder(booking: Booking, db: Session, *, now: Optional[dateti
         vendor_name=(user.f_name or "").strip(),
         service_name=(service.name if service else "Your booking"),
         event_name=(bundle.event_name if bundle and bundle.event_name else "a celebration"),
-        when=_local_time(booking, start),
+        lead=_lead_phrase(when=_local_time(booking, start), now=now, start=start),
         where=booking.location or "",
         url=checkin_url(booking, now=now),
     )
 
     result = send_email(
         to=user.email,
-        subject=f"You're on in 30 minutes — {booking.location or 'check in when you arrive'}",
+        subject=_subject(where=booking.location or "", now=now, start=start),
         html=html,
         text=text,
     )
-
-    booking.checkin_reminder_sent_at = now
-    db.commit()
-
     if not result.get("success"):
         logger.warning(
-            "Check-in reminder for booking %s not sent: %s",
+            "Check-in email for booking %s not sent: %s",
             booking.booking_id, result.get("error"),
         )
     return bool(result.get("success"))
+
+
+def send_checkin_reminder(booking: Booking, db: Session, *, now: Optional[datetime] = None) -> bool:
+    """The scheduled email. Returns whether it went.
+
+    Marks the booking either way. A send that failed is not retried on the next
+    sweep by design — the sweep runs every few minutes, and a retry loop against
+    a bad address would mean a vendor's inbox filling up if it ever started
+    working. The window is half an hour wide; a reminder that missed it has
+    missed it, and the client can send it again by hand.
+    """
+    now = now or datetime.now(timezone.utc)
+    sent = _deliver(booking, db, now=now)
+    booking.checkin_reminder_sent_at = now
+    db.commit()
+    return sent
 
 
 def send_due_reminders(*, db: Session, now: Optional[datetime] = None) -> int:
@@ -305,3 +333,136 @@ def send_due_reminders(*, db: Session, now: Optional[datetime] = None) -> int:
     if sent:
         logger.info("Sent %d check-in reminders", sent)
     return sent
+
+
+# ── The client's own nudge ────────────────────────────────────────────
+#
+# A vendor is on site, unloading, and hasn't checked in. The client can see that
+# — their name has no "Here" against it on the day — and the useful thing to be
+# able to do about it is send the email again. Per booking, because that's what
+# a check-in is: this vendor, this service, this arrival.
+
+# Long enough that pressing it twice in frustration doesn't send twice, short
+# enough to be useful when a vendor says the first one never arrived.
+RESEND_COOLDOWN = timedelta(minutes=10)
+
+# When the button is worth offering at all. Wide enough to cover a vendor
+# arriving early and one still packing down; not so wide that a client can nudge
+# somebody about a wedding a fortnight away.
+RESEND_OPENS = timedelta(hours=6)
+RESEND_CLOSES = timedelta(hours=12)
+
+
+def last_reminder_at(booking: Booking) -> Optional[datetime]:
+    """The most recent email of either kind, scheduled or asked for.
+
+    Both count towards the cooldown: a resend pressed a minute after the
+    automatic one is the same email arriving twice.
+    """
+    stamps = [
+        s for s in (booking.checkin_reminder_sent_at, booking.checkin_reminder_resent_at)
+        if s is not None
+    ]
+    if not stamps:
+        return None
+    latest = max(stamps)
+    # Stored naive (the column has no timezone) but always written as UTC.
+    return latest if latest.tzinfo else latest.replace(tzinfo=timezone.utc)
+
+
+def resend_state_from(
+    booking: Booking,
+    *,
+    start: Optional[datetime],
+    has_anchor: bool,
+    now: datetime,
+) -> dict:
+    """The rule itself, with every lookup already done.
+
+    Split out because a bundle's booking summaries are built without a session
+    on purpose — so a list of bundles can batch its joins instead of issuing
+    three queries per booking. Every booking in a bundle shares one check-in
+    anchor, so the caller resolves it once and passes the answer in.
+    """
+    if booking.status not in COMMITTED_STATUSES:
+        return {"can_resend": False, "reason": "This vendor hasn't taken the booking yet."}
+    if booking.vendor_checked_in_at:
+        return {"can_resend": False, "reason": "They've already checked in."}
+
+    if start is None:
+        return {"can_resend": False, "reason": "This booking has no date and time yet."}
+
+    if not has_anchor:
+        return {
+            "can_resend": False,
+            "reason": "There's nowhere to check in against until the plan has an address.",
+        }
+
+    if now < start - RESEND_OPENS:
+        return {"can_resend": False, "reason": "Available closer to the day."}
+    if now > start + RESEND_CLOSES:
+        return {"can_resend": False, "reason": "This booking's day has passed."}
+
+    last = last_reminder_at(booking)
+    if last is not None and now - last < RESEND_COOLDOWN:
+        return {
+            "can_resend": False,
+            "reason": "Just sent — you can send another in a few minutes.",
+            "retry_at": (last + RESEND_COOLDOWN).isoformat(),
+        }
+
+    return {"can_resend": True, "reason": None}
+
+
+def resend_state(booking: Booking, db: Session, *, now: Optional[datetime] = None) -> dict:
+    """Whether the client may send this vendor their check-in email, and why not.
+
+    The one definition, read both by the endpoint that does it and by the
+    booking payload the client draws its button from — so the button is never
+    offered for a call that must fail, the same contract checkin_anchor keeps.
+    """
+    lat, lng = checkin_anchor(booking, db)
+    return resend_state_from(
+        booking,
+        start=starts_at(booking, db),
+        has_anchor=lat is not None and lng is not None,
+        now=now or datetime.now(timezone.utc),
+    )
+
+
+def resend_checkin_reminder(
+    *, booking_id: str, user_id: str, db: Session, now: Optional[datetime] = None,
+) -> dict:
+    """Send this vendor their check-in email again, at the client's request.
+
+    The client's, specifically: it's their event, and the vendor is the one
+    person who shouldn't be able to make their own reminder arrive.
+    """
+    now = now or datetime.now(timezone.utc)
+
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise ReminderError(404, "Booking not found")
+    if booking.user_id != user_id:
+        raise ReminderError(403, "This isn't your booking")
+
+    state = resend_state(booking, db, now=now)
+    if not state["can_resend"]:
+        raise ReminderError(400, state["reason"])
+
+    sent = _deliver(booking, db, now=now)
+    # Recorded even when the send failed, so a client hammering a button against
+    # a bounced address doesn't queue up a hundred of them. The message below
+    # says what happened either way.
+    booking.checkin_reminder_resent_at = now
+    db.commit()
+
+    return {
+        "sent": sent,
+        "message": (
+            "Check-in email sent."
+            if sent
+            else "We couldn't reach that vendor by email. Try messaging them."
+        ),
+        "resent_at": now.isoformat(),
+    }
