@@ -388,9 +388,45 @@ class TestBookingNotificationIntegration:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "pending"
-        assert "notification" in data
-        assert "client_result" in data["notification"]
-        assert "vendor_result" in data["notification"]
+        # No bundle given, so this booking opened its own — as a draft. A draft
+        # is the client still assembling, and nobody is told until they send.
+        assert data["notification"] == {
+            "skipped": "Draft plan — vendors are told when it's sent."
+        }
+
+    def test_booking_into_a_sent_plan_does_notify(self, seeded_db):
+        """Those vendors are already waiting on this plan, and it could not have
+        been sent without the details — so a service added to it goes out now."""
+        from datetime import datetime, timezone
+        from app.db.models import Bundle
+
+        db = seeded_db["db"]
+        user = seeded_db["user"]
+        service = seeded_db["service"]
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=user.user_id, name="Live plan", status="confirmed",
+                        created_at=now, updated_at=now)
+        db.add(bundle)
+        db.commit()
+        db.refresh(bundle)
+
+        response = client.post(
+            "/bookings",
+            json={
+                "service_id": service.service_id,
+                "event_name": "Diwali Party",
+                "time_start": "18:00",
+                "time_end": "22:00",
+                "location": "Community Hall",
+                "date_iso": "2026-11-02",
+                "bundle_id": bundle.bundle_id,
+            },
+            headers=make_auth_headers(user),
+        )
+        assert response.status_code == 200
+        notification = response.json()["notification"]
+        assert "client_result" in notification
+        assert "vendor_result" in notification
 
     def test_approve_booking_includes_notification(self, seeded_db):
         db = seeded_db["db"]
