@@ -412,6 +412,7 @@ def _build_bundle_with_strategy(
     state: ChatbotState,
     strategy: str,
     db: Session,
+    booked_vendor_ids: set[str] | None = None,
 ) -> Bundle:
     """Build a bundle using a specific selection strategy.
 
@@ -449,8 +450,11 @@ def _build_bundle_with_strategy(
             )
             llm_relevant_tags = result or None
 
-    # Pre-compute once — same set applies to every category in this bundle
-    booked_vendor_ids = _get_booked_vendor_ids(state, db)
+    # Same set for every category in this bundle — and, when the caller passes
+    # one, for every bundle in a set of options too. Deriving it here per bundle
+    # is what let each option see the previous one's freshly written bookings.
+    if booked_vendor_ids is None:
+        booked_vendor_ids = _get_booked_vendor_ids(state, db)
     price_cap = _per_category_cap(state)
     used_vendor_ids: set[str] = set()
 
@@ -555,6 +559,29 @@ def generate_multi_bundle(
     options: list[BundleOption] = []
     group_id = str(uuid.uuid4()) if user_id else None
 
+    # Who's genuinely unavailable, read once — before any of these options exist.
+    #
+    # Each option is saved as it's built, and saving writes real bookings. The
+    # availability check then read them back, so option two found option one's
+    # vendors "taken" and option three found both. These are alternatives for
+    # one event — you keep one and the other two are deleted — so they were
+    # competing for the same vendors and the first one always won. With a thin
+    # category that emptied the later bundles outright; with a fat one it just
+    # looked like variety, since no vendor could ever appear in two of them.
+    #
+    # They draw from the same pool now, which also means the same vendor may
+    # appear in more than one. That's right: if one venue is the best fit at
+    # every price point, the tiers should differ where there's genuine choice,
+    # not by being denied the obvious answer.
+    booked_vendor_ids = _get_booked_vendor_ids(
+        ChatbotState(
+            event_date=req.event_date,
+            date_range=req.date_range,
+            needed_categories=needed,
+        ),
+        db,
+    )
+
     for strategy, tier, label, description, factors in _PRESETS:
         state = ChatbotState(
             event_date=req.event_date,
@@ -571,7 +598,7 @@ def generate_multi_bundle(
             preferences=req.preferences,
         )
 
-        bundle = _build_bundle_with_strategy(state, strategy, db)
+        bundle = _build_bundle_with_strategy(state, strategy, db, booked_vendor_ids)
         state.bundle = bundle
 
         db_bundle_id: str | None = None
@@ -785,21 +812,42 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
         else_=Booking.date_iso,
     )
 
-    # "confirmed" was never a real booking status (the values are pending /
-    # negotiation_ongoing / approved / rejected / payment_confirmed), so the old
-    # filter silently let already-booked vendors back into new bundles. Exclude
-    # vendors who are locked (approved/paid) for the date, plus those with an
-    # in-flight pending request, so the builder doesn't propose a doomed slot.
+    # Only bookings that actually commit a vendor. A pending request is a lead —
+    # LOCKED_BOOKING_STATUSES says so, and nothing stops a vendor answering two
+    # of them. Counting pending here meant one client's un-actioned request hid
+    # a vendor from every other client's builder; worse, this builder writes
+    # pending bookings for every option it generates, so an abandoned draft went
+    # on hiding its vendors from everyone, indefinitely.
+    from app.services.booking_service import LOCKED_BOOKING_STATUSES, booking_blocks
+
     rows = (
-        db.query(Booking.vendor_id)
+        db.query(Booking)
         .filter(
-            Booking.status.in_(["pending", "approved", "payment_confirmed"]),
+            Booking.status.in_(LOCKED_BOOKING_STATUSES),
             Booking.date_iso <= req_end,
             booking_end >= req_start,
         )
         .all()
     )
-    return {row.vendor_id for row in rows}
+
+    # And only where the hours actually collide, by the same rule that decides
+    # whether a vendor may accept. A vendor with a morning ceremony can take an
+    # evening reception, so proposing them isn't proposing a doomed slot.
+    # (Today the builder rarely knows its own times — it writes "TBD" — and an
+    # unknown time can't be shown not to overlap, so this stays whole-day until
+    # the builder asks. It's the shared rule that matters: one definition, so
+    # what the builder offers and what a vendor may accept can't disagree.)
+    return {
+        b.vendor_id
+        for b in rows
+        if booking_blocks(
+            b,
+            date_iso=req_start,
+            date_end=req_end if req_end != req_start else None,
+            time_start=state.time_start,
+            time_end=state.time_end,
+        )
+    }
 
 
 def _score_vendor(

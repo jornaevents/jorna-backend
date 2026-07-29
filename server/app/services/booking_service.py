@@ -70,6 +70,33 @@ def _same_single_day(a_start: str, a_end: str | None, b_start: str, b_end: str |
     return a_end in (None, "", a_start) and b_end in (None, "", b_start) and a_start == b_start
 
 
+def booking_blocks(
+    existing: Booking,
+    *,
+    date_iso: str,
+    date_end: str | None,
+    time_start: str | None,
+    time_end: str | None,
+) -> bool:
+    """Would *existing* stop a job running over the given dates and hours?
+
+    Assumes the dates already overlap — the caller's query establishes that.
+    This decides the rest: whole days, unless both sides are single-day and on
+    the same day, in which case the hours settle it.
+
+    Shared with the bundle builder, which asks the same question of a whole
+    vendor list before proposing them. Two copies of this would let the builder
+    hide vendors who could take the job, or propose ones who couldn't.
+    """
+    if not _same_single_day(date_iso, date_end, existing.date_iso, existing.date_end):
+        return True
+    requested = _window(time_start, time_end)
+    booked = _window(existing.time_start, existing.time_end)
+    if requested is None or booked is None:
+        return True
+    return requested[0] < booked[1] and booked[0] < requested[1]
+
+
 def vendor_has_conflicting_booking(
     *,
     vendor_id: str,
@@ -122,17 +149,17 @@ def vendor_has_conflicting_booking(
     if exclude_booking_id:
         query = query.filter(Booking.booking_id != exclude_booking_id)
 
-    # The query answers "which days collide"; the hours are settled here, where
-    # a null date_end and a midnight-crossing window are easier to read than in
-    # SQL, and the candidate set is a handful of rows at most.
-    requested = _window(time_start, time_end)
+    # The query answers "which days collide"; booking_blocks settles the hours,
+    # where a null date_end and a midnight-crossing window are easier to read
+    # than in SQL, and the candidate set is a handful of rows at most.
     for existing in query.all():
-        if not _same_single_day(req_start, date_end, existing.date_iso, existing.date_end):
-            return existing
-        booked = _window(existing.time_start, existing.time_end)
-        if requested is None or booked is None:
-            return existing
-        if requested[0] < booked[1] and booked[0] < requested[1]:
+        if booking_blocks(
+            existing,
+            date_iso=req_start,
+            date_end=date_end,
+            time_start=time_start,
+            time_end=time_end,
+        ):
             return existing
     return None
 
