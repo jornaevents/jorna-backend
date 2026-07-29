@@ -7,13 +7,14 @@ import json
 import logging
 import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # google_auth_oauthlib raises an error if Google returns extra scopes (e.g. openid,
 # userinfo.email) beyond what was explicitly requested. Relaxing this is safe here
 # because we only use the calendar scope — the extra ones come from Google automatically.
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import SECRET_KEY
@@ -178,25 +179,45 @@ def get_vendor_availability(
     )
     day_to_hours = {av.day_of_week: (av.start_time, av.end_time) for av in base_hours}
 
-    # 2. Internal Desiconnect bookings
+    # 2. Internal Desiconnect bookings — the ones that actually commit the
+    #    vendor. This took every booking regardless of status, so a request the
+    #    vendor had declined, or one that was refunded, went on marking them
+    #    busy and hiding them from search. A pending request is a lead and
+    #    doesn't commit anybody either; LOCKED_BOOKING_STATUSES is the same set
+    #    the approval check uses.
+    from app.services.booking_service import LOCKED_BOOKING_STATUSES
+
     bookings = (
         db.query(Booking)
         .filter(
             Booking.vendor_id == vendor_id,
-            Booking.date_iso >= start_date,
-            Booking.date_iso <= end_date,
+            Booking.status.in_(LOCKED_BOOKING_STATUSES),
+            Booking.date_iso <= end_date[:10],
+            func.coalesce(Booking.date_end, Booking.date_iso) >= start_date[:10],
         )
         .all()
     )
 
     internal_busy: list[tuple[datetime, datetime]] = []
     for bk in bookings:
+        last_day = bk.date_end or bk.date_iso
         try:
             bk_start = datetime.fromisoformat(f"{bk.date_iso}T{bk.time_start}:00+00:00")
-            bk_end = datetime.fromisoformat(f"{bk.date_iso}T{bk.time_end}:00+00:00")
-            internal_busy.append((bk_start, bk_end))
-        except ValueError:
-            continue
+            bk_end = datetime.fromisoformat(f"{last_day}T{bk.time_end}:00+00:00")
+            # An end at or before the start crossed midnight — the same reading
+            # the conflict check and the pricing arithmetic both use.
+            if bk_end <= bk_start:
+                bk_end += timedelta(days=1)
+        except (ValueError, TypeError):
+            # No usable hours — "TBD", or a multi-day hire, which occupies its
+            # days completely. Busy for the whole span rather than dropped: a
+            # booking nobody can read the hours of is not a vendor who's free.
+            try:
+                bk_start = datetime.fromisoformat(f"{bk.date_iso}T00:00:00+00:00")
+                bk_end = datetime.fromisoformat(f"{last_day}T00:00:00+00:00") + timedelta(days=1)
+            except (ValueError, TypeError):
+                continue
+        internal_busy.append((bk_start, bk_end))
 
     # 3. Google Calendar busy blocks
     google_busy: list[tuple[datetime, datetime]] = []
