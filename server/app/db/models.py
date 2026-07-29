@@ -195,6 +195,11 @@ class Booking(Base):
     customer_confirmed_at = Column(DateTime, nullable=True)
     vendor_confirmed_at = Column(DateTime, nullable=True)
     funds_released_at = Column(DateTime, nullable=True)
+    # When the vendor was emailed their half-hour warning. The sweep passes
+    # through the window several times, so the send is recorded and the window
+    # filters on it — otherwise a vendor gets the same email every five minutes
+    # for half an hour.
+    checkin_reminder_sent_at = Column(DateTime, nullable=True)
 
 
 class Bundle(Base):

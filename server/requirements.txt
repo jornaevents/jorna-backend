@@ -17,6 +17,11 @@ sentry-sdk==2.64.0
 slowapi==0.1.9
 sqlalchemy==2.0.48
 stripe==15.0.1
+# The IANA timezone database, for zoneinfo. Not optional: zoneinfo reads the
+# system's copy and falls back to this, and a container without one resolves
+# every zone to nothing — which would silently switch off every reminder that
+# has to fire at a real local moment.
+tzdata==2026.3
 uvicorn==0.42.0
 websockets==16.1
 openai
