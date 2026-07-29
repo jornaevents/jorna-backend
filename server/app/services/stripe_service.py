@@ -933,3 +933,212 @@ def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
     _release_funds(booking, db)
     logger.info("Dispute resolved: funds released to vendor for booking %s", booking_id)
     return {"message": "Dispute resolved. Funds have been released to the vendor.", "payment_status": "released"}
+
+
+# ── Card on file ──────────────────────────────────────────────────────
+#
+# Payment used to be the client's job after the fact: send the plan, wait for
+# each vendor, then come back and press Pay on every one that accepted. Plenty
+# never came back, and a vendor who had held a date was left waiting on
+# something that was nobody's next action.
+#
+# The card is collected once, when the plan is sent, and charged the moment a
+# vendor accepts. Money moves at exactly the same point in the story as before —
+# this changes where the card is captured, not when the charge happens, so
+# escrow, release, refunds and disputes are all untouched.
+#
+# Deliberately not a charge up front. A plan has four to eight vendors and any
+# of them may decline; charging on send would mean refunding each decline, and
+# Stripe does not return the processing fee on a refund. Saving a card costs
+# nothing when a vendor says no.
+
+
+def _stripe_customer(user: User, db: Session) -> str:
+    """The Stripe Customer for this user, created on first use."""
+    if user.stripe_customer_id:
+        return user.stripe_customer_id
+    try:
+        customer = stripe.Customer.create(
+            email=user.email,
+            name=f"{user.f_name} {user.l_name}".strip() or None,
+            metadata={"user_id": user.user_id},
+        )
+    except stripe.StripeError as e:
+        raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
+    user.stripe_customer_id = customer.id
+    db.commit()
+    return customer.id
+
+
+def create_card_setup_session(*, user_id: str, db: Session, return_base: str) -> dict:
+    """A Stripe-hosted page for saving a card, with no charge attached.
+
+    Checkout in setup mode rather than an inline element: the same hosted form
+    the rest of this integration uses, so card details never reach our servers
+    and 3-D Secure stays Stripe's problem rather than ours.
+    """
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise StripeError(404, "User not found")
+
+    customer_id = _stripe_customer(user, db)
+    base = return_base.rstrip("/")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="setup",
+            customer=customer_id,
+            payment_method_types=["card"],
+            metadata={"user_id": user_id},
+            success_url=f"{base}/card-saved/?status=success",
+            cancel_url=f"{base}/card-saved/?status=cancel",
+        )
+    except stripe.StripeError as e:
+        raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
+
+    return {"setup_url": session.url}
+
+
+def saved_card(*, user_id: str, db: Session) -> dict:
+    """What is on file, for a screen that needs to say."""
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise StripeError(404, "User not found")
+    return {
+        "has_card": bool(user.stripe_payment_method_id),
+        "brand": user.card_brand,
+        "last4": user.card_last4,
+    }
+
+
+def sync_saved_card(*, user_id: str, db: Session) -> dict:
+    """Adopt the newest card on the customer as the one we will charge.
+
+    Called when the client returns from the hosted form. Reads Stripe rather
+    than trusting the redirect, and is idempotent — landing on that page twice
+    settles on the same card.
+    """
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise StripeError(404, "User not found")
+    if not user.stripe_customer_id:
+        return saved_card(user_id=user_id, db=db)
+
+    try:
+        methods = stripe.PaymentMethod.list(customer=user.stripe_customer_id, type="card")
+    except stripe.StripeError as e:
+        raise StripeError(502, f"Stripe error: {e.user_message or str(e)}")
+
+    newest = max(methods.data, key=lambda m: m.created, default=None)
+    if newest is not None:
+        card = _sv(newest, "card") or {}
+        user.stripe_payment_method_id = newest.id
+        user.card_brand = _sv(card, "brand")
+        user.card_last4 = _sv(card, "last4")
+        db.commit()
+        logger.info("Saved card %s for user %s", newest.id, user_id)
+
+    return saved_card(user_id=user_id, db=db)
+
+
+def forget_saved_card(*, user_id: str, db: Session) -> dict:
+    """Detach the card. The Customer stays — it is their billing identity."""
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise StripeError(404, "User not found")
+    if user.stripe_payment_method_id:
+        try:
+            stripe.PaymentMethod.detach(user.stripe_payment_method_id)
+        except stripe.StripeError as exc:
+            # Already detached, or never really there. Forgetting it here is the
+            # part that matters.
+            logger.warning("Detaching card for %s failed: %s", user_id, exc)
+    user.stripe_payment_method_id = None
+    user.card_brand = None
+    user.card_last4 = None
+    db.commit()
+    return {"has_card": False}
+
+
+class CardChargeUnavailable(Exception):
+    """No card on file, or nothing chargeable about this booking yet.
+
+    Distinct from a card that was tried and declined: this one means do not try.
+    """
+
+
+def charge_saved_card(*, booking_id: str, db: Session) -> dict:
+    """Charge the client's saved card for a booking a vendor has just accepted.
+
+    Off-session: the client is not at the keyboard, and authorised this when
+    they sent the plan. A card that needs 3-D Secure now will decline, which is
+    why the caller must leave the booking payable by hand rather than treat a
+    failure as fatal.
+
+    Everything downstream is unchanged — same amount, same platform fee, same
+    transfer_group — so escrow, release, refund and dispute behave exactly as
+    they do for a booking paid through Checkout.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise CardChargeUnavailable("Booking not found")
+    if booking.payment_status not in ("unpaid", "processing"):
+        raise CardChargeUnavailable(f"Already {booking.payment_status}")
+
+    user = db.query(User).filter(User.user_id == booking.user_id).first()
+    if not user or not user.stripe_payment_method_id or not user.stripe_customer_id:
+        raise CardChargeUnavailable("No card on file")
+
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    if not service:
+        raise CardChargeUnavailable("Service not found")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    if not vendor or not vendor.stripe_onboarding_complete:
+        raise CardChargeUnavailable("Vendor cannot receive payouts yet")
+
+    from app.services.booking_service import resolve_total_cents
+
+    amount_cents = resolve_total_cents(booking, service)
+    if amount_cents is None:
+        # Rate-priced with an unknown quantity. Refuse rather than charge the
+        # bare per-unit rate as though it were the total.
+        raise CardChargeUnavailable("Total not resolvable yet")
+
+    platform_fee_cents = round(amount_cents * PLATFORM_FEE_PERCENT / 100)
+
+    intent = stripe.PaymentIntent.create(
+        amount=amount_cents,
+        currency=booking.currency,
+        customer=user.stripe_customer_id,
+        payment_method=user.stripe_payment_method_id,
+        off_session=True,
+        confirm=True,
+        transfer_group=booking_id,
+        metadata={
+            "booking_id": booking_id,
+            "vendor_id": booking.vendor_id,
+            "user_id": booking.user_id,
+            "charged": "on_vendor_acceptance",
+        },
+        # One charge per booking, however many times acceptance is retried.
+        idempotency_key=f"accept_{booking_id}",
+    )
+
+    booking.payment_intent_id = intent.id
+    booking.amount_cents = amount_cents
+    booking.platform_fee_cents = platform_fee_cents
+    # The webhook is what normally marks a booking paid, and it still will. This
+    # mirrors it for the common case where the intent succeeds inline; both
+    # paths write the same fields, and the webhook is idempotent.
+    if intent.status == "succeeded":
+        booking.payment_status = "paid"
+        booking.paid_at = datetime.now(timezone.utc)
+    else:
+        booking.payment_status = "processing"
+    db.commit()
+
+    logger.info(
+        "Charged saved card for booking %s: %s (%d cents)",
+        booking_id, intent.status, amount_cents,
+    )
+    return {"payment_status": booking.payment_status, "amount_cents": amount_cents}

@@ -840,6 +840,30 @@ def update_booking_status(
     db.commit()
     db.refresh(booking)
 
+    # Accepting is what triggers the charge. The client saved a card when they
+    # sent the plan precisely so this moment wouldn't wait on them coming back —
+    # a vendor who has just held a date shouldn't then be waiting on a payment
+    # that is nobody's next action.
+    #
+    # Never fatal. An off-session charge can decline for reasons that have
+    # nothing to do with the acceptance — a card needing 3-D Secure, an expiry,
+    # a limit — and the vendor's answer is not the place to surface that. The
+    # booking stays approved and unpaid, which is exactly the state the manual
+    # Pay button already handles, so the client is asked in the usual way.
+    if status_str == BookingStatus.APPROVED.value:
+        try:
+            from app.services.stripe_service import CardChargeUnavailable, charge_saved_card
+
+            charge_saved_card(booking_id=booking.booking_id, db=db)
+            db.refresh(booking)
+        except CardChargeUnavailable as exc:
+            logger.info("No automatic charge for booking %s: %s", booking.booking_id, exc)
+        except Exception as exc:  # noqa: BLE001 — including stripe.CardError
+            logger.warning(
+                "Automatic charge failed for booking %s: %s", booking.booking_id, exc
+            )
+            db.rollback()
+
     client, vendor_obj, vendor_user, service = _get_booking_parties(db, booking)
     _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     _event_name = (_bundle.event_name if _bundle else None) or "Event"
