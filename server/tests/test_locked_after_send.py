@@ -411,3 +411,176 @@ def test_the_payload_says_which_fields_are_locked(plan):
         assert "guest_count" in locked
     finally:
         db.close()
+
+
+# ── Every word a vendor might price by ────────────────────────────────
+#
+# price_unit is free text with no validation, and the pricer accepts far more
+# than the readiness check used to. A caterer priced "per head" therefore sent
+# with no guest count and arrived at checkout unpayable — the request out, the
+# vendor committed, and nobody able to pay them.
+
+
+PER_PERSON_WORDS = [
+    "person", "Person", "per person", "Per Person", "persons", "PERSON",
+    "head", "per head", "Per Head", "guest", "per guest", "plate", "per plate",
+    "pax", "per pax",
+]
+
+
+@pytest.mark.parametrize("unit", PER_PERSON_WORDS)
+def test_every_per_person_word_demands_a_headcount(plan, unit):
+    """The readiness check and the pricer have to agree on one string.
+
+    If the pricer reads it as per person and the gate doesn't, the plan sends
+    and the booking can never be charged.
+    """
+    from app.services.booking_service import _normalize_unit, resolve_total_cents
+
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["per_head_service_id"]
+        ).first()
+        service.price_unit = unit
+        db.commit()
+
+        assert _normalize_unit(unit) == "person", "the pricer reads this as per person"
+
+        created = _book(
+            plan, db, service_id=plan["per_head_service_id"], guest_count=None
+        )
+        with pytest.raises(BundleError) as e:
+            select_bundle(
+                bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+            )
+        assert "guest count" in e.value.detail
+
+        # And the reason it matters: without a count there is no total.
+        booking = db.query(Booking).filter(
+            Booking.booking_id == created["booking_id"]
+        ).first()
+        assert resolve_total_cents(booking, service) is None
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("unit", ["hour", "hourly", "per hour", "Per Hourly", "hours"])
+def test_every_per_hour_word_demands_a_time_window(plan, unit):
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["flat_service_id"]
+        ).first()
+        service.price_unit = unit
+        db.commit()
+
+        created = _book(plan, db, time_start="", time_end="")
+        with pytest.raises(BundleError) as e:
+            select_bundle(
+                bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+            )
+        assert "start and end time" in e.value.detail
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("unit", ["event", "per event", "flat", None, "", "widgets"])
+def test_a_flat_rate_service_asks_for_no_quantity(plan, unit):
+    """Unknown words price flat, and a flat rate needs nothing multiplying it."""
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["flat_service_id"]
+        ).first()
+        service.price_unit = unit
+        db.commit()
+
+        created = _book(plan, db, guest_count=None)
+        select_bundle(
+            bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+        )
+        bundle = db.query(Bundle).filter(Bundle.bundle_id == created["bundle_id"]).first()
+        assert bundle.status == "confirmed"
+    finally:
+        db.close()
+
+
+def test_the_gate_and_the_pricer_never_disagree():
+    """The property, rather than a list of examples.
+
+    Anything the pricer treats as needing a quantity must be something the gate
+    demands that quantity for. These were two separate lists once, and the
+    difference between them was a booking nobody could pay for.
+    """
+    from app.services.booking_service import _normalize_unit
+    from app.services.plan_readiness import _price_unit_kind
+
+    words = [
+        None, "", "person", "Person", "persons", "per person", "PER PERSON",
+        "head", "per head", "guest", "guests", "plate", "plates", "pax",
+        "hour", "hours", "hourly", "per hour", "Per Hourly",
+        "day", "days", "daily", "per day",
+        "event", "per event", "flat", "widgets", "  Per   Person  ",
+    ]
+    for w in words:
+        assert _price_unit_kind(w) == (_normalize_unit(w) or "event"), w
+
+
+# ── Re-sending is a send too ──────────────────────────────────────────
+
+
+def test_re_sending_will_not_push_out_an_incomplete_request(plan):
+    """select_bundle notifies whoever hasn't answered, so a second press is a
+    request going out like any other."""
+    db = _db()
+    try:
+        created = _book(plan, db)
+        select_bundle(
+            bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+        )
+
+        # A booking that lost its headcount after the fact — the vendor changed
+        # what they charge by, which nothing else guards against.
+        second = _book(
+            plan, db, bundle_id=created["bundle_id"],
+            service_id=plan["per_head_service_id"], guest_count=200,
+        )
+        booking = db.query(Booking).filter(
+            Booking.booking_id == second["booking_id"]
+        ).first()
+        booking.guest_count = None
+        db.commit()
+
+        with pytest.raises(BundleError) as e:
+            select_bundle(
+                bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+            )
+        assert "guest count" in e.value.detail
+    finally:
+        db.close()
+
+
+def test_re_sending_is_not_blocked_by_a_booking_already_answered(plan):
+    """An accepted booking isn't being asked again, so its details aren't this
+    send's business."""
+    db = _db()
+    try:
+        created = _book(plan, db)
+        select_bundle(
+            bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+        )
+        booking = db.query(Booking).filter(
+            Booking.booking_id == created["booking_id"]
+        ).first()
+        booking.status = "approved"
+        booking.guest_count = None
+        booking.location = "Hall"
+        db.commit()
+
+        # Nothing pending, nothing to refuse.
+        select_bundle(
+            bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+        )
+    finally:
+        db.close()

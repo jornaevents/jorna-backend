@@ -618,18 +618,23 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
     # question, not given a job.
     from app.services.plan_readiness import describe_gaps, plan_gaps
 
-    if bundle.status == "draft":
-        gaps = plan_gaps(bundle_id, db)
-        if gaps:
-            booking, missing = gaps[0]
-            service = db.query(Service).filter(Service.service_id == booking.service_id).first()
-            name = service.name if service else "One of these bookings"
-            more = f" ({len(gaps) - 1} more still need details.)" if len(gaps) > 1 else ""
-            raise BundleError(
-                400,
-                f"{name} still needs {describe_gaps(missing)}. "
-                f"Fill that in before sending — once a request is out, it can't be changed.{more}",
-            )
+    # Checked on every send, not only the first. Re-sending a plan asks the
+    # vendors who haven't answered yet, and that is a request going out like any
+    # other — scoped to those bookings, so a plan already half accepted isn't
+    # held up over somebody else's completed one.
+    gaps = plan_gaps(
+        bundle_id, db, only_statuses=None if bundle.status == "draft" else ("pending",)
+    )
+    if gaps:
+        booking, missing = gaps[0]
+        service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+        name = service.name if service else "One of these bookings"
+        more = f" ({len(gaps) - 1} more still need details.)" if len(gaps) > 1 else ""
+        raise BundleError(
+            400,
+            f"{name} still needs {describe_gaps(missing)}. "
+            f"Fill that in before sending — once a request is out, it can't be changed.{more}",
+        )
 
     if bundle.bundle_group_id:
         # Delete the unchosen bundles and their bookings
