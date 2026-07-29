@@ -180,3 +180,63 @@ def test_the_sweep_is_safe_to_run_twice(mocker):
     assert booking_id in _sweep()["released"]
     assert booking_id not in _sweep()["released"]
     assert transfer.call_count == 1
+
+
+# ── Confirming before the booking's scheduled end ──────────────────────
+#
+# A booking runs to the time it was written down for; a job frequently doesn't.
+# Once the day has arrived and the vendor has checked in, the client can settle
+# up rather than waiting on a date.
+
+from app.services.booking_service import event_confirmable_date
+from app.db.models import Booking as BookingModel
+
+
+def _b(**over) -> BookingModel:
+    fields = {"date_iso": _day(0), "date_end": None, "vendor_checked_in_at": None}
+    fields.update(over)
+    return BookingModel(**fields)
+
+
+def test_after_the_last_day_needs_no_check_in():
+    ok, msg = event_confirmable_date(_b(date_iso=_day(-1)))
+    assert ok and msg is None
+
+
+def test_mid_booking_with_a_check_in_is_confirmable():
+    """Day one of three, vendor has arrived: the client needn't wait two more."""
+    ok, _ = event_confirmable_date(
+        _b(date_iso=_day(-1), date_end=_day(1), vendor_checked_in_at="2026-07-28T18:00:00Z")
+    )
+    assert ok
+
+
+def test_mid_booking_without_a_check_in_is_not():
+    ok, msg = event_confirmable_date(_b(date_iso=_day(-1), date_end=_day(1)))
+    assert not ok
+    assert "checked in at the venue" in msg
+
+
+def test_a_check_in_before_the_day_doesnt_open_it():
+    """A vendor can check in early — dropping equipment the night before. That
+    isn't the event happening."""
+    ok, msg = event_confirmable_date(
+        _b(date_iso=_day(2), date_end=_day(4), vendor_checked_in_at="2026-07-28T18:00:00Z")
+    )
+    assert not ok
+    assert "on or after" in msg
+
+
+def test_a_single_day_booking_opens_on_the_day_once_they_arrive():
+    ok, _ = event_confirmable_date(
+        _b(date_iso=_day(0), vendor_checked_in_at="2026-07-28T18:00:00Z")
+    )
+    assert ok
+
+
+def test_no_date_is_never_confirmable_however_it_went():
+    ok, msg = event_confirmable_date(
+        _b(date_iso="TBD", vendor_checked_in_at="2026-07-28T18:00:00Z")
+    )
+    assert not ok
+    assert "no scheduled date" in msg

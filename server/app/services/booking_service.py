@@ -825,13 +825,27 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
 
 
 def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
-    """Whether the event's date has arrived, so the booking may be confirmed for
-    escrow release. Returns (ok, error_message).
+    """Whether this booking may be confirmed for escrow release yet.
+    Returns (ok, error_message).
 
-    Gates on the booking's LAST day (date_end for a multi-day event, else date_iso):
-    funds are held until the event has taken place, so neither party can confirm —
-    and release — before it. A TBD / unparseable date is NOT confirmable: a real
-    date must be set first, so an unscheduled event can never release escrow.
+    Two ways to qualify.
+
+    The scheduled one: the booking's LAST day has passed (date_end for a
+    multi-day event, else date_iso). Funds are held until the event has taken
+    place, so neither party can confirm — and release — before it.
+
+    And the one that reflects what happened rather than what was booked: the
+    event has started and the vendor has checked in at the venue. A booking runs
+    to the time it was written down for, and a job frequently doesn't — the DJ
+    packs up at eleven, the caterers are done by nine, the photographer leaves
+    when the couple does. Holding a client to the end of a three-day window
+    before they can settle up with someone who finished on the first afternoon
+    makes them wait on a date rather than on the work. A GPS check-in is the
+    vendor's own evidence they turned up, so it's a fair thing to release
+    against once the day itself has arrived.
+
+    A TBD / unparseable date is NOT confirmable either way: a real date must be
+    set first, so an unscheduled event can never release escrow.
     """
     start = _parse_date(booking.date_iso)
     end = _parse_date(booking.date_end) or start
@@ -840,11 +854,21 @@ def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
             "This booking has no scheduled date yet. Set the event date before "
             "confirming — the payment is held until the event has taken place."
         )
+
     today = datetime.now(timezone.utc).date()
-    if today < end:
-        human = f"{end.strftime('%B')} {end.day}, {end.year}"
-        return False, f"You can confirm once the event has taken place, on or after {human}."
-    return True, None
+    if today >= end:
+        return True, None
+
+    if start is not None and today >= start and booking.vendor_checked_in_at:
+        return True, None
+
+    human = f"{end.strftime('%B')} {end.day}, {end.year}"
+    if start is not None and today >= start:
+        return False, (
+            "You can confirm once your vendor has checked in at the venue, or "
+            f"after the booking ends on {human}."
+        )
+    return False, f"You can confirm once the event has taken place, on or after {human}."
 
 
 def check_in(
