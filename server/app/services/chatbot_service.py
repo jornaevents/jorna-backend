@@ -387,11 +387,23 @@ def _candidate_service_rows(
                 ) <= VENUE_MAX_DISTANCE_MILES
             ]
         else:
+            # A vendor qualifies by being near enough to come, or by saying they
+            # travel anyway. Not by being unplaceable: no coordinates used to
+            # mean "keep", so any vendor without a location on file was offered
+            # for every event in the country — which is most of them, since
+            # registration collects a city and throws its coordinates away.
+            #
+            # /vendors/search has always excluded them for exactly this reason.
+            # Two readings of one rule, and this was the permissive one.
             rows = [
                 (s, v, u) for s, v, u in rows
-                if u.latitude is None or u.longitude is None
-                or v.open_to_long_distance
-                or calculate_distance_miles(state.latitude, state.longitude, u.latitude, u.longitude) <= v.travel_radius_miles
+                if u.latitude is not None and u.longitude is not None
+                and (
+                    v.open_to_long_distance
+                    or calculate_distance_miles(
+                        state.latitude, state.longitude, u.latitude, u.longitude
+                    ) <= v.travel_radius_miles
+                )
             ]
 
     # Drop vendors already booked on the event date

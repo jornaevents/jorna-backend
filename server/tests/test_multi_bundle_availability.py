@@ -207,3 +207,85 @@ def test_and_still_turned_down_for_a_clashing_evening():
 
     for names in _options_at(user_id, "18:00", "23:00"):
         assert len(names) == 1, names
+
+
+# ── Who is near enough to come ─────────────────────────────────────────
+
+
+def _vendor_at(lat, lng, *, radius=30, long_distance=False, cat=None):
+    """A vendor with a service in `cat`, based at a point (or nowhere)."""
+    from app.db.models import User as U, Vendor as V, Service as S
+
+    db = TestingSessionLocal()
+    uid = str(uuid.uuid4())[:8]
+    u = U(email=f"d_{uid}@t.com", username=f"d_{uid}", password="pw", phone="1",
+          f_name="D", l_name=uid, age=30, location="x", gender="F",
+          language="EN", token_version=0, latitude=lat, longitude=lng)
+    db.add(u); db.commit(); db.refresh(u)
+    v = V(user_id=u.user_id, bio="b", rating=4.5, num_events=3,
+          travel_radius_miles=radius, open_to_long_distance=long_distance)
+    db.add(v); db.commit(); db.refresh(v)
+    db.add(S(name=f"S {uid}", price=900.0, duration_minutes=180, vendor_id=v.vendor_id,
+             experience="5y", category=cat or SLOTS[0], negotiable=False))
+    db.commit()
+    name = f"D {uid}"
+    db.close()
+    return name
+
+
+CHICAGO = (41.88, -87.63)
+
+
+def _names_for_chicago(user_id):
+    db = TestingSessionLocal()
+    try:
+        req = BundleRequest(
+            needed_categories=[SLOTS[0]], booked_categories=[], event_date=DAY,
+            location="Chicago, IL", latitude=CHICAGO[0], longitude=CHICAGO[1],
+        )
+        res = generate_multi_bundle(req, db=db, user_id=user_id)
+        return {i.vendor_name for o in res.options for i in o.bundle.items}
+    finally:
+        db.close()
+
+
+def test_a_vendor_in_the_area_is_offered():
+    user_id, _ = _world(vendors_per_category=0)
+    near = _vendor_at(41.9, -87.65)  # a couple of miles away
+    assert near in _names_for_chicago(user_id)
+
+
+def test_a_vendor_too_far_to_come_is_not():
+    user_id, _ = _world(vendors_per_category=0)
+    far = _vendor_at(34.05, -118.24, radius=30)  # Los Angeles
+    assert far not in _names_for_chicago(user_id)
+
+
+def test_unless_they_travel_anyway():
+    user_id, _ = _world(vendors_per_category=0)
+    willing = _vendor_at(34.05, -118.24, radius=30, long_distance=True)
+    assert willing in _names_for_chicago(user_id)
+
+
+def test_a_vendor_nobody_can_place_is_not_offered():
+    """No coordinates used to mean "keep", so a vendor with no location on file
+    was proposed for every event in the country. /vendors/search has always
+    excluded them; this is the same rule, read the same way."""
+    user_id, _ = _world(vendors_per_category=0)
+    nowhere = _vendor_at(None, None)
+    assert nowhere not in _names_for_chicago(user_id)
+
+
+def test_without_an_event_location_distance_decides_nothing():
+    """No coordinates on the request means no distance question to ask."""
+    user_id, _ = _world(vendors_per_category=0)
+    far = _vendor_at(34.05, -118.24, radius=30)
+
+    db = TestingSessionLocal()
+    try:
+        req = BundleRequest(needed_categories=[SLOTS[0]], booked_categories=[], event_date=DAY)
+        res = generate_multi_bundle(req, db=db, user_id=user_id)
+        names = {i.vendor_name for o in res.options for i in o.bundle.items}
+    finally:
+        db.close()
+    assert far in names

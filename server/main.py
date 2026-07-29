@@ -83,6 +83,12 @@ class RegisterRequest(BaseModel):
     l_name: str = Field(..., min_length=1, max_length=50)
     age: int = Field(..., ge=13, le=120)
     location: str = Field(..., min_length=1, max_length=100)
+    # Where that location is. Optional because a typed city that matched nothing
+    # has no coordinates to send — but without them a vendor can't be placed
+    # relative to an event, and being unplaceable is what keeps them out of
+    # search results and bundles.
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
     gender: str = Field(..., min_length=1, max_length=20)
     language: str = Field(..., min_length=1, max_length=50)
     supabase_user_id: Optional[str] = None
@@ -120,6 +126,10 @@ class ProfileCompleteRequest(BaseModel):
     l_name: Optional[str] = None
     age: Optional[int] = Field(None, ge=13, le=120)
     location: Optional[str] = None
+    # Sent with a changed location, so moving city moves the vendor on the map
+    # rather than leaving them pinned where they signed up.
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
     gender: Optional[str] = None
     language: Optional[str] = None
     phone: Optional[str] = None
@@ -461,6 +471,8 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             l_name=body.l_name,
             age=body.age,
             location=body.location,
+            latitude=body.latitude,
+            longitude=body.longitude,
             gender=body.gender,
             language=body.language,
             db=db,
