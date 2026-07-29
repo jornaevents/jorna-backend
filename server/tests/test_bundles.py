@@ -63,13 +63,13 @@ def seeded_db():
     booking1 = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id,
         service_id=service.service_id,
-        time_start="18:00", time_end="23:00", location="Hall",
+        time_start="18:00", time_end="23:00", location="12 Maple Ave, Evanston, IL 60201",
         date_iso="2026-10-01", status="approved",
     )
     booking2 = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id,
         service_id=service.service_id,
-        time_start="12:00", time_end="16:00", location="Hall",
+        time_start="12:00", time_end="16:00", location="12 Maple Ave, Evanston, IL 60201",
         date_iso="2026-10-01", status="pending",
     )
     db.add_all([booking1, booking2])
@@ -79,7 +79,7 @@ def seeded_db():
 
     event = Event(
         user_id=user.user_id, name="Raj's Wedding",
-        date_iso="2026-10-01", location="Hall",
+        date_iso="2026-10-01", location="12 Maple Ave, Evanston, IL 60201",
         event_type="wedding", guest_count=200,
     )
     db.add(event)
@@ -169,7 +169,7 @@ def test_list_bundles_query_count_is_constant(seeded_db):
             bk = Booking(
                 user_id=user.user_id, vendor_id=vendor.vendor_id,
                 service_id=service.service_id, time_start="10:00",
-                time_end="12:00", location="Hall", date_iso="2026-10-01",
+                time_end="12:00", location="12 Maple Ave, Evanston, IL 60201", date_iso="2026-10-01",
                 status="pending",
             )
             db.add(bk); db.commit(); db.refresh(bk)
@@ -507,12 +507,12 @@ class TestLegacyDataCleanup:
 
         orphan = Event(
             user_id=user.user_id, name="AI Orphan",
-            date_iso="2026-11-01", location="Hall",
+            date_iso="2026-11-01", location="12 Maple Ave, Evanston, IL 60201",
             description="Bundle from jornAI",
         )
         linked = Event(
             user_id=user.user_id, name="AI Linked",
-            date_iso="2026-11-02", location="Hall",
+            date_iso="2026-11-02", location="12 Maple Ave, Evanston, IL 60201",
             description="Bundle from jornAI",
         )
         db.add_all([orphan, linked])

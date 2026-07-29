@@ -146,6 +146,7 @@ def _bundle_dict(
     # page listing many plans doesn't pay two queries each for something it is
     # holding — the rule itself still lives in checkin_anchor.
     from app.services.booking_service import checkin_anchor
+    from app.services.plan_readiness import locked_fields_for
     from app.services.reminder_service import last_reminder_at, resend_state_from, starts_at
 
     anchor_lat, anchor_lng = (
@@ -172,6 +173,11 @@ def _bundle_dict(
         last_reminded = last_reminder_at(b)
         summary["can_resend_checkin"] = resend["can_resend"]
         summary["resend_checkin_reason"] = resend["reason"]
+        # Which of this booking's details the vendor has already been told, and
+        # so may no longer be changed. Empty on a draft. From the same function
+        # update_booking enforces, so a field the client can still edit is one
+        # the server will still accept.
+        summary["locked_fields"] = locked_fields_for(b, reached=bundle.status != "draft")
         summary["checkin_reminded_at"] = (
             last_reminded.isoformat() if last_reminded else None
         )
@@ -604,6 +610,26 @@ def select_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
     if not bundle:
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
+
+    # Nothing incomplete reaches a vendor. The web has greyed out its send
+    # button on this rule for as long as the button has existed, but only its
+    # own — this endpoint accepted anything, so iOS or a direct call sent
+    # regardless. A vendor asked to hold a date that isn't set is being asked a
+    # question, not given a job.
+    from app.services.plan_readiness import describe_gaps, plan_gaps
+
+    if bundle.status == "draft":
+        gaps = plan_gaps(bundle_id, db)
+        if gaps:
+            booking, missing = gaps[0]
+            service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+            name = service.name if service else "One of these bookings"
+            more = f" ({len(gaps) - 1} more still need details.)" if len(gaps) > 1 else ""
+            raise BundleError(
+                400,
+                f"{name} still needs {describe_gaps(missing)}. "
+                f"Fill that in before sending — once a request is out, it can't be changed.{more}",
+            )
 
     if bundle.bundle_group_id:
         # Delete the unchosen bundles and their bookings
