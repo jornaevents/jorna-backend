@@ -312,6 +312,8 @@ def register_user(
     l_name: str,
     age: int,
     location: str,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
     gender: str,
     language: str,
     db: Session,
@@ -356,6 +358,8 @@ def register_user(
         l_name=l_name,
         age=age,
         location=location,
+        latitude=latitude,
+        longitude=longitude,
         gender=gender,
         language=language,
         supabase_user_id=supabase_user_id,
@@ -372,7 +376,10 @@ def complete_profile(*, user_id: str, updates: dict, db: Session) -> dict:
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise AuthError(404, "User not found")
-    for field in ("f_name", "l_name", "age", "location", "gender", "language", "phone"):
+    for field in (
+        "f_name", "l_name", "age", "location", "latitude", "longitude",
+        "gender", "language", "phone",
+    ):
         val = updates.get(field)
         if val is not None:
             setattr(user, field, val)
