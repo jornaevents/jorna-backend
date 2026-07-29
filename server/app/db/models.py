@@ -45,6 +45,18 @@ class User(Base):
     token_version = Column(Integer, nullable=False, default=0)
 
     is_admin = Column(Boolean, nullable=False, default=False)
+
+    # The card kept for this client, and the Stripe Customer it belongs to.
+    # Collected once when a plan is sent and charged when a vendor accepts —
+    # money moves at the same moment it always did, but nobody has to come back
+    # for it. Null until they send their first plan.
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_payment_method_id = Column(String(255), nullable=True)
+    # Shown back to the client so they know which card is on file. Stripe holds
+    # the card itself; these two are all we keep.
+    card_brand = Column(String(40), nullable=True)
+    card_last4 = Column(String(4), nullable=True)
+
     open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
     flexible_on_location = Column(Boolean, nullable=False, default=False)
 

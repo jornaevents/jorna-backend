@@ -22,6 +22,10 @@ from app.services.stripe_service import (
     request_refund,
     raise_dispute,
     resolve_dispute,
+    create_card_setup_session,
+    saved_card,
+    sync_saved_card,
+    forget_saved_card,
 )
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -299,5 +303,75 @@ async def stripe_webhook(
     payload = await request.body()
     try:
         return handle_stripe_webhook(payload=payload, signature=stripe_signature, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# ── Card on file ──────────────────────────────────────────────────────
+#
+# A client saves a card once, when they send their first plan, and it is charged
+# when a vendor accepts. Nothing here charges anything; the charge happens on
+# acceptance, in booking_service.
+
+
+@router.post("/card/setup-session", summary="Start saving a card for this client")
+@limiter.limit("10/minute")
+def card_setup_session(
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A Stripe-hosted page for entering card details, with no charge attached.
+
+    Returns where the client lands afterwards; the web app calls
+    /payments/card/sync on the way back to adopt whatever they saved.
+    """
+    try:
+        return create_card_setup_session(
+            user_id=current_user.user_id, db=db, return_base=WEB_APP_URL
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/card", summary="The card on file for this client")
+def card_on_file(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Brand and last four only — Stripe keeps the card itself."""
+    try:
+        return saved_card(user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/card/sync", summary="Adopt the card just saved")
+@limiter.limit("20/minute")
+def card_sync(
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Read the customer's cards from Stripe and keep the newest.
+
+    Called when the client returns from the hosted form rather than trusting the
+    redirect, and idempotent — arriving twice settles on the same card.
+    """
+    try:
+        return sync_saved_card(user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/card", summary="Forget the card on file")
+def card_forget(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Detach it at Stripe and here. Bookings already paid are unaffected —
+    that money has moved and has its own refund path."""
+    try:
+        return forget_saved_card(user_id=current_user.user_id, db=db)
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
