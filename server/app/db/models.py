@@ -406,3 +406,81 @@ class Event(Base):
     # Used for check-in only when no venue is booked (see check_in).
     address_latitude = Column(Float, nullable=True)
     address_longitude = Column(Float, nullable=True)
+    # The open invite link — one a host can drop in a family group chat, where
+    # whoever opens it adds themselves. Minted on first use, so an event that
+    # never has a guest list never has one.
+    invite_token = Column(String(64), nullable=True, unique=True, index=True)
+
+
+class EventFunction(Base):
+    """One gathering within a celebration — a mehndi, a sangeet, a reception.
+
+    A wedding here is rarely a single event, and the guest lists differ between
+    its parts, as do the per-person totals: a caterer bills against the headcount
+    for the function they're working, not for the week.
+
+    An event with no functions behaves exactly as it always did. One is created
+    when a host starts a guest list, so the simple case is a celebration with a
+    single function whose name is the event's.
+    """
+    __tablename__ = "event_functions"
+
+    function_id = Column(String(36), primary_key=True, default=uuid_str)
+    event_id = Column(String(36), ForeignKey("events.event_id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    # Its own day and hours — the reason functions exist at all. Null falls back
+    # to the event's.
+    date_iso = Column(String(50), nullable=True)
+    time_start = Column(String(50), nullable=True)
+    time_end = Column(String(50), nullable=True)
+    location = Column(String(255), nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class Guest(Base):
+    """Somebody invited to a celebration — a person or a household.
+
+    One row per invitation rather than per body. "The Kapoor family, 4" is how a
+    guest list is actually kept, and counting invitations rather than names is
+    what makes the headcount add up.
+    """
+    __tablename__ = "guests"
+
+    guest_id = Column(String(36), primary_key=True, default=uuid_str)
+    event_id = Column(String(36), ForeignKey("events.event_id"), nullable=False, index=True)
+    # The only required field. A list you can't start until you have everybody's
+    # email is a list nobody starts.
+    name = Column(String(200), nullable=False)
+    email = Column(String(255), nullable=True)
+    phone = Column(String(50), nullable=True)
+    # How many the host expects under this name; the guest corrects it when they
+    # reply.
+    party_size = Column(Integer, nullable=False, default=1)
+    # The credential on a page with no login, so it's random rather than derived
+    # from the id.
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    note = Column(Text, nullable=True)
+    # Arrived through the open link rather than being added by the host. Worth
+    # being able to tell apart when a headcount grows on its own.
+    self_added = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class GuestInvite(Base):
+    """Which functions a guest is asked to, and what they said about each.
+
+    Being in this table is the invitation. The status is the answer, and
+    attending_count is what they actually committed to — which is not always
+    what the host put down for them.
+    """
+    __tablename__ = "guest_invites"
+    __table_args__ = (UniqueConstraint("guest_id", "function_id", name="uq_guest_function"),)
+
+    invite_id = Column(String(36), primary_key=True, default=uuid_str)
+    guest_id = Column(String(36), ForeignKey("guests.guest_id"), nullable=False, index=True)
+    function_id = Column(String(36), ForeignKey("event_functions.function_id"), nullable=False, index=True)
+    # no_reply | attending | declined
+    status = Column(String(20), nullable=False, default="no_reply")
+    attending_count = Column(Integer, nullable=True)
+    responded_at = Column(DateTime, nullable=True)
