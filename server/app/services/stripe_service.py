@@ -342,6 +342,8 @@ def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: s
         vendor_id=booking.vendor_id,
         date_iso=booking.date_iso,
         date_end=booking.date_end,
+        time_start=booking.time_start,
+        time_end=booking.time_end,
         db=db,
         exclude_booking_id=booking.booking_id,
     ):

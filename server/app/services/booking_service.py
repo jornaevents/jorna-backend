@@ -37,23 +37,72 @@ LOCKED_BOOKING_STATUSES = (
 )
 
 
+def _minutes(hhmm: str | None) -> int | None:
+    """"18:30" → 1110. None for a missing or unreadable time, including "TBD"."""
+    if not hhmm:
+        return None
+    try:
+        hours, minutes = str(hhmm).strip().split(":")[:2]
+        h, m = int(hours), int(minutes)
+    except (ValueError, TypeError):
+        return None
+    return h * 60 + m if 0 <= h < 24 and 0 <= m < 60 else None
+
+
+def _window(time_start: str | None, time_end: str | None) -> tuple[int, int] | None:
+    """A booking's hours as minutes past midnight, or None if either is unknown.
+
+    An end at or before the start has crossed midnight, so it's carried into the
+    next day rather than read as a negative span — the same reading the pricing
+    arithmetic uses.
+    """
+    start = _minutes(time_start)
+    end = _minutes(time_end)
+    if start is None or end is None:
+        return None
+    if end <= start:
+        end += 24 * 60
+    return start, end
+
+
+def _same_single_day(a_start: str, a_end: str | None, b_start: str, b_end: str | None) -> bool:
+    """Both bookings run for one day, and it's the same day."""
+    return a_end in (None, "", a_start) and b_end in (None, "", b_start) and a_start == b_start
+
+
 def vendor_has_conflicting_booking(
     *,
     vendor_id: str,
     date_iso: str | None,
     date_end: str | None,
     db: Session,
+    time_start: str | None = None,
+    time_end: str | None = None,
     exclude_booking_id: str | None = None,
 ) -> Booking | None:
-    """Return an existing locked (approved/paid) booking for *vendor_id* whose
-    date range overlaps ``[date_iso, date_end]``, or ``None`` if the vendor is
-    free for that span.
+    """Return an existing locked (approved/paid) booking for *vendor_id* that
+    clashes with ``[date_iso, date_end]``, or ``None`` if the vendor is free.
 
-    A vendor serves one event per day, so two locked bookings may not overlap.
+    Dates decide it, except when both bookings are single-day and fall on the
+    same day — then the hours do. A photographer who shoots a morning ceremony
+    is not thereby unavailable for an evening reception, and treating the
+    calendar day as the unit of booking turned down work nobody had a reason to
+    turn down.
+
+    Both bookings must say when they run for the hours to settle anything. An
+    unknown or TBD time can't be shown not to overlap, so it stays a conflict —
+    the safe reading, since the alternative books a vendor twice.
+
+    Multi-day bookings are still whole days: a Friday-to-Sunday hire occupies
+    the Saturday completely, and there are no hours on the booking that would
+    say otherwise.
+
+    Touching hours count as free. A booking ending at 14:00 and one starting at
+    14:00 don't overlap. Whether a vendor can cross town in no time is their
+    judgement to make; they're the one accepting.
+
     Single-day bookings store a null ``date_end`` — treated as ending on
-    ``date_iso``. Overlap holds when the existing booking starts on or before the
-    requested end AND ends on or after the requested start. A TBD/missing date
-    can't conflict (nothing to compare against).
+    ``date_iso``. A TBD/missing date can't conflict (nothing to compare).
     """
     if not date_iso or date_iso == "TBD":
         return None
@@ -72,7 +121,20 @@ def vendor_has_conflicting_booking(
     )
     if exclude_booking_id:
         query = query.filter(Booking.booking_id != exclude_booking_id)
-    return query.first()
+
+    # The query answers "which days collide"; the hours are settled here, where
+    # a null date_end and a midnight-crossing window are easier to read than in
+    # SQL, and the candidate set is a handful of rows at most.
+    requested = _window(time_start, time_end)
+    for existing in query.all():
+        if not _same_single_day(req_start, date_end, existing.date_iso, existing.date_end):
+            return existing
+        booked = _window(existing.time_start, existing.time_end)
+        if requested is None or booked is None:
+            return existing
+        if requested[0] < booked[1] and booked[0] < requested[1]:
+            return existing
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -678,22 +740,33 @@ def update_booking_status(
                 400, f"Cannot change status from {booking.status} to {status_str}"
             )
 
-    # A vendor can't approve two bookings for overlapping dates — one event per
-    # day. Checked only on approval (a pending request is just a lead); checkout
-    # re-checks to catch the race between approval and payment.
+    # A vendor can't approve two bookings that collide. Checked only on approval
+    # (a pending request is just a lead); checkout re-checks to catch the race
+    # between approval and payment.
     if status_str == BookingStatus.APPROVED.value:
         conflict = vendor_has_conflicting_booking(
             vendor_id=booking.vendor_id,
             date_iso=booking.date_iso,
             date_end=booking.date_end,
+            time_start=booking.time_start,
+            time_end=booking.time_end,
             db=db,
             exclude_booking_id=booking.booking_id,
         )
         if conflict:
+            # Name the hours that clash. "You're busy that day" is answerable
+            # with "no I'm not, that one finishes at two" — and now it might be
+            # right, so the refusal has to say which booking and when.
+            when = (
+                f" ({conflict.time_start}–{conflict.time_end})"
+                if conflict.time_start and conflict.time_end
+                else ""
+            )
             raise BookingError(
                 409,
-                "You already have a confirmed booking on that date. Reject or "
-                "move it before approving another booking for the same day.",
+                f"That clashes with a booking you've already confirmed{when}. "
+                "You can take another job the same day as long as the hours "
+                "don't overlap.",
             )
 
     booking.status = status_str
