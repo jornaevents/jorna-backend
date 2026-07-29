@@ -36,7 +36,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import admin, bundles, calendar, bookings, chatbot, conversations, events, feed, guests, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
+from app.routers import admin, bundles, calendar, bookings, chatbot, checkin, conversations, events, feed, guests, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -179,6 +179,12 @@ class LogoutRequest(BaseModel):
 
 _TOKEN_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 _ESCROW_RELEASE_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+# Every five minutes, because this one is about a moment rather than a deadline.
+# The reminder is meant to land half an hour before a vendor is due, and a
+# coarser sweep would spread that over the interval — a "you're on in thirty
+# minutes" arriving with ten to go is worse than useless to somebody who still
+# has to park.
+_CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
 
 
 async def _periodic_token_cleanup():
@@ -218,6 +224,29 @@ async def _periodic_escrow_release():
         except Exception as exc:
             logger.warning("Escrow auto-release sweep failed: %s", exc)
         await asyncio.sleep(_ESCROW_RELEASE_INTERVAL_SECONDS)
+
+
+async def _periodic_checkin_reminders():
+    """Email vendors whose booking starts in about half an hour.
+
+    Same shape as the sweeps above — own session per pass, failures logged
+    rather than fatal — but far more often, because it's aiming at a moment
+    rather than counting down a deadline.
+
+    Idempotent through the booking's own checkin_reminder_sent_at, which the
+    query filters on: a window several sweeps wide would otherwise mean the same
+    vendor being emailed every five minutes until their event started.
+    """
+    from app.db.database import SessionLocal
+    from app.services.reminder_service import send_due_reminders
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                send_due_reminders(db=session)
+        except Exception as exc:
+            logger.warning("Check-in reminder sweep failed: %s", exc)
+        await asyncio.sleep(_CHECKIN_REMINDER_INTERVAL_SECONDS)
 
 
 # ── App setup ─────────────────────────────────────────────────────────
@@ -285,6 +314,7 @@ async def lifespan(app: FastAPI):
     background = [
         asyncio.create_task(_periodic_token_cleanup()),
         asyncio.create_task(_periodic_escrow_release()),
+        asyncio.create_task(_periodic_checkin_reminders()),
     ]
 
     yield
@@ -311,6 +341,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(vendors.router)
 app.include_router(calendar.router)
 app.include_router(bookings.router)
+app.include_router(checkin.router)
 app.include_router(events.router)
 app.include_router(guests.router)
 app.include_router(notifications.router)
