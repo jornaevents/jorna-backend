@@ -113,8 +113,24 @@ def test_calendar_availability_aggregation(mocker):
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
         time_start="10:00", time_end="11:30",
         location="123 Main St", date_iso="2026-03-02",
+        # Approved: only a booking that commits the vendor makes them busy. A
+        # pending request is a lead, and one they declined isn't a booking at
+        # all — both used to mark them unavailable and hide them from search.
+        status="approved",
     )
     db.add(booking)
+    # A second request the vendor never answered, and one they turned down.
+    # Neither belongs in their busy times.
+    db.add(Booking(
+        user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
+        time_start="14:00", time_end="16:00",
+        location="123 Main St", date_iso="2026-03-02", status="pending",
+    ))
+    db.add(Booking(
+        user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
+        time_start="18:00", time_end="20:00",
+        location="123 Main St", date_iso="2026-03-02", status="rejected",
+    ))
     db.commit()
     vendor_id = vendor.vendor_id
     db.close()
