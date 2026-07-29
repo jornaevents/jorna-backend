@@ -913,16 +913,25 @@ def check_in(
     released = False
     if is_vendor:
         booking.vendor_checked_in_at = current_time
-        # The vendor's GPS check-in is their event-completion confirmation. Record
-        # it whenever they're at the venue — including early, or on day 1 of a
-        # multi-day booking — so it's never stranded waiting for a second check-in.
-        # This can't release funds prematurely: release also needs the CUSTOMER's
-        # confirmation, and that is gated on the event date (see confirm_event).
-        if booking.payment_status == "paid" and not booking.vendor_confirmed_at:
+        # The vendor's GPS check-in IS their event-completion confirmation, and
+        # nothing about that depends on whether the client has paid yet. It used
+        # to: a vendor who checked in before payment cleared was recorded as
+        # present and never as confirmed, and no later event revisited it — so
+        # their client confirmed, waited on a second confirmation that could not
+        # arrive, and the money stayed put. Turning up is the thing being
+        # attested; when it gets paid for is somebody else's timing.
+        #
+        # Confirming early can't release early: release also needs the CUSTOMER's
+        # confirmation, which is gated on the event having started (see
+        # event_confirmable_date), and needs the money to be there at all.
+        if not booking.vendor_confirmed_at:
             booking.vendor_confirmed_at = datetime.now(timezone.utc)
-            if booking.customer_confirmed_at:
-                # Both parties are now in — pay out the vendor. Best-effort: a
-                # Stripe failure must not fail the check-in the vendor just made.
+            # Both parties in, and money to move. The payment check moved here
+            # from the line above: it belongs to releasing funds, not to whether
+            # somebody turned up.
+            if booking.customer_confirmed_at and booking.payment_status == "paid":
+                # Best-effort: a Stripe failure must not fail the check-in the
+                # vendor just made.
                 try:
                     from app.services.stripe_service import _release_funds
                     _release_funds(booking, db)

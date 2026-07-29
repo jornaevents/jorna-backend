@@ -337,7 +337,7 @@ def test_an_unreadable_state_still_redirects():
 # vendor's payout waited on a confirmation there was no way to give.
 
 
-def _plan_at(address_pin, *, venue_service_pin=None):
+def _plan_at(address_pin, *, venue_service_pin=None, booking_over=None):
     """A bundle, its event, and a booking — with or without a venue service."""
     import uuid
     from app.db.models import Bundle, Event
@@ -394,6 +394,7 @@ def _plan_at(address_pin, *, venue_service_pin=None):
         user_id=client_user.user_id, vendor_id=vendor.vendor_id, service_id=dj.service_id,
         time_start="18:00", time_end="23:00", location="12 Maple Ave",
         date_iso="2026-09-05", status="approved", bundle_id=bundle.bundle_id,
+        **(booking_over or {}),
     )
     db.add(booking)
 
@@ -421,6 +422,9 @@ def _plan_at(address_pin, *, venue_service_pin=None):
         "booking_id": booking.booking_id,
         "headers": make_auth_headers_from_parts(
             client_user.user_id, client_user.email, 0
+        ),
+        "vendor_headers": make_auth_headers_from_parts(
+            vendor_user.user_id, vendor_user.email, 0
         ),
     }
     db.close()
@@ -509,3 +513,27 @@ def test_no_place_at_all_names_no_point():
     r = client.get(f"/bookings/{plan['booking_id']}", headers=plan["headers"])
     assert r.status_code == 200
     assert r.json()["checkin_latitude"] is None
+
+
+def test_checking_in_confirms_the_vendor_even_before_payment(mocker):
+    """A vendor at the venue has done the thing being attested. Whether the
+    client's payment has cleared is somebody else's timing, and gating on it
+    left the confirmation permanently unrecorded — the client would confirm and
+    then wait on a second confirmation that could never arrive."""
+    plan = _plan_at((42.0451, -87.6877), booking_over={"payment_status": "unpaid"})
+    mocker.patch("app.utils.notifications.notify_check_in", return_value={})
+
+    r = client.post(
+        f"/bookings/{plan['booking_id']}/check-in",
+        json={"latitude": 42.0451, "longitude": -87.6877},
+        headers=plan["vendor_headers"],
+    )
+    assert r.status_code == 200, r.text
+
+    db = TestingSessionLocal()
+    fresh = db.query(Booking).filter(Booking.booking_id == plan["booking_id"]).first()
+    assert fresh.vendor_checked_in_at is not None
+    assert fresh.vendor_confirmed_at is not None
+    # Nothing was paid, so nothing was released.
+    assert fresh.payment_status == "unpaid"
+    db.close()

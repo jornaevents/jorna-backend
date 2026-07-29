@@ -699,7 +699,11 @@ AUTO_RELEASE_DAYS = 7
 
 
 def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
-    """Release escrow that a client has left unanswered since the event.
+    """Release escrow that is owed but still sitting on the platform.
+
+    Two kinds. Bookings both parties have confirmed, where the payout never
+    went through — repair work, since release is supposed to fire on the second
+    confirmation. And bookings the client has left unanswered since the event.
 
     Release needs both parties to confirm, which means a client who simply
     stops opening the app holds a vendor's money indefinitely. The vendor did
@@ -726,7 +730,26 @@ def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
 
     # Dates are stored as ISO strings, which compare correctly as text.
     last_day = func.coalesce(Booking.date_end, Booking.date_iso)
-    due = (
+
+    # Both parties confirmed and the money still here. Release is meant to
+    # happen the instant the second confirmation lands, so this is only ever
+    # repair work — a Stripe call that failed, a confirmation backfilled after
+    # the fact — but a booking in that state will otherwise sit forever, since
+    # nothing else looks at it again. No waiting period: there is nothing left
+    # to wait for.
+    settled = (
+        db.query(Booking)
+        .filter(
+            Booking.payment_status == "paid",
+            Booking.vendor_confirmed_at.isnot(None),
+            Booking.customer_confirmed_at.isnot(None),
+        )
+        .all()
+    )
+
+    # Confirmed by the vendor, unanswered by the client, and a week past the
+    # event: silence taken as assent.
+    unanswered = (
         db.query(Booking)
         .filter(
             Booking.payment_status == "paid",
@@ -737,6 +760,8 @@ def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
         )
         .all()
     )
+
+    due = settled + unanswered
 
     released, failed = [], []
     for booking in due:
