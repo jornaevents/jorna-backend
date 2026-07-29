@@ -92,10 +92,23 @@ def is_complete_address(raw: Optional[str]) -> bool:
 
 
 def _price_unit_kind(unit: Optional[str]) -> str:
-    if not unit:
-        return "event"
-    u = re.sub(r"^per\s+", "", unit.lower()).strip()
-    return u if u in ("person", "day", "hour") else "event"
+    """What quantity this rate multiplies by.
+
+    Delegates to the pricer's own normaliser rather than restating it. price_unit
+    is free text a vendor types, and _normalize_unit accepts what they actually
+    type — "per head", "guest", "plate", "pax", "persons" all mean per person,
+    and "hourly" means per hour.
+
+    This used to be its own narrow list matching only "person", "day" and
+    "hour". A caterer priced "per head" therefore needed no guest count to send,
+    while resolve_total_cents read the same field as per person and returned no
+    total at all: the request went to the vendor, the vendor accepted, and the
+    booking arrived at checkout unpayable. Two functions disagreeing about one
+    string, which is the reason this one no longer holds an opinion.
+    """
+    from app.services.booking_service import _normalize_unit
+
+    return _normalize_unit(unit) or "event"
 
 
 def booking_gaps(
@@ -244,8 +257,16 @@ def _field_names(fields: Iterable[str]) -> list[str]:
 # ── A whole plan ──────────────────────────────────────────────────────
 
 
-def plan_gaps(bundle_id: str, db: Session) -> list[tuple[Booking, list[str]]]:
-    """Every live booking in this plan that isn't fit to send, and why."""
+def plan_gaps(
+    bundle_id: str, db: Session, *, only_statuses: Optional[tuple[str, ...]] = None,
+) -> list[tuple[Booking, list[str]]]:
+    """Every live booking in this plan that isn't fit to send, and why.
+
+    ``only_statuses`` narrows it to the bookings a particular send would
+    actually notify — re-sending a plan asks the vendors who haven't answered,
+    and holding that up over a booking somebody already accepted would be
+    refusing to do something harmless.
+    """
     from app.services.booking_service import _DEAD_BOOKING_STATUSES
 
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
@@ -270,6 +291,8 @@ def plan_gaps(bundle_id: str, db: Session) -> list[tuple[Booking, list[str]]]:
     out = []
     for b in bookings:
         if b.status in _DEAD_BOOKING_STATUSES:
+            continue
+        if only_statuses is not None and b.status not in only_statuses:
             continue
         gaps = booking_gaps(b, services.get(b.service_id), event_location=event_location)
         if gaps:
