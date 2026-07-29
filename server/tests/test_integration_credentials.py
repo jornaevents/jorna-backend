@@ -257,7 +257,7 @@ class TestFirebaseCredentials:
                 "event_name": "Integration Diwali",
                 "time_start": "18:00",
                 "time_end": "22:00",
-                "location": "Community Hall",
+                "location": "12 Maple Ave, Evanston, IL 60201",
                 "date_iso": "2026-11-01",
                 "bundle_id": bundle_id,
             },

@@ -380,7 +380,7 @@ class TestBookingNotificationIntegration:
                 "event_name": "Diwali Party",
                 "time_start": "18:00",
                 "time_end": "22:00",
-                "location": "Community Hall",
+                "location": "12 Maple Ave, Evanston, IL 60201",
                 "date_iso": "2026-11-01",
             },
             headers=headers,
@@ -417,7 +417,7 @@ class TestBookingNotificationIntegration:
                 "event_name": "Diwali Party",
                 "time_start": "18:00",
                 "time_end": "22:00",
-                "location": "Community Hall",
+                "location": "12 Maple Ave, Evanston, IL 60201",
                 "date_iso": "2026-11-02",
                 "bundle_id": bundle.bundle_id,
             },
@@ -464,7 +464,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id, time_start="09:00", time_end="11:00", location="Venue",
+            service_id=service.service_id, time_start="09:00", time_end="11:00", location="12 Maple Ave, Evanston, IL 60201",
             date_iso="2026-04-01", status="pending",
         )
         db.add(booking)
@@ -490,7 +490,7 @@ class TestBookingNotificationIntegration:
 
         booking = Booking(
             user_id=user.user_id, vendor_id=vendor.vendor_id,
-            service_id=service.service_id, time_start="10:00", time_end="12:00", location="Hall",
+            service_id=service.service_id, time_start="10:00", time_end="12:00", location="12 Maple Ave, Evanston, IL 60201",
             date_iso="2026-06-01",
             venue_latitude=34.05, venue_longitude=-118.24,
             status="approved",

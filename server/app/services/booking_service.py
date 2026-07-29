@@ -675,6 +675,26 @@ def create_booking(
         db.flush()
         bundle_id = bundle.bundle_id
 
+    # Joining a plan that has already gone out means this vendor is told the
+    # moment the row exists — so it has to be complete now, the same way a plan
+    # has to be complete before it can be sent. There is no draft to fix it in
+    # afterwards, and once the request is out it can't be edited.
+    if bundle.status != "draft":
+        from app.services.plan_readiness import booking_gaps, describe_gaps
+
+        proposed = Booking(
+            date_iso=date_iso, date_end=date_end, guest_count=guest_count,
+            time_start=time_start, time_end=time_end, location=location,
+        )
+        gaps = booking_gaps(proposed, service)
+        if gaps:
+            raise BookingError(
+                400,
+                f"This plan is already with your vendors, so {service.name} needs "
+                f"{describe_gaps(gaps)} before it can be added — it goes out as "
+                "soon as it's booked, and can't be changed afterwards.",
+            )
+
     def _existing_live_booking() -> Booking | None:
         """The same slot (bundle + vendor + service + date) already booked and
         not rejected/cancelled."""
@@ -776,8 +796,8 @@ def create_booking(
     # meanwhile is caught up then.
     #
     # A booking joining a plan that has already gone out is a different case: the
-    # vendors are waiting, the required details are filled in by definition —
-    # nothing sends without them — so that one is notified now, as it always was.
+    # vendors are waiting, and this one was refused above unless it arrived
+    # complete — so it is notified now, as it always was.
     parent = (
         db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
         if booking.bundle_id
@@ -943,13 +963,26 @@ def update_booking(
     if booking.user_id != caller_user_id:
         raise BookingError(403, "Only the client who made this booking can update it")
 
-    allowed_statuses = {BookingStatus.PENDING.value, BookingStatus.NEGOTIATION_ONGOING.value}
-    if booking.status not in allowed_statuses:
+    if booking.status in _DEAD_BOOKING_STATUSES:
         raise BookingError(
             400,
-            f"Booking cannot be edited in '{booking.status}' status. "
-            "Changes are only allowed while the booking is pending or under negotiation.",
+            f"Booking cannot be edited in '{booking.status}' status.",
         )
+
+    # What a vendor was told is what they answered, so once a request is out its
+    # details stop being the client's to change. A field that is still *empty*
+    # can be filled — that completes the request rather than altering it, and
+    # without it a booking that went out short of a headcount could never be
+    # paid for.
+    #
+    # This replaced a status check that allowed anything while a booking was
+    # still 'pending'. A pending booking is one sitting in a vendor's inbox
+    # being read, which is exactly when a silent edit does the most damage; and
+    # the same check forbade filling a gap on an approved one, which is the only
+    # way such a booking ever becomes payable.
+    from app.services.plan_readiness import refuse_locked_changes
+
+    refuse_locked_changes(booking, update_data, db)
 
     allowed_fields = {"date_iso", "date_end", "guest_count", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
     quantity_fields = {"date_iso", "date_end", "guest_count", "time_start", "time_end"}
