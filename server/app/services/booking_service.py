@@ -392,8 +392,17 @@ def sync_event_venue(bundle_id: str | None, db: Session) -> None:
             event.venue_longitude = lng
             if venue_service.location:
                 event.location = venue_service.location
-        # Mirror onto the traveling vendors' bookings; the venue's own booking
-        # already carries its service coords, so leave it untouched.
+        # The venue booking is a booking AT the venue, so its own location is
+        # the venue's address. The builder writes the event's city onto every
+        # booking it creates, including this one — which left the venue booking
+        # saying "Los Angeles, CA" while its service said "1200 Bel Air Rd, Los
+        # Angeles, CA 90077". The client reads the venue booking to prefill the
+        # event address, so it got a city and no street.
+        if venue_service.location:
+            venue_booking.location = venue_service.location
+
+        # Mirror the coords onto the traveling vendors' bookings; the venue's
+        # own booking already carries its service coords.
         for b in bookings:
             if b.booking_id == venue_booking.booking_id:
                 continue

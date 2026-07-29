@@ -553,3 +553,32 @@ def test_checking_in_confirms_the_vendor_even_before_payment(mocker):
     # Nothing was paid, so nothing was released.
     assert fresh.payment_status == "unpaid"
     db.close()
+
+
+def test_a_venue_booking_carries_the_venues_own_address():
+    """The builder writes the event's city onto every booking it creates,
+    including the venue's — so the venue booking said "Chicago, IL" while its
+    service said "99 Sheridan Rd, Evanston, IL 60202". The client prefills the
+    event address from that booking, and got a city with no street."""
+    from app.services.booking_service import sync_event_venue
+
+    plan = _plan_at(None, venue_service_pin=(42.0451, -87.6877))
+    db = TestingSessionLocal()
+    booking = db.query(Booking).filter(Booking.booking_id == plan["booking_id"]).first()
+
+    # Every booking in the plan starts with the city the builder was given.
+    for b in db.query(Booking).filter(Booking.bundle_id == booking.bundle_id).all():
+        b.location = "Chicago, IL"
+    db.commit()
+
+    sync_event_venue(booking.bundle_id, db)
+    db.commit()
+
+    venue_booking = (
+        db.query(Booking)
+        .join(Service, Service.service_id == Booking.service_id)
+        .filter(Booking.bundle_id == booking.bundle_id, Service.category == "venue")
+        .first()
+    )
+    assert venue_booking.location == "99 Other St"
+    db.close()
