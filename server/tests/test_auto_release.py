@@ -240,3 +240,42 @@ def test_no_date_is_never_confirmable_however_it_went():
     )
     assert not ok
     assert "no scheduled date" in msg
+
+
+# ── A check-in is a confirmation, whenever it happened ─────────────────
+
+
+def test_both_confirmed_but_never_paid_out_is_repaired(mocker):
+    """Release fires on the second confirmation. When that call failed — or the
+    confirmation was backfilled afterwards — nothing looked at the booking
+    again and the money sat there. The sweep picks it up, with no waiting."""
+    transfer = mocker.patch("stripe.Transfer.create")
+    booking_id = _booking(
+        date_iso=_day(-1),  # yesterday: nowhere near the seven-day window
+        customer_confirmed_at=datetime.now(timezone.utc),
+    )
+
+    assert booking_id in _sweep()["released"]
+    assert transfer.call_count == 1
+    assert _status(booking_id)[0] == "released"
+
+
+def test_a_settled_booking_doesnt_wait_out_the_week(mocker):
+    """Even one confirmed the same day it happened."""
+    mocker.patch("stripe.Transfer.create")
+    booking_id = _booking(
+        date_iso=_day(0), customer_confirmed_at=datetime.now(timezone.utc)
+    )
+    assert booking_id in _sweep()["released"]
+
+
+def test_only_the_client_confirming_is_not_enough(mocker):
+    """The vendor still has to have turned up, however long it's been."""
+    mocker.patch("stripe.Transfer.create")
+    booking_id = _booking(
+        date_iso=_day(-30),
+        vendor_confirmed_at=None,
+        customer_confirmed_at=datetime.now(timezone.utc),
+    )
+    assert booking_id not in _sweep()["released"]
+    assert _status(booking_id)[0] == "paid"
