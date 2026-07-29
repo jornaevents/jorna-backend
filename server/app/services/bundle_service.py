@@ -212,6 +212,11 @@ def _ensure_bundle_event(bundle: Bundle, db: Session) -> None:
         name=(bundle.event_name or bundle.name or "My Event"),
         date_iso=sample.date_iso or "",
         location=(venue_service.location if venue_service else None) or sample.location or "",
+        # Carried over with the rest. The builder writes the headcount onto
+        # every booking it creates and this took the date and the place but not
+        # the number, so an event arrived without something its client had
+        # already said — and the editor asked for it a second time.
+        guest_count=sample.guest_count,
     )
     db.add(event)
     db.flush()

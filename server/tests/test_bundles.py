@@ -833,3 +833,26 @@ def test_sending_opens_the_group_chats(mocker, seeded_db):
     # ...once. The second send is not a second confirmation.
     client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
     assert make.call_count == 1
+
+
+def test_the_event_keeps_the_headcount_the_bundle_was_built_with(seeded_db):
+    """The builder writes the guest count onto every booking it creates. The
+    event made when the plan is sent took the date and the place from a booking
+    but not the number — so the client was asked for something they'd already
+    given the builder."""
+    db, user = seeded_db["db"], seeded_db["user"]
+    booking = seeded_db["booking2"]
+    booking.guest_count = 200
+    db.commit()
+    bundle = _bundle_with(db, user, [booking])
+
+    r = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert r.status_code == 200
+
+    fresh = TestingSessionLocal()
+    linked = fresh.query(Bundle).filter(Bundle.bundle_id == bundle.bundle_id).first()
+    assert linked.event_id is not None
+    event = fresh.query(Event).filter(Event.event_id == linked.event_id).first()
+    assert event.guest_count == 200
+    assert event.date_iso == booking.date_iso
+    fresh.close()
