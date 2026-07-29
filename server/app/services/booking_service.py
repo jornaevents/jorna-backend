@@ -718,15 +718,39 @@ def create_booking(
         logger.warning("create_booking: failed to ensure bundle event: %s", exc)
         db.rollback()
 
+    # A booking added to a draft plan has not been sent to anybody. The client is
+    # still assembling it — adding a service from the marketplace, or swapping
+    # one out, which is "book the replacement, then remove the original" and so
+    # arrives here too. Telling the vendor at that point asks them to hold a date
+    # for a plan that may still have no date, and may be undone thirty seconds
+    # later by the swap that created it.
+    #
+    # select_bundle is what tells them, once the plan is complete and the client
+    # presses Send; it notifies every booking still pending, so anything added
+    # meanwhile is caught up then.
+    #
+    # A booking joining a plan that has already gone out is a different case: the
+    # vendors are waiting, the required details are filled in by definition —
+    # nothing sends without them — so that one is notified now, as it always was.
+    parent = (
+        db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+        if booking.bundle_id
+        else None
+    )
+    still_a_draft = parent is not None and parent.status == "draft"
+
     client, vendor_obj, vendor_user, _ = _get_booking_parties(db, booking)
-    try:
-        notification = _dispatch_status_notification(
-            BookingStatus.PENDING.value, booking, client, vendor_user, service, db,
-            event_name=event_name,
-        )
-    except Exception as exc:
-        logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
-        notification = {"error": "Notification unavailable"}
+    if still_a_draft:
+        notification = {"skipped": "Draft plan — vendors are told when it's sent."}
+    else:
+        try:
+            notification = _dispatch_status_notification(
+                BookingStatus.PENDING.value, booking, client, vendor_user, service, db,
+                event_name=event_name,
+            )
+        except Exception as exc:
+            logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
+            notification = {"error": "Notification unavailable"}
 
     return {
         "message": "Booking requested successfully",

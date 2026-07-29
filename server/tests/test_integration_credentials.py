@@ -231,7 +231,22 @@ class TestFirebaseCredentials:
         db.commit()
         db.refresh(service)
 
+        # Into a plan that's already been sent. A booking added to a draft is
+        # deliberately silent — the client is still assembling it — so a draft
+        # would exercise no Firebase at all, which is the opposite of the point
+        # of this test.
+        from datetime import datetime, timezone
+        from app.db.models import Bundle
+
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=user.user_id, name="Integration plan",
+                        status="confirmed", created_at=now, updated_at=now)
+        db.add(bundle)
+        db.commit()
+        db.refresh(bundle)
+
         service_id = service.service_id
+        bundle_id = bundle.bundle_id
         auth_headers = make_auth_headers(user)
         db.close()
 
@@ -244,6 +259,7 @@ class TestFirebaseCredentials:
                 "time_end": "22:00",
                 "location": "Community Hall",
                 "date_iso": "2026-11-01",
+                "bundle_id": bundle_id,
             },
             headers=auth_headers,
         )
