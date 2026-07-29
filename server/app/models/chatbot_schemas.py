@@ -240,6 +240,12 @@ class BundleRequest(BaseModel):
     event_date: Optional[str] = Field(None, description="Single event date e.g. '2026-10-15'")
     date_range: Optional[DateRange] = Field(None, description="Date range when the exact date is unknown")
     guest_count: Optional[int] = Field(None, description="Approximate number of guests")
+    # Optional, and the bundle is built without them — but a vendor's day isn't
+    # a single booking, so knowing the hours is what lets someone with a morning
+    # job be offered for an evening one. Absent, every generated booking is
+    # "TBD" and availability falls back to whole days.
+    time_start: Optional[str] = Field(None, description="Event start time, 'HH:MM' e.g. '18:00'")
+    time_end: Optional[str] = Field(None, description="Event end time, 'HH:MM' e.g. '23:00'")
     location: Optional[str] = Field(None, description="City or venue location")
     latitude: Optional[float] = Field(None, description="Event location latitude (for vendor travel-radius filtering)")
     longitude: Optional[float] = Field(None, description="Event location longitude (for vendor travel-radius filtering)")
