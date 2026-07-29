@@ -136,22 +136,52 @@ def _bundle_dict(
         refs = _resolve_booking_refs(bookings, db)
     service_map, vendor_map, user_map = refs
 
+    if event is _UNSET:
+        event = db.query(Event).filter(Event.event_id == bundle.event_id).first() if bundle.event_id else None
+
+    # Whether this plan has anywhere to check in against. One answer for the
+    # whole bundle: checkin_anchor derives it from the bundle's live venue, or
+    # failing that the event's address, and both are properties of the bundle
+    # rather than of any one booking. Fed the rows already loaded above so a
+    # page listing many plans doesn't pay two queries each for something it is
+    # holding — the rule itself still lives in checkin_anchor.
+    from app.services.booking_service import checkin_anchor
+    from app.services.reminder_service import last_reminder_at, resend_state_from, starts_at
+
+    anchor_lat, anchor_lng = (
+        checkin_anchor(
+            bookings[0], db,
+            bundle_bookings=bookings, services=service_map, event=event,
+        )
+        if bookings
+        else (None, None)
+    )
+    has_anchor = anchor_lat is not None and anchor_lng is not None
+    now = datetime.now(timezone.utc)
+
     booking_summaries = []
     for b in bookings:
         vendor = vendor_map.get(b.vendor_id)
         vendor_user = user_map.get(vendor.user_id) if vendor else None
-        booking_summaries.append(
-            _booking_summary(b, service_map.get(b.service_id), vendor, vendor_user)
+        summary = _booking_summary(b, service_map.get(b.service_id), vendor, vendor_user)
+        # Whether the client may nudge this vendor, from the same rule the
+        # endpoint enforces — see resend_state_from.
+        resend = resend_state_from(
+            b, start=starts_at(b, db), has_anchor=has_anchor, now=now
         )
+        last_reminded = last_reminder_at(b)
+        summary["can_resend_checkin"] = resend["can_resend"]
+        summary["resend_checkin_reason"] = resend["reason"]
+        summary["checkin_reminded_at"] = (
+            last_reminded.isoformat() if last_reminded else None
+        )
+        booking_summaries.append(summary)
 
     total_cost = sum(b["price"] for b in booking_summaries)
 
     status_counts: dict[str, int] = {}
     for b in booking_summaries:
         status_counts[b["status"]] = status_counts.get(b["status"], 0) + 1
-
-    if event is _UNSET:
-        event = db.query(Event).filter(Event.event_id == bundle.event_id).first() if bundle.event_id else None
 
     return {
         "bundle_id": bundle.bundle_id,

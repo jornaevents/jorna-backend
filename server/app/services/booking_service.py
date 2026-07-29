@@ -224,6 +224,14 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
     # check_in makes, so a client can gate its button on it and never offer an
     # action the server has to refuse.
     checkin_lat, checkin_lng = checkin_anchor(booking, db)
+    # Whether the client may send this vendor their check-in email again, from
+    # the same function the endpoint enforces — so the button and the call agree
+    # by construction, as with the anchor above. Imported here rather than at
+    # the top: reminder_service reads checkin_anchor from this module.
+    from app.services.reminder_service import last_reminder_at, resend_state
+
+    resend = resend_state(booking, db)
+    last_reminded = last_reminder_at(booking)
     return {
         "booking_id": booking.booking_id,
         "user_id": booking.user_id,
@@ -260,6 +268,12 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "currency": booking.currency,
         "client_checked_in_at": booking.client_checked_in_at,
         "vendor_checked_in_at": booking.vendor_checked_in_at,
+        "can_resend_checkin": resend["can_resend"],
+        "resend_checkin_reason": resend["reason"],
+        # When this vendor was last emailed about checking in, either kind. Lets
+        # the client see that a nudge landed rather than a button that vanishes
+        # into a cooldown and looks broken.
+        "checkin_reminded_at": last_reminded.isoformat() if last_reminded else None,
         "confirmed_at": booking.confirmed_at,
         "paid_at": booking.paid_at,
         "funds_released_at": booking.funds_released_at,
@@ -282,22 +296,35 @@ _DEAD_BOOKING_STATUSES = ("rejected", "cancelled")
 _DEAD_VENUE_PAYMENT_STATUSES = ("refunded",)
 
 
-def _live_venue_booking(bundle_id: str | None, db: Session) -> tuple[Booking, Service] | None:
+def _live_venue_booking(
+    bundle_id: str | None,
+    db: Session,
+    *,
+    bookings: list[Booking] | None = None,
+    services: dict[str, Service] | None = None,
+) -> tuple[Booking, Service] | None:
     """The bundle's live venue booking + its service, or None.
 
     "Live" = a venue-category service with GPS coords, whose booking hasn't been
     rejected/cancelled or refunded. This is the source of truth for whether the
     event currently has a venue — computed from the bookings themselves, so it's
     always correct without relying on a denormalized cache.
+
+    ``bookings``/``services`` let a caller that has already loaded them in bulk
+    skip the queries. Passed in rather than reimplemented, so a batched screen
+    and a single one can't come to different conclusions about whether a plan
+    has a venue.
     """
     if not bundle_id:
         return None
-    bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
-    service_ids = [b.service_id for b in bookings if b.service_id]
-    services = (
-        {s.service_id: s for s in db.query(Service).filter(Service.service_id.in_(service_ids)).all()}
-        if service_ids else {}
-    )
+    if bookings is None:
+        bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+    if services is None:
+        service_ids = [b.service_id for b in bookings if b.service_id]
+        services = (
+            {s.service_id: s for s in db.query(Service).filter(Service.service_id.in_(service_ids)).all()}
+            if service_ids else {}
+        )
     for b in bookings:
         s = services.get(b.service_id)
         if (
@@ -312,8 +339,18 @@ def _live_venue_booking(bundle_id: str | None, db: Session) -> tuple[Booking, Se
     return None
 
 
+#: Tells "the caller didn't supply this" apart from "the caller supplied None",
+#: which for a bundle's event is a real and different answer.
+_NOT_GIVEN = object()
+
+
 def checkin_anchor(
-    booking: Booking, db: Session
+    booking: Booking,
+    db: Session,
+    *,
+    bundle_bookings: list[Booking] | None = None,
+    services: dict[str, Service] | None = None,
+    event=_NOT_GIVEN,
 ) -> tuple[float | None, float | None]:
     """Where this booking's check-in is measured from, or (None, None).
 
@@ -329,12 +366,21 @@ def checkin_anchor(
     Deliberately not the coordinates mirrored onto the booking row. Those are a
     cache that sync_event_venue refreshes, and reading them here would let the
     answer drift from the one check_in gives.
+
+    The keyword arguments are for a caller that has already loaded a bundle's
+    bookings, services and event in bulk — a screen listing many plans, which
+    would otherwise pay two queries per plan for an answer it is holding. Every
+    rule still lives here; only the reads are skipped.
     """
-    live_venue = _live_venue_booking(booking.bundle_id, db)
+    live_venue = _live_venue_booking(
+        booking.bundle_id, db, bookings=bundle_bookings, services=services
+    )
     if live_venue:
         return live_venue[1].venue_latitude, live_venue[1].venue_longitude
     if not booking.bundle_id:
         return booking.venue_latitude, booking.venue_longitude
+    if event is not _NOT_GIVEN:
+        return (event.address_latitude, event.address_longitude) if event else (None, None)
     return _event_address_pin(booking.bundle_id, db)
 
 

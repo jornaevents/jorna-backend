@@ -200,6 +200,11 @@ class Booking(Base):
     # filters on it — otherwise a vendor gets the same email every five minutes
     # for half an hour.
     checkin_reminder_sent_at = Column(DateTime, nullable=True)
+    # When the client last asked for that email to go again. Deliberately not
+    # the column above: the sweep sends only where that one is null, so writing
+    # a manual resend into it would mean a client nudging a vendor early had
+    # switched off the real reminder by doing them a favour.
+    checkin_reminder_resent_at = Column(DateTime, nullable=True)
 
 
 class Bundle(Base):
