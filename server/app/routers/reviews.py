@@ -12,6 +12,7 @@ from app.services.review_service import (
     create_review,
     delete_review,
     get_vendor_reviews,
+    get_service_reviews,
     get_booking_review,
 )
 
@@ -53,6 +54,17 @@ def get_vendor_reviews_route(
 ):
     """Return paginated reviews for a vendor. No auth required."""
     return get_vendor_reviews(vendor_id=vendor_id, limit=limit, offset=offset, db=db)
+
+
+@router.get("/service/{service_id}", summary="Get reviews for a single service")
+def get_service_reviews_route(
+    service_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Return paginated reviews for one listing. No auth required."""
+    return get_service_reviews(service_id=service_id, limit=limit, offset=offset, db=db)
 
 
 @router.delete("/{review_id}", summary="Delete a review", status_code=200)

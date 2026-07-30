@@ -154,6 +154,17 @@ class Service(Base):
     subcategory = Column(String(50), nullable=True)
     price_unit = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
+    # This listing's own reviews, averaged. Kept alongside the vendor's rating
+    # rather than replacing it: a decorator who is excellent at mandap work and
+    # ordinary at florals has two honest numbers, and showing the blended one on
+    # both pages tells a client something untrue about the one they're reading.
+    # Denormalised the way Vendor.rating is, and recomputed by the same two
+    # writers (create_review, delete_review) — there is no third way in.
+    #
+    # num_reviews counts reviews, and is named for what it counts. Vendor calls
+    # the same quantity num_events, which it is not.
+    rating = Column(Float, nullable=False, default=0.0)
+    num_reviews = Column(Integer, nullable=False, default=0)
     # Whether the vendor allows price negotiation on THIS service (default off).
     # Replaces the vendor-wide open_to_price_negotiation for booking negotiation.
     negotiable = Column(Boolean, nullable=False, default=False)
@@ -339,6 +350,13 @@ class Review(Base):
     review_id = Column(String(36), primary_key=True, default=uuid_str)
     booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=False, index=True)
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
+    # Which listing was reviewed. Copied from the booking at write time rather
+    # than read through it, because a review is displayed on the service page
+    # and joining two tables to find out which page it belongs on is a join too
+    # many. Nullable: it is set for every review written since 0040, and the
+    # backfill filled every row that existed, but a review outliving its service
+    # should lose its page rather than disappear from the vendor's record.
+    service_id = Column(String(36), ForeignKey("services.service_id"), nullable=True, index=True)
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     rating = Column(Float, nullable=False)
     comment = Column(Text, nullable=True)

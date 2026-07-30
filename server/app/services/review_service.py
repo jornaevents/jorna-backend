@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
-from app.db.models import Booking, Review, Vendor, User
+from app.db.models import Booking, Review, Service, Vendor, User
 
 
 class ReviewError(Exception):
@@ -18,6 +18,7 @@ def _review_dict(review: Review, reviewer: User | None = None) -> dict:
         "review_id": review.review_id,
         "booking_id": review.booking_id,
         "vendor_id": review.vendor_id,
+        "service_id": review.service_id,
         "user_id": review.user_id,
         "rating": review.rating,
         "comment": review.comment,
@@ -27,11 +28,38 @@ def _review_dict(review: Review, reviewer: User | None = None) -> dict:
     }
 
 
+def _mean(ratings: list[float]) -> float:
+    return round(sum(ratings) / len(ratings), 2) if ratings else 0.0
+
+
 def _recalculate_vendor_rating(vendor: Vendor, db: Session) -> None:
     """Recompute vendor rating and num_events from all reviews."""
     reviews = db.query(Review).filter(Review.vendor_id == vendor.vendor_id).all()
     vendor.num_events = len(reviews)
-    vendor.rating = round(sum(r.rating for r in reviews) / len(reviews), 2) if reviews else 0.0
+    vendor.rating = _mean([r.rating for r in reviews])
+    db.commit()
+
+
+def _recalculate_service_rating(service_id: str | None, db: Session) -> None:
+    """Recompute one listing's rating from the reviews naming it.
+
+    Recomputed from scratch rather than adjusted, so a rating can't drift away
+    from the reviews a client can read underneath it — the number and the list
+    are always the same arithmetic.
+
+    A review written before 0040 whose service is gone carries no service_id;
+    it still counts for the vendor and there is nothing here to update.
+    """
+    if service_id is None:
+        return
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service:
+        return
+    ratings = [
+        r.rating for r in db.query(Review).filter(Review.service_id == service_id).all()
+    ]
+    service.num_reviews = len(ratings)
+    service.rating = _mean(ratings)
     db.commit()
 
 
@@ -65,6 +93,7 @@ def create_review(
     review = Review(
         booking_id=booking_id,
         vendor_id=booking.vendor_id,
+        service_id=booking.service_id,
         user_id=caller_user_id,
         rating=rating,
         comment=comment,
@@ -74,16 +103,15 @@ def create_review(
     db.flush()
 
     _recalculate_vendor_rating(vendor, db)
+    _recalculate_service_rating(booking.service_id, db)
 
     reviewer = db.query(User).filter(User.user_id == caller_user_id).first()
     return _review_dict(review, reviewer)
 
 
-def get_vendor_reviews(
-    *, vendor_id: str, limit: int = 20, offset: int = 0, db: Session
-) -> dict:
-    """Return paginated reviews for a vendor, newest first."""
-    query = db.query(Review).filter(Review.vendor_id == vendor_id).order_by(Review.created_at.desc())
+def _paginated_reviews(query, *, limit: int, offset: int, db: Session) -> dict:
+    """Newest first, with each reviewer's name and photo resolved in one query."""
+    query = query.order_by(Review.created_at.desc())
     total = query.count()
     reviews = query.offset(offset).limit(limit).all()
     user_ids = {r.user_id for r in reviews}
@@ -96,6 +124,36 @@ def get_vendor_reviews(
     }
 
 
+def get_vendor_reviews(
+    *, vendor_id: str, limit: int = 20, offset: int = 0, db: Session
+) -> dict:
+    """Return paginated reviews for a vendor — everything they've been reviewed
+    on, across all their listings."""
+    return _paginated_reviews(
+        db.query(Review).filter(Review.vendor_id == vendor_id),
+        limit=limit,
+        offset=offset,
+        db=db,
+    )
+
+
+def get_service_reviews(
+    *, service_id: str, limit: int = 20, offset: int = 0, db: Session
+) -> dict:
+    """Return paginated reviews for one listing.
+
+    Narrower than the vendor's by design: this is what a client reading a
+    service page is actually asking, and answering it with the vendor's whole
+    record lends a new listing a reputation earned somewhere else.
+    """
+    return _paginated_reviews(
+        db.query(Review).filter(Review.service_id == service_id),
+        limit=limit,
+        offset=offset,
+        db=db,
+    )
+
+
 def delete_review(*, review_id: str, caller_user_id: str, is_admin: bool, db: Session) -> dict:
     """Delete a review. The author or an admin may delete."""
     review = db.query(Review).filter(Review.review_id == review_id).first()
@@ -105,11 +163,15 @@ def delete_review(*, review_id: str, caller_user_id: str, is_admin: bool, db: Se
         raise ReviewError(403, "You can only delete your own reviews")
 
     vendor = db.query(Vendor).filter(Vendor.vendor_id == review.vendor_id).first()
+    # Read before the delete — afterwards the row is gone and with it the only
+    # record of which listing's average has to be redone.
+    service_id = review.service_id
     db.delete(review)
     db.flush()
 
     if vendor:
         _recalculate_vendor_rating(vendor, db)
+    _recalculate_service_rating(service_id, db)
 
     return {"message": "Review deleted", "review_id": review_id}
 
