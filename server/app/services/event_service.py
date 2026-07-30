@@ -86,5 +86,26 @@ def delete_event(*, user_id: str, event_id: str, db: Session) -> None:
         raise EventError(404, "Event not found")
     if event.user_id != user_id:
         raise EventError(403, "Not authorized to delete this event")
+
+    # A celebration with plans on it is deleted by deleting them —
+    # _delete_bundle_cascade removes the event once the last bundle referencing
+    # it is gone, and only then. This had no such check, so it was a way round
+    # that rule: the web used to call it straight after DELETE /bundles, which
+    # took the celebration out from under any sibling plan and orphaned it.
+    #
+    # That caller is gone. This is the guard that stops the next one — or iOS,
+    # which has never been through this path.
+    from app.db.models import Bundle
+
+    referenced = db.query(Bundle).filter(Bundle.event_id == event_id).count()
+    if referenced:
+        raise EventError(
+            400,
+            f"This celebration still has {referenced} "
+            f"plan{'s' if referenced > 1 else ''} on it. Delete "
+            f"{'those' if referenced > 1 else 'that'} first — deleting them "
+            "removes the celebration once the last one is gone.",
+        )
+
     db.delete(event)
     db.commit()

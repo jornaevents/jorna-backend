@@ -196,3 +196,51 @@ def test_get_my_availability(user_and_vendor):
     response = client.get("/vendors/me/availability", headers=headers)
     assert response.status_code == 200
     assert any(s["day_of_week"] == 4 for s in response.json())
+
+
+def test_an_event_with_plans_on_it_cannot_be_deleted():
+    """DELETE /events was a way round the bundle cascade's own rule.
+
+    _delete_bundle_cascade removes an event only once the last bundle
+    referencing it is gone. This endpoint had no such check, so deleting the
+    event directly took the celebration out from under any sibling plan.
+    """
+    import uuid
+    from app.db.models import Bundle, Event, User
+    from app.services.event_service import EventError, delete_event
+    from tests.test_api import TestingSessionLocal
+
+    db = TestingSessionLocal()
+    uid = uuid.uuid4().hex[:8]
+    user = User(
+        email=f"evtdel_{uid}@test.com", username=f"evtdel_{uid}", password="pw",
+        phone="1", f_name="Evt", l_name="Del", age=30, location="NJ",
+        gender="F", language="EN", token_version=0,
+    )
+    db.add(user); db.commit(); db.refresh(user)
+    event = Event(user_id=user.user_id, name="Shared celebration",
+                  date_iso="2027-06-05", location="Newark, NJ")
+    db.add(event); db.commit(); db.refresh(event)
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    bundle = Bundle(user_id=user.user_id, name="Plan A", status="draft",
+                    event_id=event.event_id, created_at=now, updated_at=now)
+    db.add(bundle); db.commit(); db.refresh(bundle)
+
+    try:
+        with pytest.raises(EventError) as caught:
+            delete_event(user_id=user.user_id, event_id=event.event_id, db=db)
+        assert caught.value.status_code == 400
+        assert db.query(Event).filter(Event.event_id == event.event_id).first()
+
+        # With the last plan gone, the celebration is deletable again.
+        db.delete(bundle); db.commit()
+        delete_event(user_id=user.user_id, event_id=event.event_id, db=db)
+        assert db.query(Event).filter(Event.event_id == event.event_id).first() is None
+    finally:
+        db.query(Bundle).filter(Bundle.bundle_id == bundle.bundle_id).delete()
+        db.query(Event).filter(Event.event_id == event.event_id).delete()
+        db.query(User).filter(User.user_id == user.user_id).delete()
+        db.commit()
+        db.close()
