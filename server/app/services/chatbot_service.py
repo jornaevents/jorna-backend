@@ -314,6 +314,134 @@ def _step_partial_booking(state: ChatbotState) -> StepResponse:
     )
 
 
+# ── What a slot actually costs ────────────────────────────────────────
+#
+# A bundle is a set of services the client is about to book, so a slot's price
+# has to be the same number the booking will carry. It wasn't: every site below
+# used `service.price` raw, which for a rate-priced service is a rate. A caterer
+# at $62 per head contributed $62 to a bundle beside an $8,500 venue, and the
+# "estimated total" a client picks a bundle on was a sum of incomparable things.
+#
+# resolve_total_cents is the app's single answer to "what does this cost", and
+# it is what _booking_summary shows on every booking. Routing through it means a
+# bundle item and the booking it becomes cannot disagree — and the "is this a
+# total or a rate" question gets the same answer in both places.
+
+
+def event_dates(state: ChatbotState) -> tuple[str | None, str | None]:
+    """The (date_iso, date_end) a booking built from this state will carry.
+
+    One writer, because two readings of the same state is how a preview comes to
+    disagree with the booking it previews. _create_bundle_from_chatbot persists
+    what this returns, and _price_for estimates against it, so the number a
+    client is shown is the number they are charged.
+
+    A settled date wins, and only a settled date can set an end day. That end is
+    the celebration's last — a Friday-to-Sunday wedding — and it is what per-day
+    pricing multiplies by, what the escrow gate waits for, what the auto-release
+    clock counts from, and what the run sheet spreads across.
+
+    An unsettled window is none of those things. It used to be persisted into
+    the very same two columns, so "sometime in October" became a fifteen-day
+    booking: a per-day vendor billed fifteen times over, escrow locked until the
+    15th, fifteen rows of run sheet. The window's first day is taken as a
+    provisional date instead — something concrete to show, send and change — and
+    the width is dropped, because the client never said the event was that long.
+    They said they didn't know when it was.
+    """
+    if state.event_date and state.event_date != "TBD":
+        return state.event_date, (state.event_date_end or None)
+    if state.date_range and state.date_range.start:
+        # Provisional. The plan shows it as the date and the client can move it
+        # right up until they send — which is the moment it stops being theirs
+        # to change, and the moment it stops being a guess.
+        return state.date_range.start, None
+    return None, None
+
+
+def _price_for(service, state: ChatbotState) -> tuple[float, bool]:
+    """One service's price under this event's quantities.
+
+    Returns (amount, pending_quantity). `pending_quantity` is True only when the
+    service is rate-priced and the quantity that would resolve it is unknown —
+    then `amount` is the rate itself and must never be shown as a total.
+
+    A flat-priced service is never pending: its rate IS the total, which is why
+    this goes through resolve_total_cents rather than estimate_amount_cents
+    (that one returns None for flat pricing, meaning "nothing to multiply",
+    not "unknown").
+    """
+    from app.db.models import Booking
+    from app.services.booking_service import resolve_total_cents
+
+    # A throwaway Booking is how the quantities get to the pricer — the same
+    # trick create_booking uses to ask plan_readiness about a booking that
+    # doesn't exist yet. Nothing is added to the session.
+    date_iso, date_end = event_dates(state)
+    proposed = Booking(
+        guest_count=state.guest_count,
+        date_iso=date_iso,
+        date_end=date_end,
+        time_start=state.time_start,
+        time_end=state.time_end,
+    )
+    cents = resolve_total_cents(proposed, service)
+    if cents is None:
+        return round(service.price or 0.0, 2), True
+    return round(cents / 100, 2), False
+
+
+def _bundle_item(cat: str, service, vendor, user, state: ChatbotState) -> BundleItem:
+    """The item for one filled slot.
+
+    One factory for all three places that fill a slot — the strategy builder,
+    the scored builder, and the conversational swap/add — because they used to
+    construct this by hand, identically, three times, and priced it wrong in
+    each of them.
+    """
+    from app.services.booking_service import _normalize_unit
+
+    amount, pending = _price_for(service, state)
+    match_reason = service.description or service.experience or vendor.bio or ""
+    return BundleItem(
+        category=cat,
+        vendor_id=vendor.vendor_id,
+        service_id=service.service_id,
+        service_name=service.name,
+        vendor_name=f"{user.f_name} {user.l_name}",
+        pfp_url=user.pfp_url,
+        price_min=amount,
+        price_max=amount,
+        price_unit=_normalize_unit(service.price_unit),
+        price_pending_quantity=pending,
+        rating=vendor.rating or 0.0,
+        match_reason=_rule_based_match_reason(
+            cat, vendor.rating or 0.0, match_reason,
+            list(state.style), list(state.preferences), state.budget_tier,
+        ),
+    )
+
+
+def _retotal(bundle: Bundle) -> Bundle:
+    """Re-derive a bundle's totals from its items, in place.
+
+    The conversational steps add, remove and swap items and then have to restate
+    the totals. They each did it with a pair of sums, which is fine until a third
+    number depends on the items too — pending_quantity_count did not exist when
+    those were written, and four copies of the arithmetic is four places to
+    forget it.
+    """
+    bundle.estimated_total_min = round(sum(i.price_min for i in bundle.items), 2)
+    bundle.estimated_total_max = round(sum(i.price_max for i in bundle.items), 2)
+    bundle.pending_quantity_count = sum(1 for i in bundle.items if i.price_pending_quantity)
+    return bundle
+
+
+def _totalled(items: list[BundleItem], unfilled: list[str]) -> Bundle:
+    """A bundle from its items, with the totals and the caveat that goes with them."""
+    return _retotal(Bundle(items=items, unfilled_categories=unfilled))
+
+
 # ── Multi-bundle generation ───────────────────────────────────────────
 
 
@@ -412,8 +540,20 @@ def _candidate_service_rows(
 
     # Budget cap: keep services within cap; if none qualify, keep all (show the
     # cheapest available even if over budget).
+    #
+    # Measured against what the slot will actually cost, not the rate on the
+    # listing. Comparing a rate to a cap let a $95-per-head caterer — $19,000
+    # for the event — clear a cap that excluded an $8,500 venue, so the budget
+    # tiers selected hardest against exactly the flat-priced categories and
+    # barely at all against the per-person ones. A "budget-friendly" bundle
+    # could be the most expensive of the three.
+    #
+    # Where the quantity is unknown there is nothing better to compare than the
+    # rate, so those services are judged as before. That is a floor, not a
+    # licence: the builder's form asks for a guest count, and supplying one is
+    # what makes this exact.
     if price_cap < float("inf"):
-        within = [(s, v, u) for s, v, u in rows if s.price <= price_cap]
+        within = [(s, v, u) for s, v, u in rows if _price_for(s, state)[0] <= price_cap]
         if within:
             rows = within
 
@@ -434,16 +574,14 @@ def _build_bundle_with_strategy(
       'balanced'  — balance rating and price equally
 
     Slots are filled by services (matched on Service.category / subcategory),
-    a vendor fills at most one slot per bundle, and each slot's price is the
-    chosen service's own price. All three strategies also factor in LLM-scored
-    tag relevance when style/preferences are provided.
+    a vendor fills at most one slot per bundle, and each slot's price is what
+    that service will cost this event — see _price_for. All three strategies
+    also factor in LLM-scored tag relevance when style/preferences are provided.
     """
     from app.db.models import Vendor, Tag
     from app.services.llm_service import get_relevant_tags_for_preferences
 
     items: list[BundleItem] = []
-    total_min = 0.0
-    total_max = 0.0
 
     # Pre-compute LLM tag relevance once for all categories (same as _generate_bundle_from_db)
     llm_relevant_tags: set[str] | None = None
@@ -488,49 +626,33 @@ def _build_bundle_with_strategy(
             continue
 
         # Rank individual services by the strategy. row = (service, vendor, user).
+        #
+        # "Cheapest" means cheapest for this event, so every comparison below is
+        # against the resolved total. Ranking on the listed rate made the budget
+        # strategy pick the lowest per-head figure, which is not the lowest bill
+        # and at two hundred guests is frequently the highest. Computed once per
+        # row rather than inside the sort key, which would price every service
+        # O(n log n) times.
+        cost = {id(r[0]): _price_for(r[0], state)[0] for r in rows}
         if strategy == "budget":
-            rows.sort(key=lambda r: (r[0].price, -_tag_bonus(r[1])))
+            rows.sort(key=lambda r: (cost[id(r[0])], -_tag_bonus(r[1])))
         elif strategy == "top_rated":
-            rows.sort(key=lambda r: (-(r[1].rating or 0.0), r[0].price, -_tag_bonus(r[1])))
+            rows.sort(key=lambda r: (-(r[1].rating or 0.0), cost[id(r[0])], -_tag_bonus(r[1])))
         else:  # balanced
-            max_price = max((r[0].price for r in rows), default=1.0) or 1.0
+            max_price = max(cost.values(), default=1.0) or 1.0
             max_rating = max((r[1].rating or 0.0 for r in rows), default=1.0) or 1.0
             rows.sort(
                 key=lambda r: (r[1].rating or 0.0) / max_rating * 0.5
-                              + (1 - r[0].price / max_price) * 0.3
+                              + (1 - cost[id(r[0])] / max_price) * 0.3
                               + _tag_bonus(r[1]) * 0.2,
                 reverse=True,
             )
 
         service, vendor, user = rows[0]
         used_vendor_ids.add(vendor.vendor_id)
-        price = round(service.price, 2)
-        match_reason = service.description or service.experience or vendor.bio or ""
+        items.append(_bundle_item(cat, service, vendor, user, state))
 
-        items.append(BundleItem(
-            category=cat,
-            vendor_id=vendor.vendor_id,
-            service_id=service.service_id,
-            service_name=service.name,
-            vendor_name=f"{user.f_name} {user.l_name}",
-            pfp_url=user.pfp_url,
-            price_min=price,
-            price_max=price,
-            rating=vendor.rating or 0.0,
-            match_reason=_rule_based_match_reason(
-                cat, vendor.rating or 0.0, match_reason,
-                list(state.style), list(state.preferences), state.budget_tier,
-            ),
-        ))
-        total_min += price
-        total_max += price
-
-    return Bundle(
-        items=items,
-        estimated_total_min=round(total_min, 2),
-        estimated_total_max=round(total_max, 2),
-        unfilled_categories=unfilled,
-    )
+    return _totalled(items, unfilled)
 
 
 def generate_multi_bundle(
@@ -588,6 +710,7 @@ def generate_multi_bundle(
     booked_vendor_ids = _get_booked_vendor_ids(
         ChatbotState(
             event_date=req.event_date,
+            event_date_end=req.event_date_end,
             date_range=req.date_range,
             time_start=req.time_start,
             time_end=req.time_end,
@@ -599,6 +722,7 @@ def generate_multi_bundle(
     for strategy, tier, label, description, factors in _PRESETS:
         state = ChatbotState(
             event_date=req.event_date,
+            event_date_end=req.event_date_end,
             date_range=req.date_range,
             location=req.location,
             latitude=req.latitude,
@@ -649,6 +773,7 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
     """
     state = ChatbotState(
         event_date=req.event_date,
+        event_date_end=req.event_date_end,
         date_range=req.date_range,
         location=req.location,
         latitude=req.latitude,
@@ -672,13 +797,22 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
     def _looks_like_date(val: str | None) -> bool:
         return bool(val and val.lower() not in ("string", "null", "") and len(val) >= 4)
 
+    # What the bookings were actually dated, which for a window is its first day
+    # rather than the window — so the sentence matches the plan they're about to
+    # open. Saying "between the 1st and the 15th" described a fortnight-long
+    # event nobody had asked for.
+    date_iso, date_end = event_dates(state)
     date_info = ""
-    if req.date_range and (_looks_like_date(req.date_range.start) or _looks_like_date(req.date_range.end)):
-        start = req.date_range.start if _looks_like_date(req.date_range.start) else "?"
-        end = req.date_range.end if _looks_like_date(req.date_range.end) else "?"
-        date_info = f" for your event between {start} and {end}"
-    elif _looks_like_date(req.event_date):
-        date_info = f" for your event on {req.event_date}"
+    if _looks_like_date(date_iso) and _looks_like_date(date_end):
+        date_info = f" for your event from {date_iso} to {date_end}"
+    elif _looks_like_date(date_iso):
+        provisional = bool(req.date_range and not _looks_like_date(req.event_date))
+        date_info = (
+            f" — I've pencilled it in for {date_iso}, the first day you said would work;"
+            " change it on your plan before you send it"
+            if provisional
+            else f" for your event on {date_iso}"
+        )
 
     return StepResponse(
         next_step=ChatStep.BUNDLE_ACTION,
@@ -809,15 +943,24 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
         existing.date_iso <= requested_end AND existing.date_end_or_start >= requested_start
 
     Returns an empty set when no date information is available.
+
+    An unsettled window excludes nobody, deliberately. Asked about a fortnight,
+    the overlap test drops every vendor with a single booking anywhere inside it
+    — which, for "sometime in October", is most of the good ones, on the strength
+    of a day the client hasn't picked and may well avoid. A window is not
+    evidence of a conflict with any particular date, and this excludes only on
+    evidence. Same rule the marketplace's date filter already follows.
+
+    Nothing is lost by waiting: the client settles the date on the draft, and
+    the vendor's own approval re-checks the conflict (update_booking_status) on
+    the day that actually gets asked for.
     """
     from app.db.models import Booking
 
-    # Determine the requested start and end dates
-    if state.date_range and (state.date_range.start or state.date_range.end):
-        req_start = state.date_range.start or state.date_range.end
-        req_end = state.date_range.end or state.date_range.start
-    elif state.event_date and state.event_date not in ("TBD", ""):
-        req_start = req_end = state.event_date
+    # Determine the requested start and end dates. Only a settled date narrows.
+    if state.event_date and state.event_date not in ("TBD", ""):
+        req_start = state.event_date
+        req_end = state.event_date_end or state.event_date
     else:
         return set()
 
@@ -870,7 +1013,7 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
 
 def _score_vendor(
     vendor,
-    services,
+    prices: list[float] | None,
     style: list[str],
     preferences: list[str],
     tier: BudgetTier,
@@ -883,6 +1026,17 @@ def _score_vendor(
     - Tag overlap with user's style and preferences
     - Experience (num_events) as a tiebreaker
     - Price alignment with budget tier
+
+    `prices` are the resolved totals for this vendor's candidate services — what
+    each will actually cost this event. It used to take the services themselves
+    and read `.price` off them, which for a rate-priced listing is a rate, while
+    the thresholds below are event totals: a $62-per-head caterer read as $62.
+
+    `None` means the totals can't be worked out yet (a per-person service with no
+    guest count), and the price alignment is then skipped rather than guessed at.
+    Scoring the rate would be the same mistake pointing the other way — $62 is
+    not evidence of a cheap caterer, and under the premium tier it was being
+    penalised as one.
     """
     # Base: rating out of 5, doubled so it dominates
     score = (vendor.rating or 0.0) * 2.0
@@ -912,9 +1066,9 @@ def _score_vendor(
     # Experience tiebreaker (capped at 1.0)
     score += min((vendor.num_events or 0) * 0.05, 1.0)
 
-    # Price alignment: penalise mismatches between tier and vendor pricing
-    if services:
-        prices = [s.price for s in services]
+    # Price alignment: penalise mismatches between tier and vendor pricing.
+    # Skipped when the totals are unknown — see the note on `prices`.
+    if prices:
         avg_price = sum(prices) / len(prices)
         if tier == BudgetTier.BUDGET_FRIENDLY and avg_price > 3000:
             score -= 1.0
@@ -936,8 +1090,6 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
 
     tier = state.budget_tier or BudgetTier.MID_RANGE
     items: list[BundleItem] = []
-    total_min = 0.0
-    total_max = 0.0
 
     # Pre-compute LLM tag relevance once for this entire bundle request.
     # Queries only tag name strings (not full Vendor objects) for efficiency.
@@ -973,42 +1125,28 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
             continue
 
         # Score each candidate service by its vendor (price-aware via the single
-        # service), then pick the highest score, tie-broken by the cheaper service.
+        # service), then pick the highest score, tie-broken by the cheaper
+        # service — cheaper for this event, not on the listing.
+        priced = [(s, v, u, *_price_for(s, state)) for s, v, u in rows]
         scored = [
-            (_score_vendor(v, [s], state.style, state.preferences, tier, llm_relevant_tags), s.price, s, v, u)
-            for s, v, u in rows
+            (
+                # None when the total is still pending, so the tier's price
+                # alignment sits out rather than scoring a rate.
+                _score_vendor(
+                    v, None if pending else [amount],
+                    state.style, state.preferences, tier, llm_relevant_tags,
+                ),
+                amount,
+                s, v, u,
+            )
+            for s, v, u, amount, pending in priced
         ]
         scored.sort(key=lambda x: (-x[0], x[1]))
         _, _, service, vendor, user = scored[0]
         used_vendor_ids.add(vendor.vendor_id)
+        items.append(_bundle_item(cat, service, vendor, user, state))
 
-        price = round(service.price, 2)
-        match_reason = service.description or service.experience or vendor.bio or ""
-
-        items.append(BundleItem(
-            category=cat,
-            vendor_id=vendor.vendor_id,
-            service_id=service.service_id,
-            service_name=service.name,
-            vendor_name=f"{user.f_name} {user.l_name}",
-            pfp_url=user.pfp_url,
-            price_min=price,
-            price_max=price,
-            rating=vendor.rating or 0.0,
-            match_reason=_rule_based_match_reason(
-                cat, vendor.rating or 0.0, match_reason,
-                list(state.style), list(state.preferences), state.budget_tier,
-            ),
-        ))
-        total_min += price
-        total_max += price
-
-    return Bundle(
-        items=items,
-        estimated_total_min=round(total_min, 2),
-        estimated_total_max=round(total_max, 2),
-        unfilled_categories=unfilled,
-    )
+    return _totalled(items, unfilled)
 
 
 def _real_item_for_category(
@@ -1029,25 +1167,10 @@ def _real_item_for_category(
     )
     if not rows:
         return None
-    rows.sort(key=lambda r: (-(r[1].rating or 0.0), r[0].price))
+    cost = {id(r[0]): _price_for(r[0], state)[0] for r in rows}
+    rows.sort(key=lambda r: (-(r[1].rating or 0.0), cost[id(r[0])]))
     service, vendor, user = rows[0]
-    price = round(service.price, 2)
-    match_reason = service.description or service.experience or vendor.bio or ""
-    return BundleItem(
-        category=cat,
-        vendor_id=vendor.vendor_id,
-        service_id=service.service_id,
-        service_name=service.name,
-        vendor_name=f"{user.f_name} {user.l_name}",
-        pfp_url=user.pfp_url,
-        price_min=price,
-        price_max=price,
-        rating=vendor.rating or 0.0,
-        match_reason=_rule_based_match_reason(
-            cat, vendor.rating or 0.0, match_reason,
-            list(state.style), list(state.preferences), state.budget_tier,
-        ),
-    )
+    return _bundle_item(cat, service, vendor, user, state)
 
 
 # ── LLM intent → step mapping ────────────────────────────────────────
@@ -1241,12 +1364,10 @@ def _create_bundle_from_chatbot(
     event_name = state.event_date or state.location or "My Event"
     location = state.location or "TBD"
 
-    if state.date_range and state.date_range.start:
-        date_iso = state.date_range.start
-        date_end = state.date_range.end or None
-    else:
-        date_iso = state.event_date or "TBD"
-        date_end = None
+    # Shared with the pricing preview, so the total a client was shown is the
+    # total the booking carries. See event_dates.
+    date_iso, date_end = event_dates(state)
+    date_iso = date_iso or "TBD"
 
     now = datetime.now(timezone.utc)
     bundle = Bundle(
@@ -1474,6 +1595,15 @@ async def process_step(
                     f"which may exceed your ${total_budget:,.0f} budget — "
                     "you can remove categories or swap vendors to bring it down."
                 )
+        # A total carrying rate-priced items is a floor, not an estimate, so it
+        # can sit under a budget it will end up over. Said whether or not the
+        # warning above fired — that comparison is the one this undermines.
+        if bundle.pending_quantity_count:
+            budget_note += (
+                f" {bundle.pending_quantity_count} of these charge by the guest, "
+                "hour or day, so the total will rise once you give me a guest "
+                "count and times."
+            )
 
         resp = StepResponse(
             next_step=ChatStep.BUNDLE_ACTION,
@@ -1533,8 +1663,7 @@ async def process_step(
                         used.discard(item.vendor_id)
                         used.add(alt.vendor_id)
                         state.bundle.items[idx] = alt
-            state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
-            state.bundle.estimated_total_max = sum(i.price_max for i in state.bundle.items)
+            _retotal(state.bundle)
         resp = _step_bundle_action(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
@@ -1552,8 +1681,7 @@ async def process_step(
                         used.discard(item.vendor_id)
                         used.add(alt.vendor_id)
                         state.bundle.items[idx] = alt
-            state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
-            state.bundle.estimated_total_max = sum(i.price_max for i in state.bundle.items)
+            _retotal(state.bundle)
         resp = _step_bundle_action(state)
         _append_history(state, user_input, resp.bot_message)
         return resp
@@ -1563,8 +1691,7 @@ async def process_step(
         if state.bundle:
             state.bundle.items = [i for i in state.bundle.items if i.category not in selections]
             state.needed_categories = [c for c in state.needed_categories if c not in selections]
-            state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
-            state.bundle.estimated_total_max = sum(i.price_max for i in state.bundle.items)
+            _retotal(state.bundle)
 
         resp = _step_bundle_action(state)
         resp.bot_message = "Done — I removed that category from your bundle."
@@ -1589,8 +1716,7 @@ async def process_step(
                         used.add(item.vendor_id)
 
         if state.bundle:
-            state.bundle.estimated_total_min = sum(i.price_min for i in state.bundle.items)
-            state.bundle.estimated_total_max = sum(i.price_max for i in state.bundle.items)
+            _retotal(state.bundle)
 
         resp = _step_bundle_action(state)
         resp.bot_message = "Added — here's your updated bundle."

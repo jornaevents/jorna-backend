@@ -117,6 +117,19 @@ CHATBOT_CATEGORIES = list(CHATBOT_SLOTS.keys())
 
 
 class DateRange(BaseModel):
+    """A window the date falls somewhere inside — "sometime in October".
+
+    Not a duration. A celebration that genuinely runs several days says so with
+    event_date + event_date_end; those two become the booking's date_iso and
+    date_end, which every downstream reader (per-day pricing, the escrow gate,
+    the auto-release clock, the run sheet) treats as the first and last day of
+    the engagement.
+
+    This one was being persisted into those same two columns, so "sometime in
+    October" booked a fifteen-day event: a per-day vendor billed for fifteen
+    days, escrow unconfirmable until the 15th, and every vendor smeared across
+    fifteen rows of the run sheet. Two meanings in one pair of columns.
+    """
     start: Optional[str] = None   # ISO date e.g. "2026-10-01"
     end: Optional[str] = None     # ISO date e.g. "2026-10-15"
 
@@ -133,8 +146,25 @@ class BundleItem(BaseModel):
     service_name: Optional[str] = None  # the specific service filling this slot
     vendor_name: str
     pfp_url: Optional[str] = None
+    # The resolved total for this slot — rate x quantity, worked out from the
+    # event's own guest count and hours. Falls back to the bare rate only when
+    # that quantity isn't known yet, which is exactly what
+    # price_pending_quantity reports. Same three-field contract a booking
+    # carries (see bundle_service._booking_summary), so a client can read an
+    # item and a booking the same way.
     price_min: float
     price_max: float
+    price_unit: Optional[str] = Field(
+        default=None,
+        description="What the rate multiplies by — person / day / hour / event. "
+        "None means the service is priced flat.",
+    )
+    price_pending_quantity: bool = Field(
+        default=False,
+        description="True when price_min/price_max are still the RATE, because "
+        "the quantity that would resolve them isn't known. Never render such a "
+        "figure as a total.",
+    )
     rating: float
     match_reason: str
 
@@ -143,6 +173,13 @@ class Bundle(BaseModel):
     items: list[BundleItem] = []
     estimated_total_min: float = 0.0
     estimated_total_max: float = 0.0
+    pending_quantity_count: int = Field(
+        default=0,
+        description="How many items are still priced at a rate. The totals above "
+        "carry those items at their rate rather than their real cost, so a "
+        "non-zero count means the total is a floor, not an estimate — say so "
+        "rather than showing it as the price of the bundle.",
+    )
     unfilled_categories: list[str] = Field(
         default_factory=list,
         description="Requested categories with no available vendor for the event "
@@ -156,6 +193,8 @@ class Bundle(BaseModel):
 
 class ChatbotState(BaseModel):
     event_date: Optional[str] = None
+    # Last day, when the celebration runs across several. See DateRange.
+    event_date_end: Optional[str] = None
     date_range: Optional[DateRange] = None
     location: Optional[str] = None
     latitude: Optional[float] = None
@@ -237,8 +276,15 @@ class BundleRequest(BaseModel):
         None,
         description="Custom budget as a string e.g. '$10,000'. Only used when budget_tier is custom.",
     )
-    event_date: Optional[str] = Field(None, description="Single event date e.g. '2026-10-15'")
-    date_range: Optional[DateRange] = Field(None, description="Date range when the exact date is unknown")
+    event_date: Optional[str] = Field(None, description="Event date e.g. '2026-10-15'. Its first day, when the celebration runs across several.")
+    event_date_end: Optional[str] = Field(
+        None,
+        description="Last day, for a celebration that genuinely runs across "
+        "several — a Friday-to-Sunday wedding. Per-day services are billed for "
+        "that span. Do NOT use it to express an unsettled date; that's "
+        "date_range, which is a window, not a duration.",
+    )
+    date_range: Optional[DateRange] = Field(None, description="Window the date falls somewhere inside, when it isn't settled yet. Not a duration — see event_date_end.")
     guest_count: Optional[int] = Field(None, description="Approximate number of guests")
     # Optional, and the bundle is built without them — but a vendor's day isn't
     # a single booking, so knowing the hours is what lets someone with a morning

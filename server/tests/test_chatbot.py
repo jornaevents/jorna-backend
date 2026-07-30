@@ -27,6 +27,7 @@ from app.models.chatbot_schemas import (
     Bundle,
     ChatbotState,
     ChatStep,
+    DateRange,
     StepRequest,
     CHATBOT_CATEGORIES,
     CHATBOT_SLOTS,
@@ -1103,3 +1104,288 @@ class TestVenueDistance:
             assert s.name in {r[0].name for r in rows}
         finally:
             db.delete(s); db.commit()
+
+
+# ── Rate-priced services in a bundle ──────────────────────────────────
+#
+# A bundle item is a service the client is about to book, so its price has to be
+# the one the booking will carry. Every slot used to be priced at service.price
+# raw — for a per-person caterer that is a per-head rate, so a $62 listing
+# contributed $62 to a total sitting beside an $8,500 venue, and the "estimated
+# total" a client chose a bundle on was a sum of incomparable numbers.
+
+
+class TestRatePricedBundleItems:
+    """Per-person / per-hour services must price as totals, not as rates."""
+
+    CAT = "catering"
+
+    @pytest.fixture
+    def per_head_service(self, db):
+        """A caterer at $62 a head, alone in its category so it must be picked."""
+        import uuid
+        uid = uuid.uuid4().hex[:8]
+        u = User(
+            email=f"perhead_{uid}@test.com", username=f"perhead_{uid}",
+            password="pw", phone="1", f_name="Per", l_name="Head",
+            age=30, location="NJ", gender="F", language="EN", token_version=0,
+        )
+        db.add(u); db.commit(); db.refresh(u)
+        v = Vendor(user_id=u.user_id, bio="per head", category="catering",
+                   rating=5.0, num_events=99)
+        db.add(v); db.commit(); db.refresh(v)
+        s = Service(name=f"perhead-{uid}", price=62.0, price_unit="person",
+                    vendor_id=v.vendor_id, experience="exp",
+                    category="catering", negotiable=False)
+        db.add(s); db.commit(); db.refresh(s)
+        yield s
+        db.delete(s); db.commit()
+        db.delete(v); db.commit()
+        db.delete(u); db.commit()
+
+    def _item(self, bundle, service_name):
+        return next((i for i in bundle.items if i.service_name == service_name), None)
+
+    def test_per_person_resolves_to_a_total(self, db, per_head_service):
+        """$62/head x 200 guests is $12,400 — not $62."""
+        from app.services.chatbot_service import generate_bundle
+
+        state = ChatbotState(
+            needed_categories=[self.CAT],
+            budget_tier=BudgetTier.PREMIUM,   # inf cap, so nothing is filtered out
+            guest_count=200,
+        )
+        bundle = generate_bundle(state, db)
+        item = self._item(bundle, per_head_service.name)
+        assert item is not None, "the only caterer in its category should be picked"
+        assert item.price_min == 12400.0
+        assert item.price_unit == "person"
+        assert item.price_pending_quantity is False
+        assert bundle.estimated_total_min == 12400.0
+        assert bundle.pending_quantity_count == 0
+
+    def test_without_a_guest_count_it_stays_a_rate_and_says_so(self, db, per_head_service):
+        """No headcount: the rate is all there is, and it must be flagged."""
+        from app.services.chatbot_service import generate_bundle
+
+        state = ChatbotState(
+            needed_categories=[self.CAT],
+            budget_tier=BudgetTier.PREMIUM,
+        )
+        bundle = generate_bundle(state, db)
+        item = self._item(bundle, per_head_service.name)
+        assert item is not None
+        assert item.price_min == 62.0            # the rate, unresolved
+        assert item.price_pending_quantity is True
+        # The bundle total therefore isn't the price of the bundle, and says so.
+        assert bundle.pending_quantity_count == 1
+
+    def test_flat_priced_items_are_never_pending(self, db):
+        """A flat rate IS the total — it must not be flagged as unresolved."""
+        from app.services.chatbot_service import generate_bundle
+
+        state = ChatbotState(
+            needed_categories=["dj"],
+            budget_tier=BudgetTier.PREMIUM,
+            guest_count=200,
+        )
+        bundle = generate_bundle(state, db)
+        assert bundle.items, "seeded DJs should fill the slot"
+        for item in bundle.items:
+            assert item.price_pending_quantity is False
+            assert item.price_unit is None       # seeds carry no price_unit
+        assert bundle.pending_quantity_count == 0
+
+    def test_budget_cap_measures_the_total_not_the_rate(self, db, per_head_service):
+        """A $62 rate that costs $12,400 must not clear a $1,500 cap.
+
+        This is the selection half of the same bug: comparing a rate to a cap let
+        per-person services through every budget tier untouched, so a
+        "budget-friendly" bundle could be the most expensive of the three.
+        """
+        from app.services.chatbot_service import _candidate_service_rows
+
+        state = ChatbotState(needed_categories=[self.CAT], guest_count=200)
+        rows = _candidate_service_rows(
+            self.CAT, state, db,
+            booked_vendor_ids=set(), price_cap=1500.0, used_vendor_ids=set(),
+        )
+        names = {r[0].name for r in rows}
+        # The cap keeps everything only when nothing qualifies; the seeded
+        # flat-rate caterers are under $1,500, so this one should be dropped.
+        assert per_head_service.name not in names, (
+            "a $12,400 caterer cleared a $1,500 cap because only its rate was compared"
+        )
+
+    def test_the_estimate_equals_what_the_booking_will_be_charged(self, db, per_head_service):
+        """The preview and the persisted booking must agree.
+
+        They are computed by different code — _price_for here, estimate_amount_cents
+        in _create_bundle_from_chatbot — so this pins them together. A total shown
+        before booking that isn't the total booked is the whole complaint.
+        """
+        from app.services.booking_service import estimate_amount_cents
+        from app.services.chatbot_service import event_dates, generate_bundle
+
+        state = ChatbotState(
+            needed_categories=[self.CAT],
+            budget_tier=BudgetTier.PREMIUM,
+            guest_count=175,
+            event_date="2027-06-05",
+        )
+        bundle = generate_bundle(state, db)
+        item = self._item(bundle, per_head_service.name)
+        assert item is not None
+
+        date_iso, date_end = event_dates(state)
+        booked_cents = estimate_amount_cents(
+            per_head_service,
+            guest_count=state.guest_count,
+            date_iso=date_iso,
+            date_end=date_end,
+            time_start=state.time_start,
+            time_end=state.time_end,
+        )
+        assert booked_cents is not None
+        assert item.price_min == round(booked_cents / 100, 2)
+
+
+# ── What a date range means ───────────────────────────────────────────
+#
+# "Sometime in October" is a window the date falls inside. It was being persisted
+# as date_iso -> date_end, which is the pair meaning "first and last day of the
+# engagement" everywhere else in the app — so an unsettled fortnight became a
+# fortnight-long booking: a per-day vendor billed fourteen times, escrow locked
+# until the last day, fourteen rows of run sheet. A celebration that really does
+# run several days says so with event_date + event_date_end.
+
+
+class TestEventDateSemantics:
+    """date_range is a window; event_date_end is a duration. Never the reverse."""
+
+    def test_a_window_takes_its_first_day_and_drops_the_width(self):
+        from app.services.chatbot_service import event_dates
+
+        state = ChatbotState(
+            date_range=DateRange(start="2027-10-01", end="2027-10-15"),
+        )
+        assert event_dates(state) == ("2027-10-01", None)
+
+    def test_a_settled_span_keeps_both_ends(self):
+        from app.services.chatbot_service import event_dates
+
+        state = ChatbotState(event_date="2027-06-05", event_date_end="2027-06-07")
+        assert event_dates(state) == ("2027-06-05", "2027-06-07")
+
+    def test_a_settled_date_beats_a_window(self):
+        """Both supplied: the one the client actually chose wins."""
+        from app.services.chatbot_service import event_dates
+
+        state = ChatbotState(
+            event_date="2027-06-05",
+            date_range=DateRange(start="2027-10-01", end="2027-10-15"),
+        )
+        assert event_dates(state) == ("2027-06-05", None)
+
+    def test_no_date_at_all_is_no_date(self):
+        from app.services.chatbot_service import event_dates
+
+        assert event_dates(ChatbotState()) == (None, None)
+
+    def test_a_window_does_not_bill_a_per_day_service_for_its_width(self, db):
+        """The bug, priced. $500/day over a 15-day window is $500, not $7,500."""
+        from app.services.chatbot_service import _price_for
+
+        class S:
+            name, price, price_unit = "Marquee hire", 500.0, "day"
+
+        window = ChatbotState(date_range=DateRange(start="2027-10-01", end="2027-10-15"))
+        assert _price_for(S(), window) == (500.0, False)
+
+        # A real three-day celebration still bills three days.
+        span = ChatbotState(event_date="2027-06-05", event_date_end="2027-06-07")
+        assert _price_for(S(), span) == (1500.0, False)
+
+    def test_a_window_excludes_no_vendor_on_availability(self, db):
+        """A window is not evidence of a conflict with any particular day.
+
+        The overlap test dropped every vendor with a single booking anywhere
+        inside the window — for "sometime in October", most of the good ones, on
+        the strength of a date the client hadn't picked.
+        """
+        from app.services.chatbot_service import _get_booked_vendor_ids
+
+        state = ChatbotState(date_range=DateRange(start="2027-10-01", end="2027-10-31"))
+        assert _get_booked_vendor_ids(state, db) == set()
+
+    def test_a_settled_span_still_checks_availability(self, db):
+        """Narrowing must still happen once there is a real date to narrow on."""
+        import uuid
+        from app.db.models import Booking
+        from app.services.chatbot_service import _get_booked_vendor_ids
+
+        uid = uuid.uuid4().hex[:8]
+        u = User(
+            email=f"busy_{uid}@test.com", username=f"busy_{uid}", password="pw",
+            phone="1", f_name="Busy", l_name="Vendor", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        db.add(u); db.commit(); db.refresh(u)
+        v = Vendor(user_id=u.user_id, bio="busy", category="catering",
+                   rating=4.0, num_events=1)
+        db.add(v); db.commit(); db.refresh(v)
+        s = Service(name=f"busy-{uid}", price=100.0, vendor_id=v.vendor_id,
+                    experience="exp", category="catering", negotiable=False)
+        db.add(s); db.commit(); db.refresh(s)
+        b = Booking(user_id=u.user_id, vendor_id=v.vendor_id, service_id=s.service_id,
+                    date_iso="2027-06-06", time_start="10:00", time_end="12:00",
+                    location="NJ", status="approved")
+        db.add(b); db.commit()
+
+        try:
+            # The busy day sits inside the celebration's span.
+            state = ChatbotState(event_date="2027-06-05", event_date_end="2027-06-07")
+            assert v.vendor_id in _get_booked_vendor_ids(state, db)
+            # ... and outside a different one.
+            clear = ChatbotState(event_date="2027-09-05")
+            assert v.vendor_id not in _get_booked_vendor_ids(clear, db)
+        finally:
+            db.delete(b); db.commit()
+            db.delete(s); db.commit()
+            db.delete(v); db.commit()
+            db.delete(u); db.commit()
+
+    def test_the_persisted_booking_matches_what_was_priced(self, db):
+        """_create_bundle_from_chatbot must date bookings the way event_dates says."""
+        from app.db.models import Booking, Bundle
+        from app.services.chatbot_service import (
+            _create_bundle_from_chatbot,
+            event_dates,
+            generate_bundle,
+        )
+
+        state = ChatbotState(
+            needed_categories=["dj"],
+            budget_tier=BudgetTier.MID_RANGE,
+            location="Newark, NJ",
+            date_range=DateRange(start="2027-10-01", end="2027-10-15"),
+        )
+        state.bundle = generate_bundle(state, db)
+        assert state.bundle.items, "seeded DJs should fill the slot"
+
+        bundle_id, booking_ids = _create_bundle_from_chatbot(
+            state, user_id="test-user-dates", categories=None, db=db,
+            notify_vendors=False,
+        )
+        try:
+            expected_iso, expected_end = event_dates(state)
+            for bid in booking_ids:
+                bk = db.query(Booking).filter(Booking.booking_id == bid).first()
+                assert bk.date_iso == expected_iso == "2027-10-01"
+                assert bk.date_end is expected_end is None, (
+                    "the window's width must not become the booking's duration"
+                )
+        finally:
+            db.query(Booking).filter(Booking.bundle_id == bundle_id).delete()
+            db.query(Bundle).filter(Bundle.bundle_id == bundle_id).delete()
+            db.commit()
