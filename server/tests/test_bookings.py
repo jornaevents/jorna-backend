@@ -271,3 +271,178 @@ def test_unauthenticated_booking_rejected():
         },
     )
     assert response.status_code in (401, 403)
+
+
+# ── A vendor pulling out of a booking they accepted ───────────────────
+#
+# A vendor whose circumstances changed had no way out of an accepted booking at
+# all: the status machine allowed approve/reject only from pending, so the
+# honest options were to say so in the chat and hope, or not turn up. Allowed
+# now — but only while the money hasn't moved, because past that the client is
+# out of pocket for a date they're holding and unwinding it is a refund with its
+# own rules, not a status change.
+
+
+class TestVendorCancellingAnAcceptedBooking:
+    def _setup(self, db, payment_status=None, status="approved"):
+        import uuid
+        from datetime import datetime, timezone
+        from app.db.models import Booking, Bundle, Service, User, Vendor
+
+        uid = uuid.uuid4().hex[:8]
+        client = User(
+            email=f"vc_c_{uid}@test.com", username=f"vc_c_{uid}", password="pw",
+            phone="1", f_name="C", l_name="L", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        vu = User(
+            email=f"vc_v_{uid}@test.com", username=f"vc_v_{uid}", password="pw",
+            phone="1", f_name="V", l_name="N", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        db.add_all([client, vu]); db.commit(); db.refresh(client); db.refresh(vu)
+        v = Vendor(user_id=vu.user_id, bio="b", category="venue", rating=4.0, num_events=1)
+        db.add(v); db.commit(); db.refresh(v)
+        svc = Service(name=f"svc-{uid}", price=1000.0, price_unit="event",
+                      vendor_id=v.vendor_id, experience="e", category="venue",
+                      negotiable=False)
+        db.add(svc); db.commit(); db.refresh(svc)
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=client.user_id, name="Plan", status="confirmed",
+                        created_at=now, updated_at=now)
+        db.add(bundle); db.commit(); db.refresh(bundle)
+        bk = Booking(
+            user_id=client.user_id, vendor_id=v.vendor_id, service_id=svc.service_id,
+            date_iso="2027-06-05", time_start="18:00", time_end="23:00",
+            location="12 Maple Ave, Evanston, IL 60201", status=status,
+            payment_status=payment_status, bundle_id=bundle.bundle_id,
+        )
+        db.add(bk); db.commit(); db.refresh(bk)
+        return {"client": client, "vendor_user": vu, "vendor": v, "service": svc,
+                "bundle": bundle, "booking": bk}
+
+    def _teardown(self, db, s):
+        from app.db.models import Booking, Bundle, ChangeRequest, Service, User, Vendor
+
+        db.query(ChangeRequest).filter(
+            ChangeRequest.booking_id == s["booking"].booking_id
+        ).delete(synchronize_session=False)
+        db.query(Booking).filter(Booking.booking_id == s["booking"].booking_id).delete()
+        db.query(Bundle).filter(Bundle.bundle_id == s["bundle"].bundle_id).delete()
+        db.query(Service).filter(Service.service_id == s["service"].service_id).delete()
+        db.query(Vendor).filter(Vendor.vendor_id == s["vendor"].vendor_id).delete()
+        db.query(User).filter(
+            User.user_id.in_([s["client"].user_id, s["vendor_user"].user_id])
+        ).delete(synchronize_session=False)
+        db.commit()
+
+    def _cancel(self, db, s, caller=None):
+        from app.models.schemas import BookingStatus
+        from app.services.booking_service import update_booking_status
+
+        return update_booking_status(
+            booking_id=s["booking"].booking_id,
+            caller_user_id=caller or s["vendor_user"].user_id,
+            status=BookingStatus.REJECTED, db=db,
+        )
+
+    def test_an_unpaid_accepted_booking_can_be_cancelled(self):
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status="unpaid")
+        try:
+            self._cancel(db, s)
+            db.refresh(s["booking"])
+            assert s["booking"].status == "rejected"
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_a_never_paid_booking_can_be_cancelled(self):
+        """payment_status is null on a booking nobody has been asked to pay."""
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status=None)
+        try:
+            self._cancel(db, s)
+            db.refresh(s["booking"])
+            assert s["booking"].status == "rejected"
+        finally:
+            self._teardown(db, s); db.close()
+
+    @pytest.mark.parametrize(
+        "payment_status", ["processing", "paid", "released", "refunded", "disputed"]
+    )
+    def test_money_having_moved_blocks_it(self, payment_status):
+        """Including 'processing' — money in flight is the worst moment to walk
+        away, not an exempt one."""
+        from app.services.booking_service import BookingError
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status=payment_status)
+        try:
+            with pytest.raises(BookingError) as caught:
+                self._cancel(db, s)
+            assert caught.value.status_code == 400
+            db.refresh(s["booking"])
+            assert s["booking"].status == "approved", "cancelled with money on it"
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_the_client_cannot_cancel_this_way(self):
+        """Rejecting is the vendor's verb. A client withdraws instead."""
+        from app.services.booking_service import BookingError
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status="unpaid")
+        try:
+            with pytest.raises(BookingError) as caught:
+                self._cancel(db, s, caller=s["client"].user_id)
+            assert caught.value.status_code == 403
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_cancelling_closes_an_open_date_change(self):
+        """Nothing is waiting on a booking that isn't happening."""
+        from datetime import datetime, timezone
+        from app.db.models import ChangeRequest
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status="unpaid")
+        cr = ChangeRequest(
+            booking_id=s["booking"].booking_id, proposed_by=s["client"].user_id,
+            status="pending", date_iso="2027-07-01",
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(cr); db.commit()
+        try:
+            self._cancel(db, s)
+            db.refresh(cr)
+            assert cr.status == "withdrawn"
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_a_payment_landing_on_a_cancelled_booking_is_refunded(self, mocker):
+        """The checkout race. create_checkout_session leaves payment_status
+        alone, so a client on Stripe's page still reads as unpaid — a vendor
+        cancelling in that window passes the check honestly, and then the
+        webhook arrives."""
+        from app.services.stripe_service import _mark_booking_paid
+        from tests.test_api import TestingSessionLocal
+
+        refund = mocker.patch("stripe.Refund.create")
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status="unpaid", status="rejected")
+        try:
+            moved = _mark_booking_paid(s["booking"], "pi_race_123", db)
+            assert moved is False, "a cancelled booking was marked paid"
+            refund.assert_called_once()
+            db.refresh(s["booking"])
+            assert s["booking"].payment_status == "refunded"
+            assert s["booking"].status == "rejected"
+        finally:
+            self._teardown(db, s); db.close()

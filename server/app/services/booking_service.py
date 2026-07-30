@@ -900,7 +900,32 @@ def update_booking_status(
     if status_str in [BookingStatus.APPROVED.value, BookingStatus.REJECTED.value]:
         if not is_vendor:
             raise BookingError(403, "Only vendors can approve or reject a booking")
-        if booking.status not in _negotiable:
+
+        # Declining an unanswered request, or pulling out of one already
+        # accepted. The second is new: a vendor whose circumstances changed had
+        # no way out of a booking at all, so the only honest options were to
+        # tell the client in the chat and hope, or not turn up.
+        #
+        # Only while the money hasn't moved. Past that the client is out of
+        # pocket for a date they're holding, and unwinding it is a refund with
+        # its own rules — not a status change. MONEY_MOVED_STATUSES is the same
+        # set the delete paths refuse on, including 'processing', because money
+        # in flight is the worst moment to walk away, not an exempt one.
+        cancelling = (
+            status_str == BookingStatus.REJECTED.value
+            and booking.status == BookingStatus.APPROVED.value
+        )
+        if cancelling:
+            from app.services.bundle_service import _money_has_moved
+
+            if _money_has_moved(booking):
+                raise BookingError(
+                    400,
+                    "This booking has already been paid for, so it can't be "
+                    "cancelled here. Ask the client to request a refund, or "
+                    "raise a problem on it if something has gone wrong.",
+                )
+        elif booking.status not in _negotiable:
             raise BookingError(
                 400, f"Cannot change status from {booking.status} to {status_str}"
             )
@@ -955,6 +980,19 @@ def update_booking_status(
     # A rejected venue no longer anchors the event — refresh so its cached coords
     # clear (check-in re-derives regardless, but keep the denormalized copies honest).
     if status_str == BookingStatus.REJECTED.value:
+        # Nothing is waiting on a booking that isn't happening. A live date
+        # change would otherwise sit on the client's board forever, waiting on a
+        # vendor who has gone — and offer them a refund on a booking that was
+        # never paid for.
+        from app.db.models import ChangeRequest
+
+        db.query(ChangeRequest).filter(
+            ChangeRequest.booking_id == booking.booking_id,
+            ChangeRequest.status == "pending",
+        ).update(
+            {"status": "withdrawn", "resolved_at": datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
         db.flush()
         sync_event_venue(booking.bundle_id, db)
     db.commit()

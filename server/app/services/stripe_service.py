@@ -521,6 +521,35 @@ def _mark_booking_paid(booking: Booking, payment_intent_id: str | None, db: Sess
     if booking.payment_status in ("released", "refunded", "disputed"):
         return False
 
+    # The booking was cancelled while this payment was in flight.
+    #
+    # create_checkout_session deliberately leaves payment_status alone so an
+    # abandoned session can be retried — which means a client on Stripe's page
+    # still reads as unpaid, and a vendor cancelling in that window passes the
+    # "no money has moved" check honestly. Then the webhook arrives.
+    #
+    # Taking the money and marking a rejected booking paid is the one outcome
+    # nobody wants, so it is returned rather than recorded. Best-effort: if the
+    # refund itself fails, the booking is still left unpaid and the money shows
+    # up as stranded on the client's plan, which is visible and recoverable.
+    if booking.status == "rejected":
+        logger.warning(
+            "Payment landed on cancelled booking %s — refunding", booking.booking_id
+        )
+        intent = payment_intent_id or booking.payment_intent_id
+        if intent:
+            try:
+                stripe.Refund.create(payment_intent=intent, reason="requested_by_customer")
+                booking.payment_status = "refunded"
+                booking.payment_intent_id = intent
+                db.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Auto-refund failed for cancelled booking %s: %s",
+                    booking.booking_id, exc,
+                )
+        return False
+
     # Already paid — just backfill the PaymentIntent id if we now have one
     # (hosted Checkout doesn't set it at session-creation time; refunds need it).
     if booking.payment_status == "paid":
