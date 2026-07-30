@@ -269,6 +269,9 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # Null when the address and pin can't place it; the caller then falls
         # back to local, as this does to UTC.
         "timezone": _zone_name(booking),
+        # A date change the client has proposed and this vendor owes an answer
+        # on. Null when there is none, which is the ordinary case.
+        "change_request": _open_change_request(booking, db),
         "status": booking.status,
         "payment_status": booking.payment_status,
         "amount_cents": booking.amount_cents,
@@ -1094,6 +1097,32 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
     total = query.count()
     items = query.offset(offset).limit(limit).all()
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
+
+
+def _open_change_request(booking: Booking, db: Session) -> dict | None:
+    """The date change this vendor still owes an answer on.
+
+    Only the open one: a vendor's list is a list of things to do, and a request
+    they already answered isn't one. Expiry is applied on read, so a request
+    past its window never appears as still awaiting them.
+    """
+    from app.services.change_request_service import open_for_booking
+
+    cr = open_for_booking(booking.booking_id, db)
+    if not cr:
+        return None
+    return {
+        "change_request_id": cr.change_request_id,
+        "date_iso": cr.date_iso,
+        "date_end": cr.date_end,
+        "time_start": cr.time_start,
+        "time_end": cr.time_end,
+        "message": cr.message,
+        # Set once the vendor has accepted and the client owes approval for a
+        # price rise — the vendor's side is done, so it shows as waiting.
+        "repriced_amount_cents": cr.repriced_amount_cents,
+        "created_at": cr.created_at.isoformat() if cr.created_at else None,
+    }
 
 
 def _zone_name(booking: Booking) -> str | None:

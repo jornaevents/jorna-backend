@@ -233,6 +233,35 @@ def refund_booking(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+@router.post(
+    "/bookings/{booking_id}/reschedule-refund",
+    summary="Refund a booking whose date change the vendor couldn't meet",
+)
+@limiter.limit("3/minute")
+def reschedule_refund(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Not the ordinary 24-hour refund.
+
+    That window is about changing your mind shortly after paying. This is about
+    a vendor being unable to supply what is now being asked for, which can
+    happen at any distance from the event — so it has its own gate (a declined
+    or expired change request on this booking) rather than a clock, and it is
+    partial: the vendor keeps a published percentage for the date they held.
+    """
+    from app.services.stripe_service import refund_after_failed_reschedule
+
+    try:
+        return refund_after_failed_reschedule(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 # ── Disputes ─────────────────────────────────────────────────────────
 
 

@@ -40,6 +40,54 @@ def _money_has_moved(booking: Booking) -> bool:
     return (booking.payment_status or "unpaid") in MONEY_MOVED_STATUSES
 
 
+def _latest_change_requests(bookings: list[Booking], db: Session):
+    """The newest date change per booking, in one query.
+
+    Batched for the same reason the service/vendor/user maps are: a screen
+    listing many plans must not pay a query per booking for this, and there is a
+    test that fails if it does.
+    """
+    from app.db.models import ChangeRequest
+
+    ids = [b.booking_id for b in bookings if b.booking_id]
+    if not ids:
+        return {}
+    rows = (
+        db.query(ChangeRequest)
+        .filter(ChangeRequest.booking_id.in_(ids))
+        .order_by(ChangeRequest.created_at.asc())
+        .all()
+    )
+    # Ascending, so the last write per booking is the newest.
+    return {cr.booking_id: cr for cr in rows}
+
+
+def _change_request_summary(cr) -> dict | None:
+    """One date change, as the client's plan reads it.
+
+    Pending ones always: somebody owes an answer. Settled ones only while they
+    still imply something to do — a decline leaves the client choosing between
+    keeping the booking and taking a refund, and an expiry leaves the same
+    choice with nobody having answered at all. An accepted one is just the
+    booking's dates now, which the row already shows.
+    """
+    if not cr or cr.status in ("accepted", "withdrawn"):
+        return None
+    return {
+        "change_request_id": cr.change_request_id,
+        "status": cr.status,
+        "date_iso": cr.date_iso,
+        "date_end": cr.date_end,
+        "time_start": cr.time_start,
+        "time_end": cr.time_end,
+        "message": cr.message,
+        "response_message": cr.response_message,
+        # Its presence is the "needs your approval" state.
+        "repriced_amount_cents": cr.repriced_amount_cents,
+        "created_at": cr.created_at.isoformat() if cr.created_at else None,
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
@@ -48,6 +96,7 @@ def _booking_summary(
     service: Service | None,
     vendor: Vendor | None,
     vendor_user: User | None,
+    change_request=None,
 ) -> dict:
     """Build a booking's summary dict from already-resolved related rows.
 
@@ -110,6 +159,10 @@ def _booking_summary(
         # answering it in the browser's timezone reached a different day from
         # the one the server enforces. See booking_service.venue_today.
         "timezone": _zone_name(booking),
+        # A date change out with this vendor, or lately settled by them. The
+        # client's plan reads it to draw the per-vendor board; a booking with
+        # none carries null and nothing renders.
+        "change_request": _change_request_summary(change_request),
     }
 
 
@@ -152,14 +205,15 @@ def _bundle_dict(
     db: Session,
     *,
     refs: tuple[dict[str, Service], dict[str, Vendor], dict[str, User]] | None = None,
+    change_requests: dict | None = None,
     event=_UNSET,
 ) -> dict:
     """Serialize a bundle with its bookings.
 
-    ``refs`` (service/vendor/user maps) and ``event`` can be supplied
-    pre-resolved by a batch caller (``list_bundles``) to avoid per-bundle
-    queries; when omitted they're resolved here so single-bundle callers stay
-    a one-liner.
+    ``refs`` (service/vendor/user maps), ``change_requests`` and ``event`` can
+    be supplied pre-resolved by a batch caller (``list_bundles``) to avoid
+    per-bundle queries; when omitted they're resolved here so single-bundle
+    callers stay a one-liner.
     """
     if refs is None:
         refs = _resolve_booking_refs(bookings, db)
@@ -188,12 +242,19 @@ def _bundle_dict(
     )
     has_anchor = anchor_lat is not None and anchor_lng is not None
     now = datetime.now(timezone.utc)
+    # One query for the whole bundle — or none at all, when a batch caller has
+    # already asked once for every bundle on the page.
+    if change_requests is None:
+        change_requests = _latest_change_requests(bookings, db)
 
     booking_summaries = []
     for b in bookings:
         vendor = vendor_map.get(b.vendor_id)
         vendor_user = user_map.get(vendor.user_id) if vendor else None
-        summary = _booking_summary(b, service_map.get(b.service_id), vendor, vendor_user)
+        summary = _booking_summary(
+            b, service_map.get(b.service_id), vendor, vendor_user,
+            change_request=change_requests.get(b.booking_id),
+        )
         # Whether the client may nudge this vendor, from the same rule the
         # endpoint enforces — see resend_state_from.
         resend = resend_state_from(
@@ -434,6 +495,7 @@ def list_bundles(
 
     # Resolve every booking's Service/Vendor/User once, and every linked event.
     refs = _resolve_booking_refs(all_bookings, db)
+    change_requests = _latest_change_requests(all_bookings, db)
     event_ids = {b.event_id for b in bundles if b.event_id}
     event_map = (
         {e.event_id: e for e in db.query(Event).filter(Event.event_id.in_(event_ids)).all()}
@@ -446,6 +508,7 @@ def list_bundles(
             bookings_by_bundle.get(b.bundle_id, []),
             db,
             refs=refs,
+            change_requests=change_requests,
             event=event_map.get(b.event_id),
         )
         for b in bundles

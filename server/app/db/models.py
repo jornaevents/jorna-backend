@@ -271,6 +271,60 @@ class NegotiationOffer(Base):
     created_at = Column(DateTime, nullable=False)
 
 
+class ChangeRequest(Base):
+    """A proposal to move a booking that has already been agreed.
+
+    Once a request reaches a vendor, plan_readiness.COMMITTED_FIELDS freezes what
+    they were told — correctly, since that is what they agreed to. But events
+    move, and a paid booking had no route to a new date at all: no cancel button,
+    and remove_booking_from_bundle refuses once money is involved. The only exits
+    were a dispute, which is adversarial and wrong for "the venue flooded", or
+    nothing, which leaves a vendor turning up on a dead date.
+
+    Turn-based, like a negotiation: the client proposes, the vendor answers, and
+    only a resolution touches the booking. Escrow does not move on a proposal —
+    so a client cannot free their money by proposing an impossible date, and a
+    vendor cannot strand it by ignoring one.
+
+    There is no plan_id. A proposal is n rows created in one transaction, one per
+    live booking, read back by joining on the bundle those bookings already
+    belong to. Nothing new owns the grouping.
+    """
+
+    __tablename__ = "change_requests"
+
+    change_request_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(
+        String(36), ForeignKey("bookings.booking_id"), nullable=False, index=True
+    )
+    # Always the client in v1. The column allows the other direction — a vendor
+    # who needs to move asks in the chat for now.
+    proposed_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    # pending | accepted | declined | withdrawn | expired
+    status = Column(String(20), nullable=False, default="pending", index=True)
+
+    # What is being asked for. Null means "leave this as it is" — a proposal may
+    # move only the date, only the hours, or both.
+    date_iso = Column(String(10), nullable=True)
+    date_end = Column(String(10), nullable=True)
+    time_start = Column(String(5), nullable=True)
+    time_end = Column(String(5), nullable=True)
+
+    # Set when the vendor accepted and the new dates cost more than the old ones.
+    # The move is held here until the client agrees to the difference — nobody
+    # should be charged more by a flow they started to solve a scheduling
+    # problem.
+    repriced_amount_cents = Column(Integer, nullable=True)
+    client_consented_at = Column(DateTime, nullable=True)
+
+    message = Column(Text, nullable=True)
+    # What the vendor said when declining, or why the server refused.
+    response_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+
+
 class StripeWebhookEvent(Base):
     """Tracks processed Stripe webhook event IDs to prevent duplicate processing."""
 

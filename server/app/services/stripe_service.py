@@ -860,6 +860,121 @@ def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict
     return {"message": "Refund issued successfully. Funds will be returned within 5–10 business days."}
 
 
+# ── Refund after a reschedule falls through ───────────────────────────
+
+# What a vendor keeps when they can't meet a date the client proposed.
+#
+# Deliberately close to the platform fee already taken, so it reads as "you keep
+# what was already spent" rather than a penalty. That distinction matters here
+# because of who triggers it: the *vendor* is the one who declined. A fee that
+# looked punitive would be hardest to defend in exactly the case that produces
+# it.
+#
+# One constant, and every client-facing string is built from it — so the
+# disclosure at checkout and the arithmetic that runs later cannot drift apart.
+RESCHEDULE_CANCELLATION_PCT = 10
+
+
+def reschedule_refund_cents(booking: Booking, service=None) -> int:
+    """What this booking refunds when a reschedule falls through."""
+    from app.services.booking_service import resolve_total_cents
+
+    paid = booking.amount_cents or resolve_total_cents(booking, service) or 0
+    return int(round(paid * (100 - RESCHEDULE_CANCELLATION_PCT) / 100))
+
+
+def refund_after_failed_reschedule(
+    *, booking_id: str, caller_user_id: str, db: Session
+) -> dict:
+    """Refund a booking whose reschedule the vendor declined, or let lapse.
+
+    Not the ordinary 24-hour refund. That window is about changing your mind
+    shortly after paying; this is about a vendor being unable to supply what is
+    now being asked for, which can happen at any distance from the event. So it
+    does not reopen the 24-hour window, and it doesn't check it — it has its own
+    gate, which is that a change request on this booking was declined or expired
+    and the client has not already acted on it.
+
+    Partial by decision: the vendor held a date and turned down other work, and
+    keeps RESCHEDULE_CANCELLATION_PCT of the total for having done so.
+    """
+    from app.db.models import ChangeRequest
+
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+    if booking.payment_status not in ("paid", "processing"):
+        raise StripeError(
+            400,
+            f"Booking is not eligible for a refund (payment status: "
+            f"'{booking.payment_status}')",
+        )
+
+    # The gate. Without a fallen-through request this is just an ordinary
+    # refund demand outside the window, and request_refund already answers that.
+    settled = (
+        db.query(ChangeRequest)
+        .filter(
+            ChangeRequest.booking_id == booking_id,
+            ChangeRequest.status.in_(("declined", "expired")),
+        )
+        .order_by(ChangeRequest.created_at.desc())
+        .first()
+    )
+    if not settled:
+        raise StripeError(
+            400,
+            "This booking has no declined or expired date change, so the "
+            "ordinary refund rules apply.",
+        )
+
+    if not booking.payment_intent_id:
+        raise StripeError(500, "No payment intent found for this booking")
+
+    service = (
+        db.query(Service).filter(Service.service_id == booking.service_id).first()
+    )
+    amount = reschedule_refund_cents(booking, service)
+    try:
+        stripe.Refund.create(
+            payment_intent=booking.payment_intent_id,
+            amount=amount,
+            reason="requested_by_customer",
+        )
+    except stripe.StripeError as e:
+        raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
+
+    booking.payment_status = "refunded"
+    # Dead as well as refunded: the vendor can't make the date, so this booking
+    # isn't happening. Leaving it "approved" would keep it in the plan's live
+    # section and in every count derived from one.
+    from app.models.schemas import BookingStatus
+
+    booking.status = BookingStatus.REJECTED.value
+    try:
+        from app.services.booking_service import sync_event_venue
+        sync_event_venue(booking.bundle_id, db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reschedule refund: venue re-sync failed for %s: %s", booking_id, exc)
+    db.commit()
+    logger.info(
+        "Reschedule refund of %s cents issued for booking %s", amount, booking_id
+    )
+
+    kept = (booking.amount_cents or 0) - amount
+    return {
+        "message": (
+            f"Refunded ${amount / 100:,.2f}. "
+            f"${kept / 100:,.2f} ({RESCHEDULE_CANCELLATION_PCT}%) is retained as "
+            "the cancellation fee for the date your vendor held."
+        ),
+        "refunded_cents": amount,
+        "retained_cents": kept,
+    }
+
+
 # ── Disputes ──────────────────────────────────────────────────────────
 
 
