@@ -309,6 +309,10 @@ def search_vendors(
                 "first_name": user.f_name,
                 "last_name": user.l_name,
                 "category": vendor.category,
+                # A result row is a vendor+service pair, so the row has to name
+                # which service it is — without this a card can show a listing
+                # but has no way to link to it.
+                "service_id": service.service_id,
                 "service_name": service.name,
                 "service_price": service.price,
                 "distance_miles": round(distance_miles, 2) if distance_miles is not None else None,
