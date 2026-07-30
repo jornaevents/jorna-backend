@@ -68,8 +68,25 @@ def update_event(*, user_id: str, event_id: str, update_data: dict, db: Session)
         raise EventError(404, "Event not found")
     if event.user_id != user_id:
         raise EventError(403, "Not authorized to edit this event")
+    location_changed = (
+        "address_latitude" not in update_data
+        and "location" in update_data
+        and (update_data.get("location") or "") != (event.location or "")
+    )
     for field, value in update_data.items():
         setattr(event, field, value)
+
+    # A new address invalidates the old pin, and check-in is measured against
+    # the pin. Cleared and re-derived here rather than left to whoever wrote the
+    # address: the web geocodes before it saves, but the builder, POST /bookings
+    # and iOS all write a location with no coordinates at all — and then nobody
+    # on the plan can check in, against an address sitting right there on screen.
+    if location_changed:
+        from app.services.geocode_service import geocode_us_address
+
+        pin = geocode_us_address(event.location)
+        event.address_latitude, event.address_longitude = pin or (None, None)
+
     db.commit()
     db.refresh(event)
     return _event_dict(event)

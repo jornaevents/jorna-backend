@@ -459,6 +459,25 @@ def get_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
     bookings = db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+
+    # One plan, so one chance to give it a pin if it hasn't got one. Plans whose
+    # address was written by the builder, by POST /bookings or by iOS never had
+    # coordinates — nothing on those paths geocodes — so check-in was impossible
+    # on a plan showing a complete address, and the reason given said the plan
+    # had no address.
+    #
+    # Here rather than in list_bundles, which exists to be a constant number of
+    # queries and must not become a network call per event. Costs nothing once
+    # the pin exists, which after the first load it does.
+    if bundle.event_id:
+        try:
+            from app.services.geocode_service import backfill_event_pin
+
+            event = db.query(Event).filter(Event.event_id == bundle.event_id).first()
+            backfill_event_pin(event, db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pin backfill failed for bundle %s: %s", bundle_id, exc)
+
     return _bundle_dict(bundle, bookings, db)
 
 

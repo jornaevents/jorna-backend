@@ -407,10 +407,26 @@ def resend_state_from(
         return {"can_resend": False, "reason": reason}
 
     if not has_anchor:
-        return {
-            "can_resend": False,
-            "reason": "There's nowhere to check in against until the plan has an address.",
-        }
+        # Two states, one sentence — and the wrong one of the two was showing on
+        # a plan with a full address on the same screen. Check-in needs a point,
+        # not a string, and an address that can't be placed on a map is a
+        # different problem from an address nobody has given.
+        from app.services.plan_readiness import is_complete_address
+
+        where = (booking.location or "").strip()
+        if not where:
+            reason = "There's nowhere to check in against until the plan has an address."
+        elif not is_complete_address(where):
+            reason = (
+                "Check-in needs a full street address with a ZIP before it can "
+                "be measured against anything."
+            )
+        else:
+            reason = (
+                "We couldn't place this address on a map, so there's nothing to "
+                "measure a check-in against. A booked venue always brings its own."
+            )
+        return {"can_resend": False, "reason": reason}
 
     if now < start - RESEND_OPENS:
         return {"can_resend": False, "reason": "Available closer to the day."}
