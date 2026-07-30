@@ -390,7 +390,21 @@ def resend_state_from(
         return {"can_resend": False, "reason": "They've already checked in."}
 
     if start is None:
-        return {"can_resend": False, "reason": "This booking has no date and time yet."}
+        # Two different failures wore the same sentence. A booking with a date
+        # and a time on screen was told it had neither, because starts_at also
+        # returns None when the address can't be placed in a timezone — which
+        # is not the client having left something blank, and not something they
+        # could act on from that wording.
+        from app.services.plan_readiness import is_unset
+
+        if is_unset(booking.date_iso) or is_unset(booking.time_start):
+            reason = "This booking has no date and time yet."
+        else:
+            reason = (
+                "We can't tell what timezone this address is in, so check-in "
+                "reminders are off for it. A full address with a ZIP usually fixes it."
+            )
+        return {"can_resend": False, "reason": reason}
 
     if not has_anchor:
         return {

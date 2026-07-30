@@ -128,11 +128,54 @@ def test_split_states(city, lat, lng, expected):
 # ── When it can't be told ─────────────────────────────────────────────
 
 
-def test_a_split_state_with_no_coordinates_is_unknown():
-    """Longitude is the only thing separating the halves — without it there is
-    nothing to guess with, and a guess would be an hour wrong half the time."""
-    assert zone("Nashville, TN 37203") is None
-    assert zone("Indianapolis, IN") is None
+@pytest.mark.parametrize(
+    "location, expected",
+    [
+        ("Nashville, TN 37203", CENTRAL),
+        ("Indianapolis, IN", EASTERN),
+        ("Miami, FL 33101", EASTERN),
+        ("Houston, TX 77002", CENTRAL),
+        ("Detroit, MI 48226", EASTERN),
+        ("Louisville, KY 40202", EASTERN),
+        ("Portland, OR 97205", PACIFIC),
+        ("Boise, ID 83702", MOUNTAIN),
+        ("Las Vegas, NV 89101", PACIFIC),
+        ("Omaha, NE 68102", CENTRAL),
+        ("Wichita, KS 67202", CENTRAL),
+        ("Fargo, ND 58102", CENTRAL),
+        ("Sioux Falls, SD 57104", CENTRAL),
+    ],
+)
+def test_a_split_state_with_no_coordinates_takes_its_majority(location, expected):
+    """Where most of the state lives, rather than nothing.
+
+    This used to return None, reasoning that longitude is the only thing
+    separating the halves so there was nothing to guess with. True, and the
+    wrong conclusion: the callers' fallback for "no zone" is to do nothing, so
+    every booking in these thirteen states without a map pin got no check-in
+    reminder and no way to send one by hand — while the client's screen said
+    "This booking has no date and time yet" beside a date and a time.
+
+    The guess is right for the large majority of each state; the minority
+    pockets are exactly the ones coordinates resolve, and coordinates still win
+    wherever they exist (see the tests above, and below).
+    """
+    assert zone(location) == expected
+
+
+@pytest.mark.parametrize(
+    "city, lat, lng, expected",
+    [
+        # The pockets the majority guess gets wrong — still correct when placed.
+        ("Pensacola, FL 32502", 30.42, -87.22, CENTRAL),
+        ("El Paso, TX 79901", 31.76, -106.49, MOUNTAIN),
+        ("Gary, IN 46402", 41.60, -87.34, CENTRAL),
+    ],
+)
+def test_coordinates_still_beat_the_majority(city, lat, lng, expected):
+    assert zone(city, lat, lng) == expected
+    # And the fallback is what it replaces — the guess, not the truth.
+    assert zone(city) != expected
 
 
 def test_nothing_at_all_is_unknown():

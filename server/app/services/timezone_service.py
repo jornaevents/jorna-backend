@@ -62,6 +62,35 @@ _WHOLE_STATE = {
 
 _SPLIT_STATES = {"FL", "TX", "TN", "KY", "IN", "MI", "ND", "SD", "NE", "KS", "OR", "ID", "NV"}
 
+# Where a split state's people actually are, for an address with no coordinates.
+#
+# This used to return None instead, on the reasoning that longitude is the only
+# thing separating the two halves so there was nothing to guess with. True, and
+# the wrong conclusion: the caller's fallback for "no zone" is to do nothing at
+# all, so every booking in these thirteen states without a map pin got no
+# check-in reminder, and no way to send one by hand — while the client's screen
+# said "This booking has no date and time yet" next to a date and a time.
+#
+# Silence is not the safe option here, it is just the invisible one. Each of
+# these is where the large majority of the state lives, so the guess is right
+# far more often than not, and wrong by an hour when it isn't — against a
+# reminder that otherwise never arrives.
+_SPLIT_MAJORITY = {
+    "FL": EASTERN,    # all but the panhandle
+    "TX": CENTRAL,    # all but El Paso and Hudspeth
+    "TN": CENTRAL,    # Nashville and Memphis outweigh the eastern third
+    "KY": EASTERN,    # Louisville and Lexington
+    "IN": EASTERN,    # all but two corners
+    "MI": EASTERN,    # all but four Upper Peninsula counties
+    "ND": CENTRAL,
+    "SD": CENTRAL,
+    "NE": CENTRAL,
+    "KS": CENTRAL,
+    "OR": PACIFIC,    # all but Malheur County
+    "ID": MOUNTAIN,   # Boise and the south
+    "NV": PACIFIC,    # all but West Wendover
+}
+
 
 def _split_state(state: str, lat: Optional[float], lng: Optional[float]) -> Optional[str]:
     """The thirteen states a timezone boundary crosses.
@@ -172,10 +201,9 @@ def zone_name_for(
         split = _split_state(state, latitude, longitude)
         if split:
             return split
-        # A split state with no coordinates to place it in. Longitude is the
-        # only thing that separates the two halves, so there is nothing to
-        # guess with.
-        return None
+        # A split state with no coordinates to place it in. Fall back to where
+        # most of it lives — see _SPLIT_MAJORITY for why a guess beats nothing.
+        return _SPLIT_MAJORITY.get(state)
     if longitude is not None:
         return _by_longitude(longitude)
     return None
