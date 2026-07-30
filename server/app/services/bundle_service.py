@@ -16,6 +16,30 @@ class BundleError(Exception):
         super().__init__(detail)
 
 
+# Payment states meaning money has moved, is moving, or moved and came back.
+#
+# A booking in any of them is a financial record before it is a plan item: it is
+# the only thing tying a Stripe charge to what the charge was for, who owed it
+# and who was owed. Deleting it doesn't undo the payment — it strands it.
+#
+# 'processing' is in here because money in flight is the worst case, not an
+# exempt one. 'refunded' is too: the money came back, and the record of that is
+# the evidence it did.
+#
+# This was written down once already, at the bottom of the file, and used only
+# by the one-off legacy cleanup — while the live delete paths each had their own
+# idea. remove_booking_from_bundle checked three of the five; _delete_bundle_
+# cascade checked none at all, so a plan holding escrow could be deleted whole
+# when the same booking could not be removed singly.
+MONEY_MOVED_STATUSES = frozenset(
+    {"processing", "paid", "released", "refunded", "disputed"}
+)
+
+
+def _money_has_moved(booking: Booking) -> bool:
+    return (booking.payment_status or "unpaid") in MONEY_MOVED_STATUSES
+
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
@@ -273,7 +297,25 @@ def _assert_owns_bundle(bundle: Bundle, caller_user_id: str) -> None:
 def _delete_booking_cascade(booking: Booking, db: Session) -> None:
     """Delete a booking and everything tied to it (negotiation + offers, direct
     messages, reviews). Used when a client removes a booking or deletes a bundle,
-    so the booking also disappears from the vendor's side."""
+    so the booking also disappears from the vendor's side.
+
+    Refuses outright if money has moved. The guard lives here, at the one point
+    every delete path passes through, rather than at each caller — because the
+    bug this fixes was exactly a caller that didn't have it. A rule stated once
+    at the chokepoint cannot be skipped by the next path someone adds.
+
+    Callers that can give a better answer should check first and say something
+    useful; this is the backstop, and it raises rather than silently skipping so
+    a caller can never believe it deleted something it didn't.
+    """
+    if _money_has_moved(booking):
+        raise BundleError(
+            400,
+            "This booking has money against it, so it can't be deleted. "
+            "Request a refund or raise a problem with the vendor instead — "
+            "the record has to outlive the plan.",
+        )
+
     from app.db.models import Message, Negotiation, NegotiationOffer, Review
     # A booking can have more than one negotiation (re-negotiation after a reject),
     # so delete them all — not just the first — or the FK constraint on the booking
@@ -502,7 +544,10 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
         raise BundleError(400, "Booking is not in this bundle")
 
     # Don't delete a booking that's already been paid for — money is involved.
-    if booking.payment_status in ("paid", "released", "disputed"):
+    # Reads the shared set rather than its own list, which was missing
+    # 'processing' (a payment in flight, the worst one to lose) and 'refunded'
+    # (where the record *is* the evidence the money came back).
+    if _money_has_moved(booking):
         raise BundleError(400, "Can't remove a booking that's already been paid")
 
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
@@ -753,9 +798,42 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
         raise BundleError(404, "Bundle not found")
     _assert_owns_bundle(bundle, caller_user_id)
 
+    # Asked before anything is touched, so the answer can name what's blocking
+    # rather than reporting the first booking the cascade happened to reach.
+    # The cascade refuses these too — this is the version worth reading.
+    held = [
+        b for b in db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+        if _money_has_moved(b)
+    ]
+    if held:
+        from app.services.booking_service import resolve_total_cents
+
+        total = 0
+        names: list[str] = []
+        for b in held:
+            service = db.query(Service).filter(Service.service_id == b.service_id).first()
+            total += resolve_total_cents(b, service) or 0
+            if service and service.name:
+                names.append(service.name)
+        amount = f"${total / 100:,.0f}" if total else "Money"
+        who = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        raise BundleError(
+            400,
+            f"{amount} has already been paid on this plan"
+            + (f" ({who})" if who else "")
+            + ". Deleting it wouldn't return the money — it would only lose the "
+            "record of where it went. Refund or resolve "
+            f"{'that booking' if len(held) == 1 else 'those bookings'} first, "
+            "then delete the plan.",
+        )
+
     try:
         _delete_bundle_cascade(bundle, db)
         db.commit()
+    except BundleError:
+        # Already a considered refusal — don't bury it in a 500.
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         logger.exception("delete_bundle failed for bundle %s", bundle_id)
@@ -768,7 +846,9 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
 _LEGACY_AI_EVENT_MARKER = "Bundle from jornAI"
 
 # A booking with any of these payment states is never deleted by the cleanup.
-_PROTECTED_PAYMENT_STATUSES = {"processing", "paid", "released", "refunded", "disputed"}
+# The same rule the live delete paths enforce — see MONEY_MOVED_STATUSES, which
+# this used to be a second, separate copy of.
+_PROTECTED_PAYMENT_STATUSES = MONEY_MOVED_STATUSES
 
 
 def cleanup_legacy_bundle_event_data(*, db: Session, dry_run: bool = True, stale_days: int = 7) -> dict:

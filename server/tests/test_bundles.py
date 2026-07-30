@@ -856,3 +856,122 @@ def test_the_event_keeps_the_headcount_the_bundle_was_built_with(seeded_db):
     assert event.guest_count == 200
     assert event.date_iso == booking.date_iso
     fresh.close()
+
+
+# ── Money outlives the plan ───────────────────────────────────────────
+#
+# remove_booking_from_bundle has always refused to delete a paid booking —
+# "money is involved". delete_bundle walked the same cascade with no check at
+# all, so the booking you couldn't remove singly went with the plan when the
+# whole thing was deleted: the Stripe charge stayed, and the only record of what
+# it was for did not.
+
+
+class TestPaidBookingsSurviveDeletion:
+    """No route through the product may destroy a booking with money on it."""
+
+    PROTECTED = ["processing", "paid", "released", "refunded", "disputed"]
+
+    def _bundle_with(self, seeded_db, payment_status: str) -> tuple[str, str]:
+        """A one-booking bundle whose booking is in the given payment state."""
+        user, booking, db = seeded_db["user"], seeded_db["booking1"], seeded_db["db"]
+        resp = client.post(
+            "/bundles",
+            json={"name": "Paid plan", "booking_ids": [booking.booking_id]},
+            headers=make_auth_headers(user),
+        )
+        bundle_id = resp.json()["bundle_id"]
+        booking.payment_status = payment_status
+        booking.amount_cents = 1_240_000
+        db.commit()
+        return bundle_id, booking.booking_id
+
+    @pytest.mark.parametrize("payment_status", PROTECTED)
+    def test_the_whole_plan_cannot_be_deleted(self, seeded_db, payment_status):
+        user, db = seeded_db["user"], seeded_db["db"]
+        bundle_id, booking_id = self._bundle_with(seeded_db, payment_status)
+
+        resp = client.delete(f"/bundles/{bundle_id}", headers=make_auth_headers(user))
+        assert resp.status_code == 400, (
+            f"a plan holding a {payment_status!r} booking was deleted"
+        )
+        # And nothing was half-destroyed on the way to refusing.
+        assert db.query(Booking).filter(Booking.booking_id == booking_id).first() is not None
+        assert db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first() is not None
+
+    @pytest.mark.parametrize("payment_status", PROTECTED)
+    def test_the_booking_cannot_be_removed_singly_either(self, seeded_db, payment_status):
+        """The two paths must agree — the asymmetry between them was the bug."""
+        user, db = seeded_db["user"], seeded_db["db"]
+        bundle_id, booking_id = self._bundle_with(seeded_db, payment_status)
+
+        resp = client.delete(
+            f"/bundles/{bundle_id}/bookings/{booking_id}",
+            headers=make_auth_headers(user),
+        )
+        assert resp.status_code == 400
+        assert db.query(Booking).filter(Booking.booking_id == booking_id).first() is not None
+
+    def test_the_refusal_names_the_money(self, seeded_db):
+        """A refusal you can't act on is a dead end. It should say how much,
+        on what, and what to do instead."""
+        user = seeded_db["user"]
+        bundle_id, _ = self._bundle_with(seeded_db, "paid")
+
+        resp = client.delete(f"/bundles/{bundle_id}", headers=make_auth_headers(user))
+        detail = resp.json()["detail"]
+        assert "$12,400" in detail, detail          # the amount actually held
+        assert "DJ Set" in detail, detail           # what it was for
+        assert "efund" in detail, detail            # what to do instead
+
+    def test_an_unpaid_plan_still_deletes(self, seeded_db):
+        """The guard must not have made every plan undeletable."""
+        user, booking, db = seeded_db["user"], seeded_db["booking1"], seeded_db["db"]
+        resp = client.post(
+            "/bundles",
+            json={"name": "Unpaid plan", "booking_ids": [booking.booking_id]},
+            headers=make_auth_headers(user),
+        )
+        bundle_id = resp.json()["bundle_id"]
+
+        assert client.delete(
+            f"/bundles/{bundle_id}", headers=make_auth_headers(user)
+        ).status_code == 204
+        assert db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first() is None
+
+    def test_one_paid_booking_protects_its_unpaid_siblings(self, seeded_db):
+        """Refusing must be all-or-nothing. A cascade that deleted the unpaid
+        bookings before reaching the paid one would leave a half-eaten plan."""
+        user, db = seeded_db["user"], seeded_db["db"]
+        paid, unpaid = seeded_db["booking1"], seeded_db["booking2"]
+        resp = client.post(
+            "/bundles",
+            json={"name": "Mixed plan",
+                  "booking_ids": [paid.booking_id, unpaid.booking_id]},
+            headers=make_auth_headers(user),
+        )
+        bundle_id = resp.json()["bundle_id"]
+        paid.payment_status = "paid"
+        paid.amount_cents = 500_000
+        db.commit()
+
+        assert client.delete(
+            f"/bundles/{bundle_id}", headers=make_auth_headers(user)
+        ).status_code == 400
+        for b in (paid, unpaid):
+            assert db.query(Booking).filter(
+                Booking.booking_id == b.booking_id
+            ).first() is not None, "an unpaid sibling was deleted before the refusal"
+
+    def test_the_cascade_itself_refuses(self, seeded_db):
+        """The guard sits at the chokepoint, not only at the callers — so a
+        delete path added later inherits it rather than having to remember it."""
+        from app.services.bundle_service import BundleError, _delete_booking_cascade
+
+        booking, db = seeded_db["booking1"], seeded_db["db"]
+        booking.payment_status = "paid"
+        db.commit()
+
+        with pytest.raises(BundleError) as caught:
+            _delete_booking_cascade(booking, db)
+        assert caught.value.status_code == 400
