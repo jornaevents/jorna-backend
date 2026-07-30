@@ -122,11 +122,28 @@ def create_service(
 
 
 def get_service(*, service_id: str, db: Session) -> dict:
-    """Return a single service by ID. Raises 404 if not found."""
-    service = db.query(Service).filter(Service.service_id == service_id).first()
-    if not service:
+    """Return a single service by ID, with its vendor's display info.
+
+    The same shape the list endpoint returns, so a caller that has a service
+    from either route reads the same keys. The service detail page needs the
+    vendor's name and photo to say who is offering the thing, and fetching that
+    separately would mean a second round trip for two strings that live one join
+    away.
+
+    The join is left outer: a service whose vendor row is missing is a broken
+    listing, but a 500 on the page is worse than a card with no name on it.
+    """
+    row = (
+        db.query(Service, Vendor, User)
+        .outerjoin(Vendor, Service.vendor_id == Vendor.vendor_id)
+        .outerjoin(User, Vendor.user_id == User.user_id)
+        .filter(Service.service_id == service_id)
+        .first()
+    )
+    if not row:
         raise ServiceError(404, "Service not found")
-    return _service_dict(service)
+    service, vendor, user = row
+    return _service_with_vendor_dict(service, vendor, user)
 
 
 def list_services(
