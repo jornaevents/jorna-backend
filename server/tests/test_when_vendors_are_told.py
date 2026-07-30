@@ -148,3 +148,138 @@ def test_a_swap_inside_a_draft_tells_nobody(mocker, world):
     _book_into(world, bundle_id)
 
     assert dispatch.call_count == 0
+
+
+# ── A draft is invisible, not merely unannounced ──────────────────────
+#
+# create_booking has always withheld the notification for a booking on a draft
+# plan. But the row is created "pending" straight away, and the vendor's
+# dashboard, their "Needs you" badge and their bookings page are all built from
+# get_vendor_bookings — which returned it. So a service a client added from the
+# marketplace while still assembling their plan landed in the vendor's Requests
+# queue with Accept and Decline on it. Silence is not absence.
+
+
+class TestDraftBookingsAreInvisibleToVendors:
+    def _setup(self, db, bundle_status="draft"):
+        import uuid
+        from datetime import datetime, timezone
+        from app.db.models import Booking, Bundle, Service, User, Vendor
+
+        uid = uuid.uuid4().hex[:8]
+        client = User(
+            email=f"dv_c_{uid}@test.com", username=f"dv_c_{uid}", password="pw",
+            phone="1", f_name="Cli", l_name="Ent", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        vu = User(
+            email=f"dv_v_{uid}@test.com", username=f"dv_v_{uid}", password="pw",
+            phone="1", f_name="Ven", l_name="Dor", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        db.add_all([client, vu]); db.commit(); db.refresh(client); db.refresh(vu)
+        v = Vendor(user_id=vu.user_id, bio="b", category="venue", rating=4.0, num_events=1)
+        db.add(v); db.commit(); db.refresh(v)
+        svc = Service(name=f"svc-{uid}", price=100.0, vendor_id=v.vendor_id,
+                      experience="e", category="venue", negotiable=False)
+        db.add(svc); db.commit(); db.refresh(svc)
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=client.user_id, name="Plan", status=bundle_status,
+                        created_at=now, updated_at=now)
+        db.add(bundle); db.commit(); db.refresh(bundle)
+        bk = Booking(
+            user_id=client.user_id, vendor_id=v.vendor_id, service_id=svc.service_id,
+            date_iso="2027-06-05", time_start="18:00", time_end="23:00",
+            location="NJ", status="pending", bundle_id=bundle.bundle_id,
+        )
+        db.add(bk); db.commit(); db.refresh(bk)
+        return {"client": client, "vendor_user": vu, "vendor": v,
+                "service": svc, "bundle": bundle, "booking": bk}
+
+    def _teardown(self, db, s):
+        from app.db.models import Booking, Bundle, Service, User, Vendor
+
+        db.query(Booking).filter(Booking.booking_id == s["booking"].booking_id).delete()
+        db.query(Bundle).filter(Bundle.bundle_id == s["bundle"].bundle_id).delete()
+        db.query(Service).filter(Service.service_id == s["service"].service_id).delete()
+        db.query(Vendor).filter(Vendor.vendor_id == s["vendor"].vendor_id).delete()
+        db.query(User).filter(
+            User.user_id.in_([s["client"].user_id, s["vendor_user"].user_id])
+        ).delete(synchronize_session=False)
+        db.commit()
+
+    def test_a_draft_booking_is_not_in_the_vendors_list(self):
+        from app.services.booking_service import get_vendor_bookings
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db)
+        try:
+            res = get_vendor_bookings(
+                vendor_id=s["vendor"].vendor_id,
+                caller_user_id=s["vendor_user"].user_id, limit=100, db=db,
+            )
+            assert res["total"] == 0, "a plan nobody sent reached the vendor's queue"
+            assert res["items"] == []
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_sending_the_plan_makes_it_appear(self):
+        """The catch-up select_bundle already performs, seen from the vendor."""
+        from app.services.booking_service import get_vendor_bookings
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db)
+        try:
+            s["bundle"].status = "confirmed"
+            db.commit()
+            res = get_vendor_bookings(
+                vendor_id=s["vendor"].vendor_id,
+                caller_user_id=s["vendor_user"].user_id, limit=100, db=db,
+            )
+            assert res["total"] == 1
+            assert res["items"][0]["booking_id"] == s["booking"].booking_id
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_a_vendor_cannot_accept_a_draft_booking(self):
+        """The backstop. Agreeing to a draft means agreeing to a date and a
+        place the client hasn't decided on yet."""
+        from app.models.schemas import BookingStatus
+        from app.services.booking_service import BookingError, update_booking_status
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db)
+        try:
+            with pytest.raises(BookingError) as caught:
+                update_booking_status(
+                    booking_id=s["booking"].booking_id,
+                    caller_user_id=s["vendor_user"].user_id,
+                    status=BookingStatus.APPROVED, db=db,
+                )
+            assert caught.value.status_code == 400
+            assert "hasn't been sent" in caught.value.detail
+            db.refresh(s["booking"])
+            assert s["booking"].status == "pending"
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_a_booking_with_no_bundle_still_shows(self):
+        """Nothing is hiding it, and legacy rows predate bundles being required."""
+        from app.services.booking_service import get_vendor_bookings
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        s = self._setup(db)
+        try:
+            s["booking"].bundle_id = None
+            db.commit()
+            res = get_vendor_bookings(
+                vendor_id=s["vendor"].vendor_id,
+                caller_user_id=s["vendor_user"].user_id, limit=100, db=db,
+            )
+            assert res["total"] == 1
+        finally:
+            self._teardown(db, s); db.close()

@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import case
+from sqlalchemy import case, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -904,6 +904,21 @@ def update_booking_status(
             raise BookingError(
                 400, f"Cannot change status from {booking.status} to {status_str}"
             )
+        # A request nobody has sent isn't the vendor's to answer. The list they
+        # work from excludes these now (see get_vendor_bookings), so this is the
+        # backstop — and it matters, because agreeing to a draft means agreeing
+        # to a date and a place the client hasn't decided on.
+        parent = (
+            db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+            if booking.bundle_id
+            else None
+        )
+        if parent is not None and parent.status == "draft":
+            raise BookingError(
+                400,
+                "This request hasn't been sent yet — the client is still putting "
+                "their plan together. You'll be asked when they send it.",
+            )
 
     # A vendor can't approve two bookings that collide. Checked only on approval
     # (a pending request is just a lead); checkout re-checks to catch the race
@@ -1087,13 +1102,43 @@ def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Ses
 
 
 def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
-    """Return a paginated list of bookings directed to a vendor."""
+    """Return a paginated list of bookings directed to a vendor.
+
+    Bookings on a plan the client hasn't sent are excluded, because they have
+    not been directed at anybody yet.
+
+    create_booking has always withheld the *notification* for a draft — but the
+    booking row is created "pending" straight away, and this list is what the
+    vendor's dashboard, their "Needs you" badge and their bookings page are all
+    built from. So a service a client added from the marketplace while still
+    assembling their plan arrived in the vendor's Requests queue with Accept and
+    Decline buttons on it. Silence is not the same as absence, and the vendor
+    could approve a booking whose date, address and headcount the client had not
+    filled in yet — the exact thing the draft is for.
+
+    select_bundle notifies every still-pending booking when the plan is sent, so
+    nothing is lost by holding them back: they appear, all at once, at the moment
+    the client actually asks.
+
+    A booking with no bundle at all is kept. Nothing is hiding it, and legacy
+    rows predate bundles being mandatory.
+    """
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
         raise BookingError(404, "Vendor not found")
     if vendor.user_id != caller_user_id:
         raise BookingError(403, "You are not authorised to view these bookings")
-    query = db.query(Booking).filter(Booking.vendor_id == vendor_id)
+    query = (
+        db.query(Booking)
+        # Outer, so a booking with no bundle survives the join. `NULL != 'draft'`
+        # is NULL in SQL rather than true, which is why the null case is spelled
+        # out rather than left to the inequality.
+        .outerjoin(Bundle, Booking.bundle_id == Bundle.bundle_id)
+        .filter(
+            Booking.vendor_id == vendor_id,
+            or_(Bundle.bundle_id.is_(None), Bundle.status != "draft"),
+        )
+    )
     total = query.count()
     items = query.offset(offset).limit(limit).all()
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
