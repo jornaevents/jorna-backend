@@ -30,6 +30,11 @@ def _service_dict(service: Service) -> dict:
         "price_unit": service.price_unit,
         "description": service.description,
         "negotiable": service.negotiable,
+        # This listing's own record, not its vendor's. `vendor_rating` below is
+        # still the vendor's, and the two answer different questions — how good
+        # this thing is, and how good the person behind it is.
+        "rating": service.rating,
+        "num_reviews": service.num_reviews,
         "location": service.location,
         "venue_latitude": service.venue_latitude,
         "venue_longitude": service.venue_longitude,

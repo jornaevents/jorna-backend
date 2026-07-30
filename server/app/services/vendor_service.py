@@ -312,7 +312,15 @@ def search_vendors(
                 "service_name": service.name,
                 "service_price": service.price,
                 "distance_miles": round(distance_miles, 2) if distance_miles is not None else None,
+                # The vendor's blended rating across everything they sell. Kept
+                # under this name because min_rating and sort_by=rating filter on
+                # it, and a card falls back to it for an unreviewed listing.
                 "rating": vendor.rating,
+                # This listing's own record. A result row is a vendor+service
+                # pair and the card leads with the service, so this is the number
+                # that actually describes what's being shown.
+                "service_rating": service.rating,
+                "service_num_reviews": service.num_reviews,
                 "location": user.location,
                 "pfp_url": user.pfp_url,
                 "travel_radius_miles": vendor.travel_radius_miles,
