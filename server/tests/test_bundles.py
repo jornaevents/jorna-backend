@@ -975,3 +975,38 @@ class TestPaidBookingsSurviveDeletion:
         with pytest.raises(BundleError) as caught:
             _delete_booking_cascade(booking, db)
         assert caught.value.status_code == 400
+
+
+def test_a_plan_holding_money_cannot_be_cancelled(seeded_db):
+    """Cancelling a paid plan is deleting one without the tidying up.
+
+    update_bundle_status accepted "cancelled" with no payment check of any kind,
+    so a plan could be marked not-happening while its vendors kept their
+    bookings and the charge kept standing.
+    """
+    user, booking, db = seeded_db["user"], seeded_db["booking1"], seeded_db["db"]
+    resp = client.post(
+        "/bundles",
+        json={"name": "Paid plan", "booking_ids": [booking.booking_id]},
+        headers=make_auth_headers(user),
+    )
+    bundle_id = resp.json()["bundle_id"]
+    booking.payment_status = "paid"
+    booking.amount_cents = 800_000
+    db.commit()
+
+    refused = client.patch(
+        f"/bundles/{bundle_id}/status",
+        json={"status": "cancelled"},
+        headers=make_auth_headers(user),
+    )
+    assert refused.status_code == 400, "a plan holding escrow was cancelled"
+
+    # Unpaid, the same call still works.
+    booking.payment_status = "unpaid"
+    db.commit()
+    assert client.patch(
+        f"/bundles/{bundle_id}/status",
+        json={"status": "cancelled"},
+        headers=make_auth_headers(user),
+    ).status_code == 200

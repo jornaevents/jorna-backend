@@ -610,6 +610,24 @@ def update_bundle_status(*, bundle_id: str, status: str, caller_user_id: str, db
     if status == "confirmed" and bundle.status != "draft":
         raise BundleError(400, "Only a draft bundle can be confirmed")
 
+    # Cancelling a plan that is holding money is the same act as deleting one,
+    # minus the tidying up: the vendors keep their bookings, the charge keeps
+    # standing, and the plan says it isn't happening. Whatever is owed has to be
+    # resolved on the booking that owes it.
+    if status == "cancelled":
+        held = [
+            b for b in db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+            if _money_has_moved(b)
+        ]
+        if held:
+            raise BundleError(
+                400,
+                f"{len(held)} booking{'s' if len(held) > 1 else ''} on this plan "
+                "still ha" + ("ve" if len(held) > 1 else "s") + " money against "
+                "it. Refund or resolve "
+                f"{'them' if len(held) > 1 else 'it'} before cancelling the plan.",
+            )
+
     prev_status = bundle.status
     bundle.status = status
     bundle.updated_at = datetime.now(timezone.utc)
