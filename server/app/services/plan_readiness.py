@@ -111,6 +111,17 @@ def _price_unit_kind(unit: Optional[str]) -> str:
     return _normalize_unit(unit) or "event"
 
 
+def is_unset(value: Optional[str]) -> bool:
+    """Whether a stored answer is really an answer.
+
+    "TBD" is what the bundle builder writes when it wasn't told — a placeholder
+    that is a non-empty string, so every plain truthiness check read it as a
+    filled-in value. It means the same as blank and has to be treated the same.
+    """
+    text = (value or "").strip()
+    return not text or text.upper() == "TBD"
+
+
 def booking_gaps(
     booking: Booking,
     service: Optional[Service],
@@ -119,13 +130,20 @@ def booking_gaps(
 ) -> list[str]:
     """What this booking is still missing, in words a client can act on.
 
-    Which pricing detail is needed depends on the unit and nothing else: per
-    person wants a headcount, per hour wants a start and end, per day wants the
-    dates it spans. A flat-rate service wants none of them.
+    A date, a place and a time on every booking, whatever it costs: a vendor
+    accepting is agreeing to be somewhere at a time, and that is true of a
+    flat-rate DJ exactly as it is of an hourly one.
+
+    Times used to be asked for only when the *price* depended on them, which is
+    a different question and answered it wrongly — a per-event or per-person
+    booking sailed through the send gate carrying "TBD" for both, and vendors
+    were asked to hold a day with no hours attached to it. The pricing units
+    still decide which *quantity* is needed on top: per person wants a headcount,
+    per day wants the dates it spans.
     """
     gaps: list[str] = []
 
-    if not booking.date_iso or booking.date_iso == "TBD":
+    if is_unset(booking.date_iso):
         gaps.append("a date")
 
     # The booking's own location, or the event's — a booking made from an event
@@ -134,6 +152,9 @@ def booking_gaps(
     if not is_complete_address(where):
         gaps.append("a full address")
 
+    if is_unset(booking.time_start) or is_unset(booking.time_end):
+        gaps.append("a start and end time")
+
     kind = _price_unit_kind(service.price_unit if service else None)
     if kind == "person":
         # The booking's own count, not the event's: the total is resolved from
@@ -141,9 +162,6 @@ def booking_gaps(
         # this check without satisfying checkout.
         if not (booking.guest_count or 0):
             gaps.append("a guest count")
-    elif kind == "hour":
-        if not booking.time_start or not booking.time_end:
-            gaps.append("a start and end time")
 
     return gaps
 

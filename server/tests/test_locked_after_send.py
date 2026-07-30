@@ -11,6 +11,7 @@ the point of the change is that the rule holds where a client can't reach round
 it.
 """
 
+import pytest
 import uuid
 
 import pytest
@@ -670,3 +671,138 @@ def test_re_sending_is_not_blocked_by_a_booking_already_answered(plan):
         )
     finally:
         db.close()
+
+
+# ── TBD is not a time ─────────────────────────────────────────────────
+
+
+class TestTimesAreRequiredToSend:
+    """A vendor accepting is agreeing to be somewhere at a time.
+
+    Times were only ever asked for when the *price* depended on them, which is a
+    different question — so a per-event or per-person booking passed the send
+    gate carrying "TBD" for both, and vendors were asked to hold a day with no
+    hours attached to it. The bundle builder writes exactly that string when it
+    wasn't told, and it is non-empty, so every truthiness check read it as an
+    answer.
+    """
+
+    def _booking(self, **over):
+        from app.db.models import Booking
+
+        fields = {
+            "date_iso": "2027-06-05",
+            "time_start": "18:00",
+            "time_end": "23:00",
+            "location": "12 Maple Ave, Evanston, IL 60201",
+            "guest_count": None,
+        }
+        fields.update(over)
+        return Booking(**fields)
+
+    def _flat_service(self):
+        from app.db.models import Service
+
+        return Service(name="DJ", price=1000.0, price_unit="event")
+
+    def test_tbd_times_block_a_flat_rate_booking(self):
+        from app.services.plan_readiness import booking_gaps
+
+        gaps = booking_gaps(
+            self._booking(time_start="TBD", time_end="TBD"), self._flat_service()
+        )
+        assert "a start and end time" in gaps
+
+    def test_blank_times_block_it_too(self):
+        from app.services.plan_readiness import booking_gaps
+
+        gaps = booking_gaps(
+            self._booking(time_start="", time_end=""), self._flat_service()
+        )
+        assert "a start and end time" in gaps
+
+    def test_one_missing_half_is_still_missing(self):
+        from app.services.plan_readiness import booking_gaps
+
+        gaps = booking_gaps(self._booking(time_end="TBD"), self._flat_service())
+        assert "a start and end time" in gaps
+
+    def test_real_times_pass(self):
+        from app.services.plan_readiness import booking_gaps
+
+        assert booking_gaps(self._booking(), self._flat_service()) == []
+
+    def test_tbd_date_is_still_caught(self):
+        """The same placeholder, in the field it was already checked for."""
+        from app.services.plan_readiness import booking_gaps
+
+        gaps = booking_gaps(self._booking(date_iso="TBD"), self._flat_service())
+        assert "a date" in gaps
+
+    def test_a_plan_with_tbd_times_cannot_be_sent(self):
+        """End to end: select_bundle refuses, naming what's missing."""
+        import uuid
+        from datetime import datetime, timezone
+        from app.db.models import Booking, Bundle, Service, User, Vendor
+        from app.services.bundle_service import BundleError, select_bundle
+        from tests.test_api import TestingSessionLocal
+
+        db = TestingSessionLocal()
+        uid = uuid.uuid4().hex[:8]
+        client = User(
+            email=f"tbd_c_{uid}@test.com", username=f"tbd_c_{uid}", password="pw",
+            phone="1", f_name="C", l_name="L", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        vu = User(
+            email=f"tbd_v_{uid}@test.com", username=f"tbd_v_{uid}", password="pw",
+            phone="1", f_name="V", l_name="N", age=30, location="NJ",
+            gender="F", language="EN", token_version=0,
+        )
+        db.add_all([client, vu]); db.commit(); db.refresh(client); db.refresh(vu)
+        v = Vendor(user_id=vu.user_id, bio="b", category="venue", rating=4.0, num_events=1)
+        db.add(v); db.commit(); db.refresh(v)
+        svc = Service(name=f"flat-{uid}", price=1000.0, price_unit="event",
+                      vendor_id=v.vendor_id, experience="e", category="venue",
+                      negotiable=False)
+        db.add(svc); db.commit(); db.refresh(svc)
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=client.user_id, name="Plan", status="draft",
+                        created_at=now, updated_at=now)
+        db.add(bundle); db.commit(); db.refresh(bundle)
+        bk = Booking(
+            user_id=client.user_id, vendor_id=v.vendor_id, service_id=svc.service_id,
+            date_iso="2027-06-05", time_start="TBD", time_end="TBD",
+            location="12 Maple Ave, Evanston, IL 60201", status="pending",
+            bundle_id=bundle.bundle_id,
+        )
+        db.add(bk); db.commit()
+
+        try:
+            with pytest.raises(BundleError) as caught:
+                select_bundle(
+                    bundle_id=bundle.bundle_id,
+                    caller_user_id=client.user_id, db=db,
+                )
+            assert caught.value.status_code == 400
+            assert "start and end time" in caught.value.detail
+            db.refresh(bundle)
+            assert bundle.status == "draft", "sent anyway"
+
+            # With real hours it goes.
+            bk.time_start, bk.time_end = "18:00", "23:00"
+            db.commit()
+            select_bundle(
+                bundle_id=bundle.bundle_id, caller_user_id=client.user_id, db=db
+            )
+            db.refresh(bundle)
+            assert bundle.status == "confirmed"
+        finally:
+            db.query(Booking).filter(Booking.bundle_id == bundle.bundle_id).delete()
+            db.query(Bundle).filter(Bundle.bundle_id == bundle.bundle_id).delete()
+            db.query(Service).filter(Service.service_id == svc.service_id).delete()
+            db.query(Vendor).filter(Vendor.vendor_id == v.vendor_id).delete()
+            db.query(User).filter(
+                User.user_id.in_([client.user_id, vu.user_id])
+            ).delete(synchronize_session=False)
+            db.commit(); db.close()
