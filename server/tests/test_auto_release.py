@@ -224,7 +224,51 @@ def test_a_check_in_before_the_day_doesnt_open_it():
         _b(date_iso=_day(2), date_end=_day(4), vendor_checked_in_at="2026-07-28T18:00:00Z")
     )
     assert not ok
-    assert "on or after" in msg
+    assert "after" in msg
+
+
+def test_the_last_day_itself_is_not_enough():
+    """The scheduled route needs the day to be *over*, not merely reached.
+
+    This compared `today >= end`, so at one minute past midnight on the morning
+    of the wedding both parties could settle up for an event that hadn't
+    happened. The client who finishes early still has the check-in route.
+    """
+    ok, msg = event_confirmable_date(_b(date_iso=_day(0)))
+    assert not ok
+    assert msg
+
+    ok_after, _ = event_confirmable_date(_b(date_iso=_day(-1)))
+    assert ok_after
+
+
+def test_the_gate_reads_the_venues_calendar_not_the_servers():
+    """A booking's last day is over when it's over *there*.
+
+    Read as UTC, a Los Angeles wedding's last day was behind us from 5pm the
+    day before — the gate opened, and the money could move, while the couple
+    were still getting ready. Pinned with a venue far enough west that the two
+    calendars genuinely disagree for part of every day.
+    """
+    from unittest.mock import patch
+    from datetime import datetime as dt
+
+    honolulu = _b(
+        date_iso=_day(0),
+        location="12 Kalakaua Ave, Honolulu, HI 96815",
+        venue_latitude=21.28,
+        venue_longitude=-157.83,
+    )
+    # 08:00 UTC — still the previous day in Honolulu (UTC-10), so "yesterday"
+    # there is two days back, and today's booking is nowhere near over.
+    with patch("app.services.booking_service.datetime") as clock:
+        clock.now.side_effect = lambda tz=None: dt(
+            2026, 8, 9, 8, 0, tzinfo=timezone.utc
+        ).astimezone(tz) if tz else dt(2026, 8, 9, 8, 0)
+        honolulu.date_iso = "2026-08-08"
+        ok, _ = event_confirmable_date(honolulu)
+    # In Honolulu it is still 22:00 on the 8th — the event's own day.
+    assert not ok, "escrow opened while it was still the event's day at the venue"
 
 
 def test_a_single_day_booking_opens_on_the_day_once_they_arrive():

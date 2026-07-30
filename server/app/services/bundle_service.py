@@ -54,7 +54,7 @@ def _booking_summary(
     Pure (no DB access) so callers can batch-load the Service/Vendor/User once
     via ``_resolve_booking_refs`` instead of issuing three queries per booking.
     """
-    from app.services.booking_service import resolve_total_cents
+    from app.services.booking_service import _zone_name, resolve_total_cents
     # Resolved total: stored amount, else recomputed rate x quantity, else the
     # flat price for event-priced services. None => rate-priced with an unknown
     # quantity, so show the rate + unit, not a total masquerading as one.
@@ -105,6 +105,11 @@ def _booking_summary(
         # bundle view show whether the vendor has arrived and checked in.
         "vendor_checked_in_at": booking.vendor_checked_in_at,
         "client_checked_in_at": booking.client_checked_in_at,
+        # The venue's own clock. The escrow gate is "has the event happened
+        # yet", which is a question about the calendar at the venue — a client
+        # answering it in the browser's timezone reached a different day from
+        # the one the server enforces. See booking_service.venue_today.
+        "timezone": _zone_name(booking),
     }
 
 

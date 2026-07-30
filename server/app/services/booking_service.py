@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import case
 from sqlalchemy.exc import IntegrityError
@@ -262,6 +262,13 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "venue_longitude": booking.venue_longitude,
         "checkin_latitude": checkin_lat,
         "checkin_longitude": checkin_lng,
+        # The venue's own clock, as an IANA zone name. Published so a client can
+        # ask "has the event happened yet" and get the answer this server gives
+        # — that comparison is the escrow gate, and a client computing it in the
+        # browser's timezone reached a different day from the one enforced here.
+        # Null when the address and pin can't place it; the caller then falls
+        # back to local, as this does to UTC.
+        "timezone": _zone_name(booking),
         "status": booking.status,
         "payment_status": booking.payment_status,
         "amount_cents": booking.amount_cents,
@@ -1089,15 +1096,54 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
 
 
+def _zone_name(booking: Booking) -> str | None:
+    """The IANA zone the celebration's clock runs on, or None if unplaceable."""
+    from app.services.timezone_service import zone_name_for
+
+    return zone_name_for(
+        location=booking.location,
+        latitude=booking.venue_latitude,
+        longitude=booking.venue_longitude,
+    )
+
+
+def venue_today(booking: Booking) -> date:
+    """Today's date where the celebration is.
+
+    Escrow is gated on whether the event has happened, and "has it happened" is
+    a question about the calendar hanging on the wall at the venue, not the
+    server's. Reading UTC put a Los Angeles wedding's last day behind us from
+    5pm the day before — so the gate opened, and the money could move, while the
+    couple were still getting ready.
+
+    Falls back to UTC when the zone can't be resolved, which is the behaviour
+    this replaces. A booking with no address and no pin has nothing better to
+    offer, and refusing to answer would freeze escrow rather than protect it.
+    """
+    from app.services.timezone_service import zone_for
+
+    zone = zone_for(
+        location=booking.location,
+        latitude=booking.venue_latitude,
+        longitude=booking.venue_longitude,
+    )
+    return datetime.now(zone or timezone.utc).date()
+
+
 def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
     """Whether this booking may be confirmed for escrow release yet.
     Returns (ok, error_message).
 
     Two ways to qualify.
 
-    The scheduled one: the booking's LAST day has passed (date_end for a
-    multi-day event, else date_iso). Funds are held until the event has taken
-    place, so neither party can confirm — and release — before it.
+    The scheduled one: the booking's LAST day is over (date_end for a multi-day
+    event, else date_iso). Funds are held until the event has taken place, so
+    neither party can confirm — and release — before it.
+
+    Over, not merely reached: this compared `today >= end`, which on the morning
+    of the wedding is already true. Nothing had happened yet, and both parties
+    could settle up for it. Measured in the venue's own timezone (see
+    venue_today) the same comparison was true from the previous afternoon.
 
     And the one that reflects what happened rather than what was booked: the
     event has started and the vendor has checked in at the venue. A booking runs
@@ -1120,8 +1166,8 @@ def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
             "confirming — the payment is held until the event has taken place."
         )
 
-    today = datetime.now(timezone.utc).date()
-    if today >= end:
+    today = venue_today(booking)
+    if today > end:
         return True, None
 
     if start is not None and today >= start and booking.vendor_checked_in_at:
@@ -1131,9 +1177,9 @@ def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
     if start is not None and today >= start:
         return False, (
             "You can confirm once your vendor has checked in at the venue, or "
-            f"after the booking ends on {human}."
+            f"the day after the booking ends on {human}."
         )
-    return False, f"You can confirm once the event has taken place, on or after {human}."
+    return False, f"You can confirm once the event has taken place, after {human}."
 
 
 def check_in(
