@@ -709,6 +709,7 @@ def generate_multi_bundle(
     # not by being denied the obvious answer.
     booked_vendor_ids = _get_booked_vendor_ids(
         ChatbotState(
+            event_id=req.event_id,
             event_date=req.event_date,
             event_date_end=req.event_date_end,
             date_range=req.date_range,
@@ -721,6 +722,7 @@ def generate_multi_bundle(
 
     for strategy, tier, label, description, factors in _PRESETS:
         state = ChatbotState(
+            event_id=req.event_id,
             event_date=req.event_date,
             event_date_end=req.event_date_end,
             date_range=req.date_range,
@@ -772,6 +774,7 @@ def generate_bundle_from_request(req: BundleRequest, db: Session | None = None) 
     - budget_tier defaults to mid-range
     """
     state = ChatbotState(
+        event_id=req.event_id,
         event_date=req.event_date,
         event_date_end=req.event_date_end,
         date_range=req.date_range,
@@ -1369,6 +1372,35 @@ def _create_bundle_from_chatbot(
     date_iso, date_end = event_dates(state)
     date_iso = date_iso or "TBD"
 
+    # Attach to the celebration the client already has, when they named one.
+    # _ensure_bundle_event below no-ops on a bundle that is already linked, so
+    # setting this here is the whole of it — without it every generated bundle
+    # minted its own event, and a client who had a wedding on the dashboard and
+    # built a bundle for it got a second card for the same wedding.
+    #
+    # Ownership is checked rather than trusted: event_id arrives from the
+    # client, and attaching a bundle to somebody else's celebration would put
+    # this client's bookings on that person's dashboard. An event that isn't
+    # theirs is ignored rather than refused — the bundle is still worth having,
+    # and it lands as its own celebration exactly as before.
+    from app.db.models import Event
+
+    linked_event_id = None
+    if state.event_id:
+        owned = (
+            db.query(Event)
+            .filter(Event.event_id == state.event_id, Event.user_id == user_id)
+            .first()
+        )
+        if owned:
+            linked_event_id = owned.event_id
+            event_name = owned.name or event_name
+        else:
+            logger.warning(
+                "Ignoring event_id %s on bundle create: not owned by %s",
+                state.event_id, user_id,
+            )
+
     now = datetime.now(timezone.utc)
     bundle = Bundle(
         user_id=user_id,
@@ -1376,6 +1408,7 @@ def _create_bundle_from_chatbot(
         event_name=event_name,
         status="draft",
         bundle_group_id=bundle_group_id,
+        event_id=linked_event_id,
         created_at=now,
         updated_at=now,
     )

@@ -1389,3 +1389,101 @@ class TestEventDateSemantics:
             db.query(Booking).filter(Booking.bundle_id == bundle_id).delete()
             db.query(Bundle).filter(Bundle.bundle_id == bundle_id).delete()
             db.commit()
+
+
+class TestAttachingToAnExistingCelebration:
+    """A generated bundle can join a celebration the client already has.
+
+    Every generated bundle used to mint its own event, so a client who created a
+    wedding on the dashboard and then built a bundle for it ended up with two
+    cards for one wedding and no way to merge them.
+    """
+
+    def _state(self, db, event_id=None):
+        from app.services.chatbot_service import generate_bundle
+
+        state = ChatbotState(
+            event_id=event_id,
+            needed_categories=["dj"],
+            budget_tier=BudgetTier.MID_RANGE,
+            location="Newark, NJ",
+            event_date="2027-06-05",
+        )
+        state.bundle = generate_bundle(state, db)
+        assert state.bundle.items, "seeded DJs should fill the slot"
+        return state
+
+    def _event_for(self, db, user_id, name="Priya & Arjun"):
+        from app.db.models import Event
+
+        ev = Event(user_id=user_id, name=name, date_iso="2027-06-05",
+                   location="Newark, NJ", guest_count=200)
+        db.add(ev); db.commit(); db.refresh(ev)
+        return ev
+
+    def _cleanup(self, db, bundle_id):
+        from app.db.models import Booking, Bundle
+
+        db.query(Booking).filter(Booking.bundle_id == bundle_id).delete()
+        db.query(Bundle).filter(Bundle.bundle_id == bundle_id).delete()
+        db.commit()
+
+    def test_the_bundle_joins_the_named_celebration(self, db):
+        from app.db.models import Bundle
+        from app.services.chatbot_service import _create_bundle_from_chatbot
+
+        ev = self._event_for(db, "attach-user")
+        state = self._state(db, event_id=ev.event_id)
+        bundle_id, _ = _create_bundle_from_chatbot(
+            state, user_id="attach-user", categories=None, db=db, notify_vendors=False,
+        )
+        try:
+            bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+            assert bundle.event_id == ev.event_id, "a second celebration was created"
+            # And it takes the celebration's name rather than inventing one.
+            assert bundle.event_name == "Priya & Arjun"
+        finally:
+            self._cleanup(db, bundle_id)
+            db.delete(ev); db.commit()
+
+    def test_without_one_it_is_left_unlinked(self, db):
+        """Unchanged behaviour: a generated draft has no event until it's sent.
+
+        _ensure_bundle_event runs on select_bundle, not here — so "no event yet"
+        is the normal state of a draft, and attaching is the only thing this
+        change adds.
+        """
+        from app.db.models import Bundle
+        from app.services.chatbot_service import _create_bundle_from_chatbot
+
+        state = self._state(db)
+        bundle_id, _ = _create_bundle_from_chatbot(
+            state, user_id="attach-user-2", categories=None, db=db, notify_vendors=False,
+        )
+        try:
+            bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+            assert bundle.event_id is None
+        finally:
+            self._cleanup(db, bundle_id)
+
+    def test_somebody_elses_celebration_is_ignored(self, db):
+        """event_id comes from the client. Attaching to an event they don't own
+        would put their bookings on that person's dashboard."""
+        from app.db.models import Bundle
+        from app.services.chatbot_service import _create_bundle_from_chatbot
+
+        theirs = self._event_for(db, "someone-else", name="Not Yours")
+        state = self._state(db, event_id=theirs.event_id)
+        bundle_id, _ = _create_bundle_from_chatbot(
+            state, user_id="attach-user-3", categories=None, db=db, notify_vendors=False,
+        )
+        try:
+            bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
+            assert bundle.event_id != theirs.event_id, "attached to another user's event"
+            # Ignored, not refused — the bundle is still worth having, and lands
+            # unlinked exactly as one built without naming a celebration does.
+            assert bundle.event_id is None
+            assert bundle.event_name != "Not Yours", "took the other user's name"
+        finally:
+            self._cleanup(db, bundle_id)
+            db.delete(theirs); db.commit()

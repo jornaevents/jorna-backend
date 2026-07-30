@@ -192,6 +192,8 @@ class Bundle(BaseModel):
 
 
 class ChatbotState(BaseModel):
+    # An existing celebration to attach the bundle to, rather than making one.
+    event_id: Optional[str] = None
     event_date: Optional[str] = None
     # Last day, when the celebration runs across several. See DateRange.
     event_date_end: Optional[str] = None
@@ -275,6 +277,14 @@ class BundleRequest(BaseModel):
     budget_amount: Optional[str] = Field(
         None,
         description="Custom budget as a string e.g. '$10,000'. Only used when budget_tier is custom.",
+    )
+    event_id: Optional[str] = Field(
+        None,
+        description="Attach the generated bundle to an existing celebration "
+        "instead of creating a new one. Must be an event the caller owns. "
+        "Without it, every generated bundle makes its own event — so a client "
+        "who already had a celebration and built a bundle for it ended up with "
+        "two dashboard cards for one wedding and no way to merge them.",
     )
     event_date: Optional[str] = Field(None, description="Event date e.g. '2026-10-15'. Its first day, when the celebration runs across several.")
     event_date_end: Optional[str] = Field(
