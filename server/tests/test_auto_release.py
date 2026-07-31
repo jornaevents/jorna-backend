@@ -7,10 +7,23 @@ event, silence counts as assent — unless the client has said something.
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
 
 from app.db.models import Booking, Service, User, Vendor
 from app.services.stripe_service import AUTO_RELEASE_DAYS, auto_release_due
 from tests.test_api import TestingSessionLocal
+
+
+@pytest.fixture(autouse=True)
+def _no_prior_transfers(mocker):
+    """None of these bookings has a transfer already filed against it.
+
+    _release_funds asks Stripe before sending one — that check is what makes a
+    retry safe — so every test here needs the answer to be "none".
+    """
+    mocker.patch("stripe.Transfer.list", return_value=SimpleNamespace(data=[]))
 
 
 def _day(offset: int) -> str:
@@ -311,6 +324,42 @@ def test_a_settled_booking_doesnt_wait_out_the_week(mocker):
         date_iso=_day(0), customer_confirmed_at=datetime.now(timezone.utc)
     )
     assert booking_id in _sweep()["released"]
+
+
+def test_a_failed_release_doesnt_poison_the_booking(mocker):
+    """Stripe caches an idempotency key's outcome for 24 hours, failures
+    included. Keyed on the booking alone, one transfer that failed for a reason
+    nothing to do with the booking — an insufficient platform balance — took
+    the booking's only key with it, and every retry for the next day replayed
+    that refusal instead of trying. The sweep that exists to repair exactly
+    this state could then never repair it."""
+    transfer = mocker.patch("stripe.Transfer.create")
+    booking_id = _booking(
+        date_iso=_day(-1), customer_confirmed_at=datetime.now(timezone.utc)
+    )
+
+    _sweep()
+
+    key = transfer.call_args.kwargs["idempotency_key"]
+    assert key != f"release_{booking_id}", "a failed attempt would poison this for 24h"
+    assert key.startswith(f"release_{booking_id}_")
+
+
+def test_a_transfer_already_filed_is_adopted_not_repeated(mocker):
+    """An earlier attempt reached Stripe and we never learned the outcome. The
+    money has already moved; sending a second transfer would pay twice."""
+    transfer = mocker.patch("stripe.Transfer.create")
+    mocker.patch(
+        "stripe.Transfer.list",
+        return_value=SimpleNamespace(data=[{"id": "tr_already_sent"}]),
+    )
+    booking_id = _booking(
+        date_iso=_day(-1), customer_confirmed_at=datetime.now(timezone.utc)
+    )
+
+    assert booking_id in _sweep()["released"]
+    assert transfer.call_count == 0
+    assert _status(booking_id)[0] == "released"
 
 
 def test_only_the_client_confirming_is_not_enough(mocker):

@@ -8,6 +8,9 @@ is still prevented by the customer's date-gated confirmation.
 """
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
 
 from app.db.models import User, Vendor, Service, Booking, Bundle, Event
 from app.services.booking_service import check_in
@@ -16,6 +19,13 @@ from app.services.stripe_service import confirm_event
 from tests.test_api import TestingSessionLocal
 
 VLAT, VLNG = 40.0, -74.0
+
+
+@pytest.fixture(autouse=True)
+def _no_prior_transfers(mocker):
+    """_release_funds asks Stripe whether this booking already has a transfer
+    before sending one. Here, none does."""
+    mocker.patch("stripe.Transfer.list", return_value=SimpleNamespace(data=[]))
 
 
 def _seed_paid_venue_booking(date_iso: str, stripe_ready: bool = False):

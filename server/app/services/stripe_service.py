@@ -800,19 +800,53 @@ def _release_funds(booking: Booking, db: Session) -> None:
 
     vendor_amount_cents = booking.amount_cents - booking.platform_fee_cents
 
+    # A transfer already filed against this booking means an earlier attempt
+    # reached Stripe and we never learned the outcome. Adopt it instead of
+    # sending a second one. This — not the idempotency key — is what makes a
+    # retry safe at any distance in time, and it's the guard that has to exist
+    # before the key below is allowed to change between attempts.
+    existing = None
     try:
-        stripe.Transfer.create(
-            amount=vendor_amount_cents,
-            currency=booking.currency,
-            destination=vendor.stripe_account_id,
-            transfer_group=booking.booking_id,
-            metadata={"booking_id": booking.booking_id},
-            # Idempotency key ensures Stripe deduplicates this transfer even if
-            # the request is retried after a network failure.
-            idempotency_key=f"release_{booking.booking_id}",
-        )
+        found = stripe.Transfer.list(transfer_group=booking.booking_id, limit=1)
+        existing = found.data[0] if found.data else None
     except stripe.StripeError as e:
         raise StripeError(502, f"Stripe transfer failed: {e.user_message or str(e)}")
+
+    if existing is None:
+        try:
+            stripe.Transfer.create(
+                amount=vendor_amount_cents,
+                currency=booking.currency,
+                destination=vendor.stripe_account_id,
+                transfer_group=booking.booking_id,
+                metadata={"booking_id": booking.booking_id},
+                # Deduplicates an immediate retry — a lost response, two sweeps
+                # overlapping — without poisoning the booking forever.
+                #
+                # The key used to be the booking id alone, and Stripe caches a
+                # key's outcome for 24 hours *including failures*. So the first
+                # transfer that failed for a reason nothing to do with this
+                # booking — an insufficient platform balance, a vendor Stripe
+                # had stopped paying — took the booking's only key with it, and
+                # every retry for the next 24 hours replayed that error instead
+                # of trying. auto_release_due promises repair with no waiting
+                # period; against a poisoned key it swept a booking it could
+                # never fix, logged the same stale refusal each time, and the
+                # money sat there while the balance that caused it was long
+                # since topped up.
+                idempotency_key=(
+                    f"release_{booking.booking_id}_"
+                    f"{datetime.now(timezone.utc):%Y%m%d%H}"
+                ),
+            )
+        except stripe.StripeError as e:
+            raise StripeError(502, f"Stripe transfer failed: {e.user_message or str(e)}")
+    else:
+        logger.warning(
+            "Booking %s already had transfer %s — adopting it rather than sending another",
+            booking.booking_id,
+            existing["id"],
+        )
 
     booking.payment_status = "released"
     booking.funds_released_at = datetime.now(timezone.utc)
