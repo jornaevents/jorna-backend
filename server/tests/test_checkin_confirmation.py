@@ -70,6 +70,61 @@ def test_early_checkin_confirms_vendor_side_without_releasing():
     db.close()
 
 
+def test_a_refused_transfer_doesnt_report_the_confirmation_as_failed(mocker):
+    """The confirmation happened. Only the payout didn't.
+
+    The stranding shape: the vendor's check-in confirms their side, the client
+    confirms half a minute later, and Stripe refuses the transfer for a reason
+    that belongs to neither of them — an insufficient platform balance. The
+    client's confirmation is committed before the transfer is attempted, so
+    raising told them it hadn't registered, and their one obvious move — press
+    it again — was met with "already confirmed".
+    """
+    import stripe as stripe_sdk
+
+    mocker.patch(
+        "app.services.stripe_service.stripe.Transfer.create",
+        side_effect=stripe_sdk.StripeError("insufficient available funds"),
+    )
+    db, client, vuser, booking = _seed_paid_venue_booking("2000-01-01", stripe_ready=True)
+
+    check_in(booking_id=booking.booking_id, caller_user_id=vuser.user_id,
+             latitude=VLAT, longitude=VLNG, db=db)
+
+    resp = confirm_event(booking_id=booking.booking_id, caller_user_id=client.user_id, db=db)
+    db.refresh(booking)
+
+    assert resp["funds_released"] is False
+    assert booking.customer_confirmed_at is not None  # recorded, and said to be
+    assert booking.payment_status == "paid"           # still escrow, for the sweep
+    db.close()
+
+
+def test_the_sweep_pays_out_what_a_refused_transfer_left_behind(mocker):
+    """What makes "we'll keep retrying it" a promise rather than a hope."""
+    import stripe as stripe_sdk
+    from app.services.stripe_service import auto_release_due
+
+    transfer = mocker.patch(
+        "app.services.stripe_service.stripe.Transfer.create",
+        side_effect=stripe_sdk.StripeError("insufficient available funds"),
+    )
+    db, client, vuser, booking = _seed_paid_venue_booking("2000-01-01", stripe_ready=True)
+
+    check_in(booking_id=booking.booking_id, caller_user_id=vuser.user_id,
+             latitude=VLAT, longitude=VLNG, db=db)
+    confirm_event(booking_id=booking.booking_id, caller_user_id=client.user_id, db=db)
+    db.refresh(booking)
+    assert booking.payment_status == "paid"
+
+    # Next sweep, the balance covers it.
+    transfer.side_effect = None
+    assert booking.booking_id in auto_release_due(db=db)["released"]
+    db.refresh(booking)
+    assert booking.payment_status == "released"
+    db.close()
+
+
 def test_early_vendor_checkin_then_customer_confirms_releases(mocker):
     mocker.patch("app.services.stripe_service.stripe.Transfer.create", return_value=object())
     # Past event so the customer is allowed to confirm.

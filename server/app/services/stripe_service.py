@@ -43,6 +43,60 @@ def _sv(obj, key, default=None):
 # ── Vendor onboarding ─────────────────────────────────────────────────
 
 
+def _onboarding_complete(account) -> bool:
+    """Whether Stripe will actually let this vendor be paid.
+
+    ``details_submitted`` alone only says the vendor reached the end of the
+    onboarding form. It stays true while Stripe is still waiting on something it
+    asked for and never got — an ID number, a document — and an account in that
+    state has ``payouts_enabled`` false. Escrow released to it lands in a Stripe
+    balance the vendor can see and cannot withdraw, which is a worse place for
+    their money than escrow: at least escrow has a refund route out.
+
+    So the flag this product gates payment on has to mean "payable", not "filled
+    the form in". A vendor who lapses back into ``requirements.past_due`` stops
+    being bookable until they fix it, which is the honest moment to find out.
+
+    The capability checked is ``transfers``, not ``charges_enabled``. This
+    integration charges on the platform account and moves the vendor's share
+    with a separate Transfer (see _release_funds); ``charges_enabled`` governs
+    charges a connected account makes for itself, which is not something any
+    vendor here ever does.
+    """
+    caps = _sv(account, "capabilities")
+    return bool(
+        _sv(account, "details_submitted")
+        and _sv(account, "payouts_enabled")
+        and _sv(caps, "transfers") == "active"
+    )
+
+
+def _payability(account) -> dict:
+    """What Stripe is waiting on, so the vendor can be told instead of guessing.
+
+    Without this the product knew only that a vendor wasn't payable, and every
+    screen said the same unhelpful thing — "payment setup incomplete" — to
+    someone who had completed it months ago and was now missing one field they
+    were never named. The fix for that is one Stripe re-asked for, so it is the
+    one thing worth carrying back.
+
+    ``currently_due`` and ``past_due`` overlap (past_due is the subset already
+    late) and are merged: to the vendor they are one list of things to go and
+    do. ``pending_verification`` is deliberately separate — Stripe is checking
+    something it already has, and there is nothing for the vendor to do about
+    it, so a screen that demanded action would be lying.
+    """
+    req = _sv(account, "requirements")
+    due = list(_sv(req, "currently_due") or []) + list(_sv(req, "past_due") or [])
+    return {
+        "details_submitted": bool(_sv(account, "details_submitted")),
+        "payouts_enabled": bool(_sv(account, "payouts_enabled")),
+        "disabled_reason": _sv(req, "disabled_reason"),
+        "requirements_due": sorted(set(due)),
+        "pending_verification": bool(_sv(req, "pending_verification")),
+    }
+
+
 def create_vendor_onboarding_url(*, vendor_id: str, caller_user_id: str, db: Session, base_url: str | None = None) -> dict:
     """Create (or reuse) a Stripe Express Connect account for the vendor
     and return a one-time hosted onboarding URL.
@@ -100,12 +154,18 @@ def get_vendor_stripe_status(*, vendor_id: str, caller_user_id: str, db: Session
     if vendor.user_id != caller_user_id:
         raise StripeError(403, "You are not authorised to view this vendor's Stripe status")
 
+    # Same keys either way. A caller distinguishing "never started" from "started
+    # and stalled" should read stripe_account_id, not the shape of the response.
     if not vendor.stripe_account_id:
-        return {"stripe_account_id": None, "stripe_onboarding_complete": False}
+        return {
+            "stripe_account_id": None,
+            "stripe_onboarding_complete": False,
+            **_payability(None),
+        }
 
     try:
         account = stripe.Account.retrieve(vendor.stripe_account_id)
-        complete = bool(account.details_submitted)
+        complete = _onboarding_complete(account)
 
         if complete != vendor.stripe_onboarding_complete:
             vendor.stripe_onboarding_complete = complete
@@ -119,6 +179,7 @@ def get_vendor_stripe_status(*, vendor_id: str, caller_user_id: str, db: Session
     return {
         "stripe_account_id": vendor.stripe_account_id,
         "stripe_onboarding_complete": complete,
+        **_payability(account),
     }
 
 
@@ -599,9 +660,13 @@ def _on_account_updated(account: dict, db: Session) -> None:
     """Sync stripe_onboarding_complete when Stripe fires account.updated.
 
     Stripe sends this event whenever any field on the Connect account changes,
-    including when the vendor finishes filling in KYC details. We check
-    details_submitted so the vendor can accept payments without having to
-    manually call the status endpoint.
+    including when the vendor finishes filling in KYC details — so the vendor
+    can accept payments without having to manually call the status endpoint.
+
+    Both directions matter, which is why this reads _onboarding_complete rather
+    than details_submitted: the same event fires when Stripe *withdraws* a
+    payout capability it had granted, and that is precisely the transition a
+    vendor should stop being bookable on.
     """
     stripe_account_id = _sv(account, "id")
     if not stripe_account_id:
@@ -612,7 +677,7 @@ def _on_account_updated(account: dict, db: Session) -> None:
         logger.debug("account.updated: no vendor found for Stripe account %s", stripe_account_id)
         return
 
-    complete = bool(_sv(account, "details_submitted"))
+    complete = _onboarding_complete(account)
     if complete != vendor.stripe_onboarding_complete:
         vendor.stripe_onboarding_complete = complete
         db.commit()
@@ -651,7 +716,10 @@ def confirm_event(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
         raise StripeError(403, "You are not a party to this booking")
 
     if booking.payment_status == "released":
-        return {"message": "Funds have already been released for this booking."}
+        return {
+            "message": "Funds have already been released for this booking.",
+            "funds_released": True,
+        }
 
     if booking.payment_status != "paid":
         raise StripeError(400, "Cannot confirm an event that has not been paid for")
@@ -679,11 +747,46 @@ def confirm_event(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
 
     # Release funds once both parties have confirmed
     if booking.customer_confirmed_at and booking.vendor_confirmed_at:
-        _release_funds(booking, db)
-        return {"message": "Event confirmed. Funds have been released to the vendor."}
+        try:
+            _release_funds(booking, db)
+        except StripeError as exc:
+            # The confirmation above is committed, and true. The transfer is a
+            # separate thing that fails for reasons with nothing to do with the
+            # person who pressed the button — an insufficient platform balance,
+            # a vendor whose payouts Stripe has since disabled.
+            #
+            # Raising here reported the whole call as failed, so a client was
+            # told their confirmation hadn't registered when it had, and their
+            # one obvious move — press it again — was met with "already
+            # confirmed". Nothing on the screen could then explain where the
+            # money was, and the card went on naming the vendor as the holdup.
+            #
+            # So the confirmation is reported as what it is, and the payout as
+            # owed. auto_release_due sweeps exactly this state — both parties
+            # confirmed, still 'paid' — with no waiting period, which is what
+            # makes that a promise rather than a hope.
+            logger.warning(
+                "confirm_event: release failed for booking %s, left to the sweep: %s",
+                booking.booking_id,
+                exc.detail,
+            )
+            return {
+                "message": (
+                    "Event confirmed by both of you. The payout to the vendor "
+                    "didn't go through yet — we'll keep retrying it."
+                ),
+                "funds_released": False,
+            }
+        return {
+            "message": "Event confirmed. Funds have been released to the vendor.",
+            "funds_released": True,
+        }
 
     waiting_for = "the vendor" if not booking.vendor_confirmed_at else "the customer"
-    return {"message": f"Confirmation recorded. Waiting for {waiting_for} to confirm."}
+    return {
+        "message": f"Confirmation recorded. Waiting for {waiting_for} to confirm.",
+        "funds_released": False,
+    }
 
 
 def _release_funds(booking: Booking, db: Session) -> None:
