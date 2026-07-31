@@ -41,7 +41,12 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 
 class CreateVendorRequest(BaseModel):
     bio: str
-    category: VendorCategory
+    # Optional: what a vendor sells is decided per service, and every service
+    # carries its own category. Asking again here made the signup form look like
+    # it was categorising a service — and forced a single answer out of anyone
+    # who does two things. Left unset, the vendor is "other" until their first
+    # service says otherwise, which search reads through (see search_vendors).
+    category: Optional[VendorCategory] = None
     subcategory: Optional[str] = None
 
     @field_validator("subcategory")
@@ -104,7 +109,7 @@ def create_vendor_route(
         return create_vendor(
             user_id=current_user.user_id,
             bio=body.bio,
-            category=body.category.value,
+            category=body.category.value if body.category else None,
             subcategory=body.subcategory,
             db=db,
         )

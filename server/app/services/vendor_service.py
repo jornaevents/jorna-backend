@@ -20,12 +20,26 @@ class VendorError(Exception):
         super().__init__(detail)
 
 
-def create_vendor(*, user_id: str, bio: str, category: str, subcategory: str | None = None, db: Session) -> dict:
-    """Create a vendor profile for *user_id*. Raises 400 if one already exists."""
+def create_vendor(
+    *, user_id: str, bio: str, category: str | None = None, subcategory: str | None = None, db: Session
+) -> dict:
+    """Create a vendor profile for *user_id*. Raises 400 if one already exists.
+
+    ``category`` is optional. The column is NOT NULL, so an unset one becomes
+    "other" — a placeholder, not a claim. What this vendor actually sells is
+    each service's own category, and search reads those; see search_vendors.
+    """
     existing = db.query(Vendor).filter(Vendor.user_id == user_id).first()
     if existing:
         raise VendorError(400, "You already have a vendor profile")
-    vendor = Vendor(user_id=user_id, bio=bio, category=category, subcategory=subcategory, rating=0.0, num_events=0)
+    vendor = Vendor(
+        user_id=user_id,
+        bio=bio,
+        category=category or "other",
+        subcategory=subcategory,
+        rating=0.0,
+        num_events=0,
+    )
     db.add(vendor)
     db.commit()
     db.refresh(vendor)
@@ -168,11 +182,38 @@ def list_vendors(
     offset: int = 0,
 ) -> dict:
     """Return a paginated list of vendors with basic user info joined in."""
+    from sqlalchemy import or_
+
     query = db.query(Vendor, User).join(User, Vendor.user_id == User.user_id)
+    # A vendor is in a category if they say so or if they sell something in it.
+    # The second half is what keeps them findable now that signup no longer asks
+    # — an unset category is stored as "other", which is a placeholder rather
+    # than an answer.
+    #
+    # EXISTS rather than a join to Service: this returns vendors, and joining
+    # would repeat one per matching service, inflating `total` and tearing holes
+    # in the pagination below.
     if category:
-        query = query.filter(Vendor.category == category)
+        query = query.filter(
+            or_(
+                Vendor.category == category,
+                db.query(Service)
+                .filter(Service.vendor_id == Vendor.vendor_id, Service.category == category)
+                .exists(),
+            )
+        )
     if subcategory:
-        query = query.filter(Vendor.subcategory == subcategory)
+        query = query.filter(
+            or_(
+                Vendor.subcategory == subcategory,
+                db.query(Service)
+                .filter(
+                    Service.vendor_id == Vendor.vendor_id,
+                    Service.subcategory == subcategory,
+                )
+                .exists(),
+            )
+        )
     if tag:
         normalized = _normalize_tag(tag)
         query = (
@@ -228,7 +269,7 @@ def search_vendors(
     matches a vendor's category OR subcategory, so simplified keys like "dj" work
     alongside canonical ones like "music_entertainment".
     """
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
 
     from app.utils.location import VENUE_MAX_DISTANCE_MILES
 
@@ -240,7 +281,25 @@ def search_vendors(
     if service_name:
         query = query.filter(Service.name.ilike(f"%{service_name}%"))
     if category:
-        query = query.filter(or_(Vendor.category == category, Vendor.subcategory == category))
+        # Service-first, matching what this endpoint returns: a row here is one
+        # vendor paired with one of their listings, so the question is what that
+        # listing is — not what its owner mostly does. Filtering on the vendor
+        # put a DJ's lighting service in the results for "dj", and left a vendor
+        # who sells across two categories findable under only one of them.
+        #
+        # The vendor's own category is still consulted, but only for a service
+        # that has none of its own: Service.category is nullable, and rows
+        # predating service-level categorisation would otherwise vanish.
+        query = query.filter(
+            or_(
+                Service.category == category,
+                Service.subcategory == category,
+                and_(
+                    Service.category.is_(None),
+                    or_(Vendor.category == category, Vendor.subcategory == category),
+                ),
+            )
+        )
     if subcategory:
         # Service-first: narrow to the exact specialty so e.g. a "dj" slot lists
         # DJ services only, not every music_entertainment service (dhol included).
