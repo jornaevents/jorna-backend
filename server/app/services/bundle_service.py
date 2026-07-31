@@ -399,6 +399,13 @@ def _delete_booking_cascade(booking: Booking, db: Session) -> None:
         ).delete(synchronize_session=False)
     db.query(Message).filter(Message.booking_id == booking.booking_id).delete(synchronize_session=False)
     db.query(Review).filter(Review.booking_id == booking.booking_id).delete(synchronize_session=False)
+    # Date changes point at the booking too. Missing here, any plan that had ever
+    # had one proposed against it failed to delete on the foreign key — the same
+    # way deleting an account failed on a refresh token.
+    from app.db.models import ChangeRequest
+    db.query(ChangeRequest).filter(
+        ChangeRequest.booking_id == booking.booking_id
+    ).delete(synchronize_session=False)
     # Flush so the dependent rows are gone in the DB before the booking row is
     # removed — without mapped relationships, SQLAlchemy won't order this for us.
     db.flush()
