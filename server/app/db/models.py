@@ -360,8 +360,19 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     conversation_id = Column(String(36), primary_key=True, default=uuid_str)
-    bundle_id = Column(String(36), ForeignKey("bundles.bundle_id"), nullable=False, index=True)
-    # vendors_only | all_parties
+    # What this conversation is about: bundle | booking | enquiry. Exactly one
+    # of the three ids below is set, and which one is decided by this.
+    subject_type = Column(String(16), nullable=False, default="bundle")
+    # Nullable since 0042. A conversation used to need a plan to exist, which
+    # is why a client could not ask a vendor a question before making one.
+    bundle_id = Column(String(36), ForeignKey("bundles.bundle_id"), nullable=True, index=True)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=True, index=True)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=True, index=True)
+    # The client half of a two-person thread, denormalised so an enquiry can be
+    # found — and constrained to one per pair — without walking the membership
+    # table. Null on a bundle chat, which has no single client-shaped side.
+    client_user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    # vendors_only | all_parties | direct
     type = Column(String(20), nullable=False)
     name = Column(String(255), nullable=False)
     created_at = Column(DateTime, nullable=False)
@@ -385,6 +396,13 @@ class GroupMessage(Base):
     sender_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False)
+    # text | offer | system. `content` is always a human sentence, so a client
+    # that doesn't know a kind still renders something true — the kind only
+    # decides whether there is a card around it.
+    kind = Column(String(16), nullable=False, default="text")
+    # Whatever that card needs: an offer_id and an amount, a service_id for a
+    # reference card, nothing at all for text. Never queried into.
+    meta = Column(JSON, nullable=True)
 
 
 class GroupMessageRead(Base):

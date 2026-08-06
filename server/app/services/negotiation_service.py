@@ -82,6 +82,54 @@ def _notify(receiver_id: str, title: str, body: str, data: dict, db: Session) ->
         logger.warning("Negotiation notification failed: %s", exc)
 
 
+def _post_to_thread(
+    *, neg: Negotiation, offer: NegotiationOffer, content: str, caller_user_id: str, db: Session
+) -> None:
+    """Write this event into the booking's own thread.
+
+    An offer has always been a message — it carries a sentence, an author and a
+    timestamp — and it was rendered in a panel beside the conversation it
+    belonged in. So a haggle was a second thread running next to the first, with
+    no ordering between the two and no way to read "we'd do $2,800 if you drop
+    the second shooter" next to the reply it was answering.
+
+    Best effort, like _notify. The offer is the part that matters and it is
+    already committed; a thread that failed to receive its sentence must not
+    unmake a price both parties can see.
+    """
+    from app.services.conversation_service import post_offer_message
+
+    post_offer_message(
+        booking_id=neg.booking_id,
+        sender_user_id=caller_user_id,
+        content=content,
+        meta={
+            "negotiation_id": neg.negotiation_id,
+            "offer_id": offer.offer_id,
+            "action": offer.action,
+            "amount_cents": offer.amount_cents,
+        },
+        db=db,
+    )
+
+
+def _offer_line(action: str, amount_cents: int | None, message: str | None) -> str:
+    """The sentence a message carries whatever renders it.
+
+    `content` is never markup or a bare number: a client that has never heard of
+    an offer card still shows a true sentence, which is the whole reason `kind`
+    is decoration rather than meaning.
+    """
+    amount = f"${amount_cents / 100:,.2f}" if amount_cents else ""
+    lead = {
+        "offer": f"Offered {amount}",
+        "counter": f"Countered with {amount}",
+        "accept": f"Accepted {amount}",
+        "reject": "Declined the offer",
+    }.get(action, action)
+    return f"{lead} — {message.strip()}" if message and message.strip() else lead
+
+
 # ── Service functions ─────────────────────────────────────────────────
 
 
@@ -148,6 +196,11 @@ def start_negotiation(
         body=f"{caller_name} offered ${amount_cents / 100:.2f} for your booking.",
         data={"booking_id": booking_id, "negotiation_id": neg.negotiation_id, "type": "negotiation_offer"},
         db=db,
+    )
+    _post_to_thread(
+        neg=neg, offer=offer,
+        content=_offer_line("offer", amount_cents, message),
+        caller_user_id=caller_user_id, db=db,
     )
 
     return _negotiation_dict(neg, [offer], db)
@@ -223,6 +276,11 @@ def make_offer(
         data={"booking_id": neg.booking_id, "negotiation_id": negotiation_id, "type": "negotiation_counter"},
         db=db,
     )
+    _post_to_thread(
+        neg=neg, offer=offer,
+        content=_offer_line("counter", amount_cents, message),
+        caller_user_id=caller_user_id, db=db,
+    )
 
     return _negotiation_dict(neg, offers, db)
 
@@ -277,6 +335,11 @@ def accept_offer(*, negotiation_id: str, caller_user_id: str, db: Session) -> di
         data={"booking_id": neg.booking_id, "negotiation_id": negotiation_id, "type": "negotiation_accepted"},
         db=db,
     )
+    _post_to_thread(
+        neg=neg, offer=offer,
+        content=_offer_line("accept", neg.current_offer_cents, None),
+        caller_user_id=caller_user_id, db=db,
+    )
 
     return _negotiation_dict(neg, offers, db)
 
@@ -327,6 +390,11 @@ def reject_offer(*, negotiation_id: str, message: str | None, caller_user_id: st
         body=f"{caller_name} declined the offer.",
         data={"booking_id": neg.booking_id, "negotiation_id": negotiation_id, "type": "negotiation_rejected"},
         db=db,
+    )
+    _post_to_thread(
+        neg=neg, offer=offer,
+        content=_offer_line("reject", None, message),
+        caller_user_id=caller_user_id, db=db,
     )
 
     return _negotiation_dict(neg, offers, db)

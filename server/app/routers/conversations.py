@@ -11,6 +11,8 @@ from app.services.conversation_service import (
     ConversationError,
     list_conversations,
     get_conversation,
+    open_booking_thread,
+    open_enquiry,
     send_group_message,
     get_group_messages,
     get_unread_count,
@@ -23,6 +25,15 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 class SendMessageRequest(BaseModel):
     content: str
+
+
+class EnquiryRequest(BaseModel):
+    vendor_id: str
+    content: str
+    # The listing the question was asked from, when it was asked from one. Rides
+    # along as a reference card on the message rather than scoping the thread —
+    # one thread per client and vendor, whichever listing prompted it.
+    service_id: str | None = None
 
 
 @router.get("", summary="List all conversations the current user is in")
@@ -42,6 +53,49 @@ def unread_count_route(
 ):
     """Return total unread group messages across all conversations."""
     return get_unread_count(caller_user_id=current_user.user_id, db=db)
+
+
+@router.post("/enquiry", summary="Ask a vendor a question", status_code=201)
+async def open_enquiry_route(
+    body: EnquiryRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Open — or reuse — this client's thread with a vendor, and post a message.
+
+    The one surface a stranger can reach a vendor through, so the limits in
+    conversation_service are checked here rather than anywhere later.
+    """
+    try:
+        result = await run_in_threadpool(
+            open_enquiry,
+            vendor_id=body.vendor_id,
+            content=body.content,
+            service_id=body.service_id,
+            caller_user_id=current_user.user_id,
+            db=db,
+        )
+    except ConversationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+    await manager.broadcast(result["conversation_id"], result["message"])
+    return result
+
+
+@router.post("/booking/{booking_id}", summary="Open the private thread for a booking")
+def open_booking_thread_route(
+    booking_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Either party may open it, and opening is how you get to it — the call is
+    idempotent, so there is no separate 'does it exist yet' question to ask."""
+    try:
+        return open_booking_thread(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except ConversationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.get("/{conversation_id}", summary="Get a conversation and its members")
