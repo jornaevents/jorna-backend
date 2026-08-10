@@ -11,6 +11,24 @@ def _normalize_tag(name: str) -> str:
     return name.strip().lower()
 
 
+def _service_cover_url(media) -> str | None:
+    """The photo a search card should lead with: this listing's own first image,
+    or a video's poster frame if that's all it has. Older rows predate the
+    {"url", "type", "thumbnail_url"} shape and store a bare URL string — treated
+    as an image, same as routers/services.py's own defensive read of this column.
+    """
+    if not media:
+        return None
+    for item in media:
+        kind = item.get("type") if isinstance(item, dict) else "image"
+        if kind == "image":
+            return item.get("url") if isinstance(item, dict) else item
+    for item in media:
+        if isinstance(item, dict) and item.get("type") == "video" and item.get("thumbnail_url"):
+            return item["thumbnail_url"]
+    return None
+
+
 class VendorError(Exception):
     """Raised when a vendor operation fails."""
 
@@ -386,6 +404,12 @@ def search_vendors(
                 "service_num_reviews": service.num_reviews,
                 "location": user.location,
                 "pfp_url": user.pfp_url,
+                # This listing's own photo, not the vendor's avatar — a card
+                # leads with the service (see the comment above on why category
+                # filtering is service-first too), so it should show what's
+                # being sold, not who's selling it. Falls back to pfp_url only
+                # when the service itself has no photo yet.
+                "service_photo_url": _service_cover_url(service.media),
                 "travel_radius_miles": vendor.travel_radius_miles,
                 "open_to_long_distance": vendor.open_to_long_distance,
                 "tags": [t.name for t in vendor.tags],
