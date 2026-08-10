@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.db.models import Service, Vendor, User
-from app.services.storage_service import delete_service_image
+from app.services.storage_service import delete_service_image, delete_service_video
 
 
 class ServiceError(Exception):
@@ -203,38 +203,86 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
     return _service_dict(service)
 
 
+def _media_url(entry) -> Optional[str]:
+    """A media entry's URL, whichever shape it's in.
+
+    Rows written before typed media existed still hold bare strings; a
+    migration backfills them to {"url", "type", "thumbnail_url"} on deploy,
+    but reading defensively here means a row that somehow slips through
+    still matches by URL instead of silently never being found.
+    """
+    if isinstance(entry, dict):
+        return entry.get("url")
+    return entry
+
+
+def _delete_media_entry(entry) -> None:
+    """Remove one media entry's backing files from storage — the video/photo
+    itself, plus a video's separately-stored thumbnail."""
+    if isinstance(entry, dict):
+        if entry.get("type") == "video":
+            delete_service_video(entry.get("url", ""))
+            if entry.get("thumbnail_url"):
+                delete_service_image(entry["thumbnail_url"])
+        else:
+            delete_service_image(entry.get("url", ""))
+    else:
+        delete_service_image(entry)
+
+
+def _owning_vendor(service: Service, user_id: str, db: Session) -> Vendor:
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    if not vendor or vendor.user_id != user_id:
+        raise ServiceError(403, "Not authorized to edit this service")
+    return vendor
+
+
 def add_service_image(*, user_id: str, service_id: str, image_url: str, db: Session) -> dict:
     """Append an already-uploaded image URL to the service's media list."""
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise ServiceError(404, "Service not found")
-    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
-    if not vendor or vendor.user_id != user_id:
-        raise ServiceError(403, "Not authorized to edit this service")
+    _owning_vendor(service, user_id, db)
     media = list(service.media or [])
-    media.append(image_url)
+    media.append({"url": image_url, "type": "image", "thumbnail_url": None})
     service.media = media
     db.commit()
     db.refresh(service)
     return _service_dict(service)
 
 
-def remove_service_image(*, user_id: str, service_id: str, image_url: str, db: Session) -> dict:
-    """Remove an image URL from the service's media list."""
+def _remove_service_media(*, user_id: str, service_id: str, url: str, db: Session) -> tuple[dict, object]:
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise ServiceError(404, "Service not found")
-    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
-    if not vendor or vendor.user_id != user_id:
-        raise ServiceError(403, "Not authorized to edit this service")
+    _owning_vendor(service, user_id, db)
     media = list(service.media or [])
-    if image_url not in media:
-        raise ServiceError(404, "Image not found on this service")
-    media.remove(image_url)
+    match = next((m for m in media if _media_url(m) == url), None)
+    if match is None:
+        raise ServiceError(404, "Media item not found on this service")
+    media.remove(match)
     service.media = media
     db.commit()
     db.refresh(service)
-    return _service_dict(service)
+    return _service_dict(service), match
+
+
+def remove_service_image(*, user_id: str, service_id: str, image_url: str, db: Session) -> dict:
+    """Remove a photo URL from the service's media list."""
+    result, _ = _remove_service_media(user_id=user_id, service_id=service_id, url=image_url, db=db)
+    return result
+
+
+def remove_service_video(*, user_id: str, service_id: str, video_url: str, db: Session) -> tuple[dict, Optional[str]]:
+    """Remove a video from the service's media list.
+
+    Returns (updated service dict, thumbnail_url) — the router deletes both
+    the video and its thumbnail from storage, the same way it already deletes
+    a removed photo, so DB writes and storage cleanup stay in one place.
+    """
+    result, match = _remove_service_media(user_id=user_id, service_id=service_id, url=video_url, db=db)
+    thumbnail_url = match.get("thumbnail_url") if isinstance(match, dict) else None
+    return result, thumbnail_url
 
 
 def delete_service(*, user_id: str, service_id: str, db: Session) -> None:
@@ -242,11 +290,9 @@ def delete_service(*, user_id: str, service_id: str, db: Session) -> None:
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise ServiceError(404, "Service not found")
-    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
-    if not vendor or vendor.user_id != user_id:
-        raise ServiceError(403, "Not authorized to delete this service")
+    _owning_vendor(service, user_id, db)
     media = list(service.media or [])
     db.delete(service)
     db.commit()
-    for url in media:
-        delete_service_image(url)
+    for entry in media:
+        _delete_media_entry(entry)

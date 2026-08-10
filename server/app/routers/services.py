@@ -1,12 +1,13 @@
 """Thin router for service (offering) endpoints — delegates to service_service."""
 
+import asyncio
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import User
+from app.db.models import Service as ServiceModel, User, Vendor
 from app.dependencies import get_current_user
 from app.models.schemas import VendorCategory, VENDOR_SUBCATEGORIES
 from app.services.service_service import (
@@ -18,8 +19,15 @@ from app.services.service_service import (
     update_service,
     add_service_image,
     remove_service_image,
+    remove_service_video,
 )
-from app.services.storage_service import StorageError, upload_service_image, delete_service_image
+from app.services.storage_service import (
+    StorageError,
+    upload_service_image,
+    delete_service_image,
+    upload_service_video,
+    delete_service_video,
+)
 
 router = APIRouter(prefix="/services", tags=["services"])
 
@@ -51,12 +59,22 @@ def _validate_subcategory(v: Optional[str], info) -> Optional[str]:
     return v
 
 
+class MediaItem(BaseModel):
+    """One photo or video on a service. Older rows predate this shape and
+    store a bare URL string instead — a one-time migration backfills those
+    to {"url", "type": "image", "thumbnail_url": None} on deploy, so every
+    row read through the API is this shape by the time a client sees it."""
+    url: str
+    type: str  # "image" | "video"
+    thumbnail_url: Optional[str] = None
+
+
 class UpdateServiceRequest(BaseModel):
     name: Optional[str] = None
     price: Optional[float] = None
     duration_minutes: Optional[int] = None
     experience: Optional[str] = None
-    media: Optional[list[str]] = None
+    media: Optional[list[MediaItem]] = None
     category: Optional[str] = None
     subcategory: Optional[str] = None
     price_unit: Optional[str] = None
@@ -94,7 +112,7 @@ class CreateServiceRequest(BaseModel):
     price: float
     duration_minutes: Optional[int] = None
     experience: str
-    media: Optional[list[str]] = None
+    media: Optional[list[MediaItem]] = None
     category: Optional[str] = None
     subcategory: Optional[str] = None
     price_unit: Optional[str] = None
@@ -144,7 +162,7 @@ def create_service_route(
             price=body.price,
             duration_minutes=body.duration_minutes,
             experience=body.experience,
-            media=body.media,
+            media=[m.model_dump() for m in body.media] if body.media else None,
             category=body.category,
             subcategory=body.subcategory,
             price_unit=body.price_unit,
@@ -203,6 +221,45 @@ def delete_service_route(
 MAX_IMAGES_PER_SERVICE = 10
 MAX_TOTAL_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB per request
 
+MAX_VIDEOS_PER_SERVICE = 3
+# A single video is capped at 50 MB (storage_service.MAX_VIDEO_FILE_SIZE);
+# this is the per-request ceiling across however many are sent at once.
+MAX_VIDEO_TOTAL_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _require_owning_vendor(service: ServiceModel, user_id: str, db: Session) -> None:
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    if not vendor or vendor.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this service")
+
+
+def _count_media(service: ServiceModel, media_type: str) -> int:
+    return sum(
+        1 for m in (service.media or [])
+        if (m.get("type") if isinstance(m, dict) else "image") == media_type
+    )
+
+
+async def _read_capped(file: UploadFile, max_bytes: int, what: str) -> bytes:
+    """Read a file in chunks, aborting as soon as it's clearly over the cap
+    instead of buffering an oversized file fully before checking — the video
+    cap is 10x the old photo one, so a client sending something huge
+    shouldn't get to push the whole thing into memory first."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{what} exceeds the {max_bytes // (1024 * 1024)} MB limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @router.post(
     "/{service_id}/images",
@@ -234,13 +291,13 @@ async def upload_service_image_route(
     db: Session = Depends(get_db),
 ):
     """Upload one or more images and append them to the service's media list. Vendors only."""
-    from app.db.models import Service as ServiceModel
     try:
         service = db.query(ServiceModel).filter(ServiceModel.service_id == service_id).first()
         if not service:
             raise HTTPException(status_code=404, detail="Service not found")
+        _require_owning_vendor(service, current_user.user_id, db)
 
-        existing_count = len(service.media or [])
+        existing_count = _count_media(service, "image")
         if existing_count + len(files) > MAX_IMAGES_PER_SERVICE:
             raise HTTPException(
                 status_code=400,
@@ -259,7 +316,7 @@ async def upload_service_image_route(
             uploads.append((data, file.content_type or ""))
 
         # Upload all files to storage; on any failure roll back already-uploaded files
-        uploaded_urls: list[str] = []
+        uploaded: list[dict] = []
         try:
             for i, (data, content_type) in enumerate(uploads):
                 url = upload_service_image(
@@ -268,14 +325,106 @@ async def upload_service_image_route(
                     file_bytes=data,
                     content_type=content_type,
                 )
-                uploaded_urls.append(url)
+                uploaded.append({"url": url, "type": "image", "thumbnail_url": None})
         except StorageError:
-            for url in uploaded_urls:
-                delete_service_image(url)
+            for item in uploaded:
+                delete_service_image(item["url"])
             raise
 
         # All uploads succeeded — commit to DB in one shot
-        service.media = list(service.media or []) + uploaded_urls
+        service.media = list(service.media or []) + uploaded
+        db.commit()
+        db.refresh(service)
+        return {"media": service.media}
+
+    except StorageError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/{service_id}/videos",
+    summary="Upload one or more videos to a service",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string", "format": "binary"},
+                            }
+                        },
+                        "required": ["files"],
+                    }
+                }
+            },
+            "required": True,
+        }
+    },
+)
+async def upload_service_video_route(
+    service_id: str,
+    files: List[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload one or more videos and append them to the service's media list. Vendors only.
+
+    Each video is transcoded into nothing — stored as uploaded — but does get
+    a server-generated poster frame and a server-side duration check, since
+    both need ffmpeg and the client can't be trusted to have applied either.
+    """
+    try:
+        service = db.query(ServiceModel).filter(ServiceModel.service_id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="Service not found")
+        _require_owning_vendor(service, current_user.user_id, db)
+
+        existing_count = _count_media(service, "video")
+        if existing_count + len(files) > MAX_VIDEOS_PER_SERVICE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"A service may have at most {MAX_VIDEOS_PER_SERVICE} videos. "
+                       f"This service already has {existing_count}.",
+            )
+
+        uploads: list[tuple[bytes, str]] = []
+        total_bytes = 0
+        for file in files:
+            data = await _read_capped(file, MAX_VIDEO_TOTAL_UPLOAD_BYTES, "A video")
+            total_bytes += len(data)
+            if total_bytes > MAX_VIDEO_TOTAL_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Total upload size exceeds {MAX_VIDEO_TOTAL_UPLOAD_BYTES // (1024 * 1024)} MB",
+                )
+            uploads.append((data, file.content_type or ""))
+
+        uploaded: list[dict] = []
+        try:
+            for i, (data, content_type) in enumerate(uploads):
+                # ffmpeg/ffprobe are blocking subprocess calls — off the event
+                # loop so one big video doesn't stall every other request.
+                video_url, thumbnail_url = await asyncio.to_thread(
+                    upload_service_video,
+                    service_id=service_id,
+                    video_index=existing_count + i,
+                    file_bytes=data,
+                    content_type=content_type,
+                )
+                uploaded.append({"url": video_url, "type": "video", "thumbnail_url": thumbnail_url})
+        except StorageError:
+            for item in uploaded:
+                delete_service_video(item["url"])
+                if item.get("thumbnail_url"):
+                    delete_service_image(item["thumbnail_url"])
+            raise
+
+        service.media = list(service.media or []) + uploaded
         db.commit()
         db.refresh(service)
         return {"media": service.media}
@@ -302,6 +451,29 @@ def delete_service_image_route(
             db=db,
         )
         delete_service_image(image_url)
+        return result
+    except ServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/{service_id}/videos", summary="Remove a video from a service", status_code=200)
+def delete_service_video_route(
+    service_id: str,
+    video_url: str = Query(..., description="The exact URL of the video to remove"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a video URL from the service and delete it (and its thumbnail) from storage. Vendors only."""
+    try:
+        result, thumbnail_url = remove_service_video(
+            user_id=current_user.user_id,
+            service_id=service_id,
+            video_url=video_url,
+            db=db,
+        )
+        delete_service_video(video_url)
+        if thumbnail_url:
+            delete_service_image(thumbnail_url)
         return result
     except ServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
