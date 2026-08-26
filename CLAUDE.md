@@ -55,6 +55,23 @@ descriptions of a contract they don't own.
   migrations, last touched early in the project) — **don't use it**. The live
   one is `server/alembic.ini` + `server/alembic/` (45 migrations, this is
   what Railway runs). Always `cd server` before any `alembic` command.
+- **Migrations must stay single-head.** Run `venv/bin/alembic heads` before
+  writing a new one and set `down_revision` to whatever it prints —
+  `alembic history` shows the real chain order, not the filenames. SQLite
+  can't replay the *entire* migration chain from scratch (several early
+  migrations use inline `ForeignKey`s in `add_column`, which SQLite's
+  ALTER-table emulation can't do) — that's a pre-existing limitation, not a
+  sign your new migration is wrong. Verify any schema-changing migration
+  against a real local Postgres before merging (`brew install postgresql@16`,
+  spin up a throwaway db, `alembic upgrade head` / `downgrade -1`, drop it),
+  and if it adds a `NOT NULL` column or changes a status-like value, backfill
+  existing rows in the *same* migration (see `0044_add_email_verification.py`
+  for the pattern) — a deploy must never lock out or corrupt current users.
+- **Tests never run migrations.** `server/tests/test_api.py` builds the
+  schema straight from `app/db/models.py` via `Base.metadata.create_all` — a
+  model change without a matching Alembic migration will pass every test
+  locally and still break the real, migration-driven production schema.
+  Always add both together.
 - **`src/`, `index.html`, `vite.config.ts`, and `package.json` at the repo
   root are a stale Figma-Make-generated Vite prototype** ("Event Planning
   Marketplace"), not the production web app. The real, deployed web frontend
@@ -65,6 +82,12 @@ descriptions of a contract they don't own.
   needed to run the suite.
 - **Use the repo's venv, not system Python**, for anything backend-related:
   `server/venv/bin/python`. (`server/venv/bin/pip install ruff` etc.)
+- **Money and identity are the highest-stakes code paths.** Payment/escrow
+  logic lives in `app/services/stripe_service.py`; auth/identity in
+  `app/services/auth_service.py` and `app/dependencies.py`
+  (`get_current_user` / `get_current_verified_user` — gates money-moving and
+  stranger-messaging endpoints on a confirmed email — / `get_current_admin`).
+  Give changes in these areas a second look.
 - Error monitoring is already wired: `server/app/observability.py` calls
   Sentry's SDK when `SENTRY_DSN` is set, tagging events with `environment`
   and a `release` (Railway's commit SHA) automatically. No-op locally unless
