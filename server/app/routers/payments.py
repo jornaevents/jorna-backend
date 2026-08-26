@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import WEB_APP_URL
 from app.db.database import get_db
-from app.dependencies import get_current_user, get_current_admin
+from app.dependencies import get_current_user, get_current_admin, get_current_verified_user
 from app.services.stripe_service import (
     StripeError,
     create_vendor_onboarding_url,
@@ -47,7 +47,7 @@ def stripe_onboard(
         "deep-link bridge, 'web' returns into the Jorna web app.",
     ),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
 ):
     """Returns a Stripe-hosted onboarding URL the vendor should be redirected to.
     Creates a Connect Express account if one doesn't exist yet.
@@ -117,7 +117,7 @@ def pay_booking(
     request: Request,
     booking_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
 ):
     """Creates a Stripe PaymentIntent for a confirmed booking.
 
@@ -145,7 +145,7 @@ def create_booking_checkout_session(
         "bridge, 'web' returns into the Jorna web app.",
     ),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
 ):
     """Creates a Stripe-hosted Checkout Session and returns its ``checkout_url``.
 
@@ -347,7 +347,7 @@ async def stripe_webhook(
 @limiter.limit("10/minute")
 def card_setup_session(
     request: Request,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """A Stripe-hosted page for entering card details, with no charge attached.

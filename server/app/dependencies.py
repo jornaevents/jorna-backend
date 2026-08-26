@@ -61,3 +61,20 @@ def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+
+def get_current_verified_user(current_user: User = Depends(get_current_user)) -> User:
+    """Require the authenticated user's email to be verified.
+
+    Use on endpoints that move money or message another person (creating a
+    booking, paying, negotiating, vendor Stripe onboarding, sending a
+    message) — not on browsing/login/profile endpoints, which stay open to
+    unverified accounts. See auth_service.verify_email / register_user.
+    """
+    if not current_user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email before doing this — check your inbox, "
+            "or request a new link from /auth/resend-verification.",
+        )
+    return current_user

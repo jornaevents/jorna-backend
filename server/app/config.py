@@ -21,6 +21,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 
 REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 # Password-reset token lifetime in minutes (default 60 minutes). Short-lived, single-use.
 PASSWORD_RESET_EXPIRE_MINUTES: int = int(os.getenv("PASSWORD_RESET_EXPIRE_MINUTES", "60"))
+# Email-verification token lifetime in minutes (default 24 hours). Longer than
+# password reset — verifying is lower-urgency than a security action, and
+# users often don't check their inbox right away.
+EMAIL_VERIFICATION_EXPIRE_MINUTES: int = int(os.getenv("EMAIL_VERIFICATION_EXPIRE_MINUTES", "1440"))
 
 # ── Google Calendar OAuth ─────────────────────────────────────────────
 # Where Google redirects after the vendor grants access.

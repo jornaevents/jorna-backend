@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_verified_user
 from app.services.negotiation_service import (
     NegotiationError,
     start_negotiation,
@@ -37,7 +37,7 @@ class RejectOfferRequest(BaseModel):
 @router.post("", summary="Start a price negotiation on a booking", status_code=201)
 def start_negotiation_route(
     body: StartNegotiationRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Open a negotiation on a booking. Either the client or vendor can initiate.
@@ -75,7 +75,7 @@ def get_negotiation_route(
 def make_offer_route(
     negotiation_id: str,
     body: MakeOfferRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Submit a counter-offer. Only the party who did NOT make the last offer can counter."""
@@ -94,7 +94,7 @@ def make_offer_route(
 @router.post("/{negotiation_id}/accept", summary="Accept the current offer")
 def accept_offer_route(
     negotiation_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Accept the current offer. Updates the booking price to the agreed amount."""

@@ -49,6 +49,8 @@ from app.services.auth_service import (
     refresh_access_token,
     request_password_reset,
     reset_password,
+    resend_verification_email,
+    verify_email,
     cleanup_expired_tokens,
 )
 
@@ -93,6 +95,9 @@ class RegisterRequest(BaseModel):
     language: str = Field(..., min_length=1, max_length=50)
     supabase_user_id: Optional[str] = None
     supabase_access_token: Optional[str] = None
+    # "web" mails the verification link into the web app; anything else
+    # (default) targets the iOS deep-link bridge. See _send_verification_email.
+    client: Optional[str] = None
 
     @field_validator("password")
     @classmethod
@@ -511,6 +516,7 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             db=db,
             supabase_user_id=body.supabase_user_id,
             supabase_access_token=body.supabase_access_token,
+            client=body.client or "ios",
         )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -625,6 +631,61 @@ def reset_password_route(request: Request, body: ResetPasswordRequest, db: Sessi
     """Set a new password using a valid reset token, invalidating all existing sessions."""
     try:
         return reset_password(token=body.token, new_password=body.new_password, db=db)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+_VERIFY_EMAIL_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{font-family:Arial,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;
+      color:#1a1a1a;text-align:center}}
+h2 {{margin-bottom:12px}}
+a.button {{background:#c2410c;color:#fff;text-decoration:none;padding:12px 24px;
+          border-radius:6px;font-size:15px;display:inline-block;margin-top:16px}}
+</style></head>
+<body><h2>{heading}</h2><p>{message}</p>
+<a class="button" href="jorna://">Open Jorna</a>
+</body></html>"""
+
+
+@app.get("/auth/verify-email", response_class=HTMLResponse)
+@limiter.limit("20/minute")
+def verify_email_route(request: Request, token: str, db: Session = Depends(get_db)):
+    """Confirm a verification link. Hit directly from the emailed link (GET,
+    since email clients can't POST), so it renders its own tiny result page
+    rather than returning JSON — there's no frontend page to hand this off to.
+    """
+    try:
+        result = verify_email(token=token, db=db)
+        return _VERIFY_EMAIL_PAGE.format(
+            title="Email verified",
+            heading="Email verified ✓",
+            message=f"{result['email']} is confirmed. You can now book, pay, and message vendors.",
+        )
+    except AuthError as e:
+        return HTMLResponse(
+            _VERIFY_EMAIL_PAGE.format(
+                title="Verification link invalid",
+                heading="This link didn't work",
+                message=e.detail,
+            ),
+            status_code=e.status_code,
+        )
+
+
+@app.post("/auth/resend-verification")
+@limiter.limit("3/minute")
+def resend_verification_route(
+    request: Request,
+    client: str = Query("ios", description="Which client is verifying: 'ios' or 'web' — picks the link target."),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Send a fresh verification link to the signed-in (but unverified) user."""
+    try:
+        return resend_verification_email(user_id=current_user.user_id, db=db, client=client)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

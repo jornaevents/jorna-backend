@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_current_user, user_from_token
+from app.dependencies import get_current_user, get_current_verified_user, user_from_token
 from app.services.conversation_service import (
     ConversationError,
     list_conversations,
@@ -58,7 +58,7 @@ def unread_count_route(
 @router.post("/enquiry", summary="Ask a vendor a question", status_code=201)
 async def open_enquiry_route(
     body: EnquiryRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Open — or reuse — this client's thread with a vendor, and post a message.
@@ -119,7 +119,7 @@ def get_conversation_route(
 async def send_message_route(
     conversation_id: str,
     body: SendMessageRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Send a message to a group conversation, then push it to everyone currently
