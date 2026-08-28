@@ -223,10 +223,13 @@ def delete_user(*, user_id: str, db: Session) -> None:
         # above and here. Pass it on as one rather than as a 500.
         db.rollback()
         raise UserError(e.status_code, e.detail)
-    except Exception as exc:
+    except Exception:
         db.rollback()
+        # Logged in full server-side; the client only ever sees a generic
+        # message — the raw exception text (table/constraint names, the SQL
+        # itself) has no business leaving the server.
         logger.exception("delete_user failed for user %s", user_id)
-        raise UserError(500, f"Delete failed: {exc}")
+        raise UserError(500, "Something went wrong deleting your account. Please try again.")
 
 
 def update_user(*, user_id: str, update_data: dict, db: Session) -> dict:

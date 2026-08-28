@@ -364,7 +364,8 @@ def _assert_owns_bundle(bundle: Bundle, caller_user_id: str) -> None:
 
 def _delete_booking_cascade(booking: Booking, db: Session) -> None:
     """Delete a booking and everything tied to it (negotiation + offers, direct
-    messages, reviews). Used when a client removes a booking or deletes a bundle,
+    messages, reviews, and any conversation attached to the booking itself rather
+    than its bundle). Used when a client removes a booking or deletes a bundle,
     so the booking also disappears from the vendor's side.
 
     Refuses outright if money has moved. The guard lives here, at the one point
@@ -408,6 +409,31 @@ def _delete_booking_cascade(booking: Booking, db: Session) -> None:
     db.query(ChangeRequest).filter(
         ChangeRequest.booking_id == booking.booking_id
     ).delete(synchronize_session=False)
+    # A conversation can point at a booking directly (subject_type == "booking",
+    # e.g. a vendor enquiry that became a booking) rather than at the bundle —
+    # _delete_bundle_cascade only ever looks up conversations by bundle_id, so
+    # this is the one place that ever cleans up a booking-subject conversation.
+    # Missing this is exactly what made vendor account deletion fail: the
+    # booking lives on the client's bundle (so the bundle cascade runs), but the
+    # conversation was attached to the booking, not the bundle, and outlived it.
+    from app.db.models import Conversation, ConversationMember, GroupMessage, GroupMessageRead
+    conversations = db.query(Conversation).filter(Conversation.booking_id == booking.booking_id).all()
+    for conv in conversations:
+        msg_ids = [
+            m.message_id
+            for m in db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).all()
+        ]
+        if msg_ids:
+            db.query(GroupMessageRead).filter(GroupMessageRead.message_id.in_(msg_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete(
+                synchronize_session=False
+            )
+        db.query(ConversationMember).filter(
+            ConversationMember.conversation_id == conv.conversation_id
+        ).delete(synchronize_session=False)
+        db.delete(conv)
     # Flush so the dependent rows are gone in the DB before the booking row is
     # removed — without mapped relationships, SQLAlchemy won't order this for us.
     db.flush()
@@ -948,10 +974,12 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
         # Already a considered refusal — don't bury it in a 500.
         db.rollback()
         raise
-    except Exception as exc:
+    except Exception:
         db.rollback()
+        # Logged in full server-side; the client only ever sees a generic
+        # message — see the identical fix in user_service.delete_user.
         logger.exception("delete_bundle failed for bundle %s", bundle_id)
-        raise BundleError(500, f"Delete failed: {exc}")
+        raise BundleError(500, "Something went wrong deleting this plan. Please try again.")
 
 
 # ── One-off legacy data cleanup ───────────────────────────────────────
