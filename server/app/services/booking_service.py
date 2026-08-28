@@ -250,6 +250,9 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "price_unit": service.price_unit if service else None,
         "price_pending_quantity": total_cents is None,
         "guest_count": booking.guest_count,
+        # What the client said when requesting this — shown to the vendor
+        # alongside the request, before they accept/decline.
+        "client_note": booking.client_note,
         "bundle_id": booking.bundle_id,
         "event_id": bundle.event_id if bundle else None,
         "event_name": bundle.event_name if bundle else None,
@@ -678,6 +681,7 @@ def create_booking(
     bundle_id: str | None = None,
     date_end: str | None = None,
     guest_count: int | None = None,
+    client_note: str | None = None,
     db: Session,
 ) -> dict:
     """Create a new booking and notify the vendor.
@@ -776,6 +780,7 @@ def create_booking(
         date_iso=date_iso,
         date_end=date_end,
         guest_count=guest_count,
+        client_note=client_note,
         venue_latitude=venue_latitude,
         venue_longitude=venue_longitude,
         status=BookingStatus.PENDING.value,

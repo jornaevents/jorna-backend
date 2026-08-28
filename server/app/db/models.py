@@ -192,6 +192,10 @@ class Booking(Base):
     # (rate x guests) can be (re)computed and audited at booking + checkout time
     # instead of silently falling back to the bare per-person rate.
     guest_count = Column(Integer, nullable=True)
+    # Free text the client leaves when requesting the booking ("Anything the
+    # vendor should know?"), shown to the vendor alongside the request before
+    # they accept/decline. Optional; most bookings carry none.
+    client_note = Column(Text, nullable=True)
     status = Column(String(50), nullable=False, default="pending")
 
     bundle_id = Column(String(36), ForeignKey("bundles.bundle_id"), nullable=True, index=True)

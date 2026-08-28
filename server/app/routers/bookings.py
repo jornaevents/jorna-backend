@@ -39,6 +39,7 @@ class BookingCreate(BaseModel):
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
     bundle_id: Optional[str] = Field(default=None, examples=[None])
+    client_note: Optional[str] = None  # shown to the vendor alongside the request
 
 
 class BookingUpdate(BaseModel):
@@ -87,6 +88,7 @@ def create_booking(
             venue_latitude=body.venue_latitude,
             venue_longitude=body.venue_longitude,
             bundle_id=body.bundle_id,
+            client_note=body.client_note,
             db=db,
         )
     except BookingError as e:

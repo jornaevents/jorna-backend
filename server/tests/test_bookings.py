@@ -68,6 +68,68 @@ def test_create_booking(seeded_db):
     assert "booking_id" in data
 
 
+def test_client_note_round_trips_to_client_and_vendor(seeded_db):
+    """What the client writes in 'Anything the vendor should know?' must be
+    stored and read back identically by both parties — this is the field the
+    vendor actually needs to see, not just the client who wrote it."""
+    user = seeded_db["user"]
+    vendor_user = seeded_db["vendor_user"]
+    service = seeded_db["service"]
+    client_headers = make_auth_headers(user)
+    vendor_headers = make_auth_headers(vendor_user)
+    note = "Please arrive 30 minutes early, there's limited parking."
+
+    create = client.post(
+        "/bookings",
+        json={
+            "service_id": service.service_id,
+            "event_name": "Note Round Trip Event",
+            "time_start": "13:00",
+            "time_end": "15:00",
+            "location": "123 Test St",
+            "date_iso": "2026-05-02",
+            "client_note": note,
+        },
+        headers=client_headers,
+    )
+    assert create.status_code == 200
+    booking_id = create.json()["booking_id"]
+
+    as_client = client.get(f"/bookings/{booking_id}", headers=client_headers)
+    assert as_client.status_code == 200
+    assert as_client.json()["client_note"] == note
+
+    as_vendor = client.get(f"/bookings/{booking_id}", headers=vendor_headers)
+    assert as_vendor.status_code == 200
+    assert as_vendor.json()["client_note"] == note
+
+
+def test_client_note_defaults_to_null(seeded_db):
+    """A booking made without a note must not fail or fabricate one."""
+    user = seeded_db["user"]
+    service = seeded_db["service"]
+    headers = make_auth_headers(user)
+
+    create = client.post(
+        "/bookings",
+        json={
+            "service_id": service.service_id,
+            "event_name": "No Note Event",
+            "time_start": "10:00",
+            "time_end": "12:00",
+            "location": "123 Test St",
+            "date_iso": "2026-05-03",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 200
+    booking_id = create.json()["booking_id"]
+
+    fetched = client.get(f"/bookings/{booking_id}", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["client_note"] is None
+
+
 def test_duplicate_booking_returns_existing(seeded_db):
     """Retrying the same slot (same bundle+vendor+service+date) must not
     create a second booking — the existing one is returned."""

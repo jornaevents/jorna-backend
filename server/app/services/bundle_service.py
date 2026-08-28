@@ -119,6 +119,8 @@ def _booking_summary(
         # dropping it would leave the replacement unpayable (price_pending_quantity).
         "date_end": booking.date_end,
         "guest_count": booking.guest_count,
+        # What the client said when requesting this — see BookingCreate.client_note.
+        "client_note": booking.client_note,
         "time_start": booking.time_start,
         "time_end": booking.time_end,
         "location": booking.location,
