@@ -1,3 +1,5 @@
+> **Superseded.** This file is kept for history only — current, maintained content lives in docs/API.md's Vendor categories section. If this file says something different, trust the newer doc.
+
 # Vendor Categories & Subcategories
 
 Categories marked with subcategories require vendors to select one when registering. Categories without subcategories use tags and price filters for discovery instead.
