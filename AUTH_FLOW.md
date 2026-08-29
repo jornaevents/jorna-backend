@@ -1,3 +1,5 @@
+> **Superseded.** This file is kept for history only — current, maintained content lives in docs/API.md's Auth section and docs/DECISIONS.md #5-6. If this file says something different, trust the newer doc.
+
 # Auth Flow — Frontend Implementation Guide
 
 ## Token Overview

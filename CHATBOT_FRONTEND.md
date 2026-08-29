@@ -1,3 +1,5 @@
+> **Superseded.** This file is kept for history only — current, maintained content lives in docs/API.md's Chatbot / bundle builder section. If this file says something different, trust the newer doc.
+
 # Chatbot Bundle Builder — Frontend Implementation Guide
 
 The bundle builder is a multi-step chatbot flow that collects event details from the user and generates a personalised vendor bundle. At the end the user books vendors directly through the chatbot, creating real bookings in the database.
