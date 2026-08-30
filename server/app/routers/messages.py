@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_verified_user
 from app.services.message_service import (
     MessageError,
     send_message,
@@ -25,7 +25,7 @@ class SendMessageRequest(BaseModel):
 @router.post("", summary="Send a message on a booking", status_code=201)
 def send_message_route(
     body: SendMessageRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Send a message to the other party on a booking. Caller must be the client or vendor."""

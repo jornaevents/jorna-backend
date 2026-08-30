@@ -58,6 +58,10 @@ def _user_dict(user: User) -> dict:
         # settings can offer "set a password" instead of asking for a current one
         # that does not exist. Never the hash itself.
         "has_password": user.password is not None,
+        # Lets a client show a "verify your email" banner / resend button.
+        # True immediately for Google accounts; only a password registration
+        # starts False. See auth_service.verify_email / resend_verification_email.
+        "email_verified": user.email_verified,
         "open_to_price_negotiation": user.open_to_price_negotiation,
         "flexible_on_location": user.flexible_on_location,
     }

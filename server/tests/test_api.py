@@ -7,7 +7,7 @@ os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_dummy")
 os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_test_dummy")
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base, get_db
@@ -22,6 +22,19 @@ if os.path.exists("./test.db"):
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
+
+
+@event.listens_for(User, "init")
+def _default_test_users_to_verified(target, args, kwargs):
+    """Most of the test suite predates email verification and constructs
+    `User(...)` directly without it — treat those as already-verified
+    accounts (matching the 0044 migration's backfill of pre-existing rows)
+    so gated endpoints (booking/payment/negotiation/messaging) still work in
+    tests that aren't about verification itself. A test that explicitly
+    passes `email_verified=` (e.g. test_email_verification.py) overrides
+    this, since it's then testing that behavior on purpose."""
+    if "email_verified" not in kwargs:
+        target.email_verified = True
 
 
 def override_get_db():

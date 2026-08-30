@@ -169,6 +169,49 @@ async function resetPassword(token, newPassword) {
 
 ---
 
+## 7. Email verification
+
+Registering with a password starts the account **unverified**. A Google
+sign-up (direct or linked during registration) starts **verified**
+immediately — Google already proved the address, so there's nothing to send.
+
+An unverified account can still sign in and browse normally. What it
+**can't** do until verified: create a booking, pay (PaymentIntent, Checkout
+Session, save a card), start Stripe Connect vendor onboarding, open or act on
+a negotiation, or send a message (booking chat, group chat, or the
+vendor-enquiry endpoint). Any of those return **403** with a human-readable
+`detail` — show it, and offer a way to resend the link.
+
+```js
+// After registering, or any time GET /me shows email_verified: false —
+// give the user a way to get a fresh link.
+async function resendVerification() {
+  await fetch('/auth/resend-verification?client=ios', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getAccessToken()}` },
+  })
+}
+```
+
+**The verification link itself is not an API call your client makes.** It's
+emailed to the user and opens `GET /auth/verify-email?token=...` directly in
+a browser — the backend verifies the token and renders its own small HTML
+success/failure page (there's no frontend page to hand this off to, unlike
+password reset). The page includes a plain `jorna://` link, which opens the
+iOS app via its registered URL scheme without any special deep-link handling
+on that end.
+
+**Notes:**
+- The token is single-use and expires in 24 hours (longer than password
+  reset's 60 minutes — verifying is lower-urgency, and people don't always
+  check their inbox right away). Requesting a resend invalidates any
+  previous link, same as forgot-password.
+- Check `GET /me`'s `email_verified` field to know whether to show a
+  "verify your email" banner — don't infer it from a 403, since that only
+  tells you *after* the user already tried and failed to do something.
+
+---
+
 ## Backend endpoints
 
 | Method | Path | Auth required | Body | Returns |
@@ -179,6 +222,8 @@ async function resetPassword(token, newPassword) {
 | `POST` | `/auth/logout` | Yes | `{ refresh_token? }` | `{ message }` |
 | `POST` | `/auth/forgot-password` | No | `{ email }` | `{ message }` (always 200) |
 | `POST` | `/auth/reset-password` | No | `{ token, new_password }` | `{ message }` |
+| `GET` | `/auth/verify-email?token=...` | No | — | HTML result page (not JSON — see below) |
+| `POST` | `/auth/resend-verification?client=ios\|web` | Yes | — | `{ message, already_verified }` |
 
 ---
 

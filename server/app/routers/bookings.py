@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import User, Vendor
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_verified_user
 from app.limiter import limiter
 from app.models.schemas import BookingStatus
 from app.services.booking_service import (
@@ -71,7 +71,7 @@ def create_booking(
     request: Request,
     body: BookingCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_verified_user),
 ):
     """Client requests a service. Creates a booking with status 'pending'."""
     try:

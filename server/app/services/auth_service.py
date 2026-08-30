@@ -17,10 +17,11 @@ from app.config import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
     PASSWORD_RESET_EXPIRE_MINUTES,
+    EMAIL_VERIFICATION_EXPIRE_MINUTES,
     FRONTEND_URL,
     WEB_APP_URL,
 )
-from app.db.models import User, RefreshToken, PasswordResetToken
+from app.db.models import User, RefreshToken, PasswordResetToken, EmailVerificationToken
 
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -284,6 +285,9 @@ def google_register(*, access_token: str, db: Session) -> dict:
         l_name=l_name[:255],
         supabase_user_id=sub,
         pfp_url=meta.get("avatar_url") or meta.get("picture") or None,
+        # Google already proved this address is reachable — no separate
+        # verification email needed.
+        email_verified=True,
     )
     db.add(user)
     db.commit()
@@ -319,10 +323,15 @@ def register_user(
     db: Session,
     supabase_user_id: Optional[str] = None,
     supabase_access_token: Optional[str] = None,
+    client: str = "ios",
 ) -> dict:
     """Create a new user account. Returns ``{user_id, email}``.
 
     When ``supabase_user_id`` is set, ``supabase_access_token`` must prove ownership (same ``sub`` and email).
+    That same proof means Google already vouched for the email, so this account
+    starts verified — only a plain password registration needs a verification
+    email sent (``client`` picks which link it gets, like ``client`` on
+    forgot-password: see ``_send_verification_email``).
     """
     existing = db.query(User).filter(
         (User.email == email) | (User.username == username)
@@ -364,10 +373,22 @@ def register_user(
         language=language,
         supabase_user_id=supabase_user_id,
         pfp_url=google_picture,
+        # A linked Google account already proved this address (checked above);
+        # a plain password registration hasn't, so it starts unverified.
+        email_verified=bool(supabase_user_id),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    if not user.email_verified:
+        raw_token = _issue_verification_token(user, db)
+        try:
+            _send_verification_email(user, raw_token, client)
+        except Exception as exc:  # pragma: no cover - email is best-effort
+            import logging
+            logging.getLogger(__name__).error("Failed to send verification email: %s", exc)
+
     return {"user_id": user.user_id, "email": user.email}
 
 
@@ -509,11 +530,119 @@ def reset_password(*, token: str, new_password: str, db: Session) -> dict:
     return {"message": "Password has been reset. Please log in with your new password."}
 
 
-def cleanup_expired_tokens(db: Session) -> dict:
-    """Delete expired refresh and password-reset tokens.
+def _send_verification_email(user: User, raw_token: str, client: str = "ios") -> None:
+    """Email the user a single-use "verify your address" link. Best-effort.
 
-    Both tables only ever accumulate — tokens are otherwise removed on use or
-    rotation, so expired rows linger forever without a sweep. Safe to run
+    Same ``client`` split as ``_send_password_reset_email``: iOS gets the
+    FRONTEND_URL bridge (bounces into the app via jorna://), web gets its own
+    page directly under WEB_APP_URL.
+    """
+    from app.services.email_service import send_email
+    base = WEB_APP_URL if client == "web" else FRONTEND_URL
+    verify_link = f"{base.rstrip('/')}/verify-email?token={raw_token}"
+    subject = "Verify your Jorna email"
+    html = (
+        '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'
+        'padding:24px;color:#1a1a1a">'
+        '<h2 style="margin:0 0 12px">Verify your email</h2>'
+        f'<p style="font-size:15px;line-height:1.5">Hi {user.f_name}, welcome to Jorna! '
+        "Please confirm this is your email address so you can book, pay, and message "
+        "vendors.</p>"
+        f'<p style="margin:24px 0"><a href="{verify_link}" '
+        'style="background:#c2410c;color:#fff;text-decoration:none;padding:12px 24px;'
+        'border-radius:6px;font-size:15px;display:inline-block">Verify Email</a></p>'
+        f'<p style="font-size:13px;color:#555">This link expires in '
+        f'{EMAIL_VERIFICATION_EXPIRE_MINUTES // 60} hours. If you didn\'t create a Jorna '
+        'account, you can safely ignore this email.</p>'
+        '<hr style="border:none;border-top:1px solid #eee;margin:20px 0">'
+        '<p style="font-size:12px;color:#888;margin:0">Jorna — your South Asian event marketplace.</p>'
+        '</div>'
+    )
+    text = (
+        f"Hi {user.f_name},\n\nVerify your Jorna email using this link:\n{verify_link}\n\n"
+        f"This link expires in {EMAIL_VERIFICATION_EXPIRE_MINUTES // 60} hours. "
+        "If you didn't create a Jorna account, ignore this email."
+    )
+    send_email(to=user.email, subject=subject, html=html, text=text)
+
+
+def _issue_verification_token(user: User, db: Session) -> str:
+    """Create (and persist) a fresh single-use verification token for ``user``.
+
+    Drops any prior tokens first — only the most recent link should work,
+    same rule as password reset. Does not commit; the caller commits once it
+    also has the email result to record (or right away for the register path,
+    where there's nothing else pending).
+    """
+    db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == user.user_id).delete()
+    raw_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    db.add(EmailVerificationToken(
+        user_id=user.user_id,
+        token_hash=_hash_token(raw_token),
+        expires_at=now + timedelta(minutes=EMAIL_VERIFICATION_EXPIRE_MINUTES),
+        created_at=now,
+    ))
+    user.email_verification_sent_at = now
+    db.commit()
+    return raw_token
+
+
+def resend_verification_email(*, user_id: str, db: Session, client: str = "ios") -> dict:
+    """Issue a new verification link for an already-authenticated but unverified user.
+
+    Idempotent-friendly: calling this on an already-verified account is a
+    harmless no-op rather than an error, since the client can't always tell
+    which state it's in before asking.
+    """
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise AuthError(404, "User not found")
+    if user.email_verified:
+        return {"message": "This email is already verified.", "already_verified": True}
+
+    raw_token = _issue_verification_token(user, db)
+    try:
+        _send_verification_email(user, raw_token, client)
+    except Exception as exc:  # pragma: no cover - email is best-effort
+        import logging
+        logging.getLogger(__name__).error("Failed to send verification email: %s", exc)
+    return {"message": "Verification email sent.", "already_verified": False}
+
+
+def verify_email(*, token: str, db: Session) -> dict:
+    """Mark the owning user verified and consume the token. Single-use."""
+    record = (
+        db.query(EmailVerificationToken)
+        .filter(EmailVerificationToken.token_hash == _hash_token(token))
+        .first()
+    )
+    if not record:
+        raise AuthError(400, "Invalid or expired verification link")
+
+    if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        db.delete(record)
+        db.commit()
+        raise AuthError(400, "Verification link has expired — request a new one")
+
+    user = db.query(User).filter(User.user_id == record.user_id).first()
+    if not user:
+        db.delete(record)
+        db.commit()
+        raise AuthError(400, "Invalid or expired verification link")
+
+    user.email_verified = True
+    # Single-use: consume this and any sibling verification tokens.
+    db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == user.user_id).delete()
+    db.commit()
+    return {"message": "Email verified.", "email": user.email}
+
+
+def cleanup_expired_tokens(db: Session) -> dict:
+    """Delete expired refresh, password-reset, and email-verification tokens.
+
+    All three tables only ever accumulate — tokens are otherwise removed on use
+    or rotation, so expired rows linger forever without a sweep. Safe to run
     repeatedly. Compares against a naive UTC now because the columns are stored
     timezone-naive (DateTime without tz). Returns the per-table delete counts.
     """
@@ -524,10 +653,14 @@ def cleanup_expired_tokens(db: Session) -> dict:
     reset_deleted = (
         db.query(PasswordResetToken).filter(PasswordResetToken.expires_at < now).delete(synchronize_session=False)
     )
+    verification_deleted = (
+        db.query(EmailVerificationToken).filter(EmailVerificationToken.expires_at < now).delete(synchronize_session=False)
+    )
     db.commit()
     return {
         "refresh_tokens_deleted": refresh_deleted,
         "password_reset_tokens_deleted": reset_deleted,
+        "email_verification_tokens_deleted": verification_deleted,
     }
 
 

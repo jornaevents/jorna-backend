@@ -46,6 +46,13 @@ class User(Base):
 
     is_admin = Column(Boolean, nullable=False, default=False)
 
+    # True once the address has been proven reachable — via a Google account
+    # (set at creation, see auth_service.google_register) or by clicking the
+    # link in a verification email (see auth_service.verify_email). Gates
+    # money- and messaging-affecting endpoints; browsing/login stay open.
+    email_verified = Column(Boolean, nullable=False, default=False)
+    email_verification_sent_at = Column(DateTime, nullable=True)
+
     # The card kept for this client, and the Stripe Customer it belongs to.
     # Collected once when a plan is sent and charged when a vendor accepts —
     # money moves at the same moment it always did, but nobody has to come back
@@ -456,6 +463,17 @@ class RefreshToken(Base):
 
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
+
+    token_id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # SHA-256 hex digest of the raw token — never store the raw value
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
 
     token_id = Column(String(36), primary_key=True, default=uuid_str)
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
