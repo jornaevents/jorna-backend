@@ -106,6 +106,13 @@ class Vendor(Base):
     bio = Column(Text, nullable=False)
     category = Column(String(50), nullable=False, default="other")
     subcategory = Column(String(100), nullable=True)
+    # Every category(+subcategory) a vendor sells under, not just one — the
+    # frontend has offered a multi-select here for a while, but this is what
+    # actually persists it. category/subcategory above still mirror the first
+    # entry, since search and the older list endpoints filter on those, not
+    # this. A list of {"category": ..., "subcategory": ...} dicts, or null for
+    # a vendor created before this column existed.
+    specializations = Column(JSON, nullable=True)
     rating = Column(Float, nullable=False)
     num_events = Column(Integer, nullable=False)
 

@@ -39,13 +39,24 @@ class VendorError(Exception):
 
 
 def create_vendor(
-    *, user_id: str, bio: str, category: str | None = None, subcategory: str | None = None, db: Session
+    *,
+    user_id: str,
+    bio: str,
+    category: str | None = None,
+    subcategory: str | None = None,
+    specializations: list[dict] | None = None,
+    db: Session,
 ) -> dict:
     """Create a vendor profile for *user_id*. Raises 400 if one already exists.
 
     ``category`` is optional. The column is NOT NULL, so an unset one becomes
     "other" — a placeholder, not a claim. What this vendor actually sells is
     each service's own category, and search reads those; see search_vendors.
+
+    ``specializations`` is the full category(+subcategory) list; ``category``/
+    ``subcategory`` above still get set independently (mirroring its first
+    entry, from the router) since search and the older list endpoints filter
+    on those columns, not this one.
     """
     existing = db.query(Vendor).filter(Vendor.user_id == user_id).first()
     if existing:
@@ -55,6 +66,7 @@ def create_vendor(
         bio=bio,
         category=category or "other",
         subcategory=subcategory,
+        specializations=specializations,
         rating=0.0,
         num_events=0,
     )
@@ -67,6 +79,7 @@ def create_vendor(
         "bio": vendor.bio,
         "category": vendor.category,
         "subcategory": vendor.subcategory,
+        "specializations": vendor.specializations or [],
         "rating": vendor.rating,
         "num_events": vendor.num_events,
         "tags": [],
@@ -90,6 +103,7 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "bio": v.bio,
         "category": v.category,
         "subcategory": v.subcategory,
+        "specializations": v.specializations or [],
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
@@ -126,6 +140,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "bio": v.bio,
         "category": v.category,
         "subcategory": v.subcategory,
+        "specializations": v.specializations or [],
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
@@ -180,8 +195,9 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         update_data["instagram_username"] = ig
 
     for field, value in update_data.items():
-        if field in ["bio", "category", "subcategory", "travel_radius_miles", "open_to_long_distance",
-                     "open_to_price_negotiation", "open_to_location_negotiation", "instagram_username"]:
+        if field in ["bio", "category", "subcategory", "specializations", "travel_radius_miles",
+                     "open_to_long_distance", "open_to_price_negotiation",
+                     "open_to_location_negotiation", "instagram_username"]:
             setattr(vendor, field, value)
     
     db.commit()

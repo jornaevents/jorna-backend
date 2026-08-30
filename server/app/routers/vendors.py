@@ -39,14 +39,12 @@ router = APIRouter(prefix="/vendors", tags=["vendors"])
 # ── Request schemas ───────────────────────────────────────────────────
 
 
-class CreateVendorRequest(BaseModel):
-    bio: str
-    # Optional: what a vendor sells is decided per service, and every service
-    # carries its own category. Asking again here made the signup form look like
-    # it was categorising a service — and forced a single answer out of anyone
-    # who does two things. Left unset, the vendor is "other" until their first
-    # service says otherwise, which search reads through (see search_vendors).
-    category: Optional[VendorCategory] = None
+class VendorSpecializationItem(BaseModel):
+    """One entry in the `specializations` list — a category, optionally
+    narrowed to a subcategory within it. Same shape and validation as the
+    top-level category/subcategory pair below, just repeatable."""
+
+    category: VendorCategory
     subcategory: Optional[str] = None
 
     @field_validator("subcategory")
@@ -62,15 +60,56 @@ class CreateVendorRequest(BaseModel):
         return v
 
 
+class CreateVendorRequest(BaseModel):
+    bio: str
+    # Optional: what a vendor sells is decided per service, and every service
+    # carries its own category. Asking again here made the signup form look like
+    # it was categorising a service — and forced a single answer out of anyone
+    # who does two things. Left unset, the vendor is "other" until their first
+    # service says otherwise, which search reads through (see search_vendors).
+    category: Optional[VendorCategory] = None
+    subcategory: Optional[str] = None
+    # The full list a vendor picks during onboarding; category/subcategory
+    # above mirror its first entry, since that's what search still filters on.
+    specializations: Optional[list[VendorSpecializationItem]] = None
+
+    @field_validator("subcategory")
+    @classmethod
+    def validate_subcategory(cls, v, info):
+        if v is None:
+            return v
+        category = info.data.get("category")
+        cat_key = category.value if isinstance(category, VendorCategory) else category
+        valid = VENDOR_SUBCATEGORIES.get(cat_key, [])
+        if valid and v not in valid:
+            raise ValueError(f"Invalid subcategory '{v}' for category '{cat_key}'. Valid: {valid}")
+        return v
+
+    @field_validator("specializations")
+    @classmethod
+    def validate_specializations(cls, v):
+        if v is not None and len(v) > 20:
+            raise ValueError("No more than 20 specializations")
+        return v
+
+
 class UpdateVendorRequest(BaseModel):
     bio: Optional[str] = None
     category: Optional[VendorCategory] = None
     subcategory: Optional[str] = None
+    specializations: Optional[list[VendorSpecializationItem]] = None
     travel_radius_miles: Optional[int] = None
     open_to_long_distance: Optional[bool] = None
     open_to_price_negotiation: Optional[bool] = None
     open_to_location_negotiation: Optional[bool] = None
     instagram_username: Optional[str] = None
+
+    @field_validator("specializations")
+    @classmethod
+    def validate_specializations(cls, v):
+        if v is not None and len(v) > 20:
+            raise ValueError("No more than 20 specializations")
+        return v
 
 
 class InstagramEnrichRequest(BaseModel):
@@ -111,6 +150,11 @@ def create_vendor_route(
             bio=body.bio,
             category=body.category.value if body.category else None,
             subcategory=body.subcategory,
+            specializations=(
+                [{"category": s.category.value, "subcategory": s.subcategory} for s in body.specializations]
+                if body.specializations is not None
+                else None
+            ),
             db=db,
         )
     except VendorError as e:
@@ -237,10 +281,19 @@ def update_my_vendor_route(
     db: Session = Depends(get_db),
 ):
     """Partially update the authenticated user's vendor profile."""
+    # specializations is handled separately: model_dump() would otherwise leave
+    # its enum members un-normalized (fine in memory, not what a JSON column
+    # should store), so it's excluded from the generic dump and rebuilt as
+    # plain dicts the same way create_vendor_route already does.
+    update_data = body.model_dump(exclude_unset=True, exclude={"specializations"})
+    if body.specializations is not None:
+        update_data["specializations"] = [
+            {"category": s.category.value, "subcategory": s.subcategory} for s in body.specializations
+        ]
     try:
         return update_vendor(
             user_id=current_user.user_id,
-            update_data=body.model_dump(exclude_unset=True),
+            update_data=update_data,
             db=db,
         )
     except VendorError as e:
