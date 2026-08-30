@@ -65,7 +65,7 @@ descriptions of a contract they don't own.
   against a real local Postgres before merging (`brew install postgresql@16`,
   spin up a throwaway db, `alembic upgrade head` / `downgrade -1`, drop it),
   and if it adds a `NOT NULL` column or changes a status-like value, backfill
-  existing rows in the *same* migration (see `0044_add_email_verification.py`
+  existing rows in the *same* migration (see `0045_add_email_verification.py`
   for the pattern) — a deploy must never lock out or corrupt current users.
 - **Tests never run migrations.** `server/tests/test_api.py` builds the
   schema straight from `app/db/models.py` via `Base.metadata.create_all` — a

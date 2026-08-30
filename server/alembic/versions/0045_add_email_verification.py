@@ -1,7 +1,7 @@
 """add email verification (users.email_verified + email_verification_tokens)
 
-Revision ID: 0044_add_email_verification
-Revises: 0043_typed_service_media
+Revision ID: 0045_add_email_verification
+Revises: 0044_booking_client_note
 Create Date: 2026-08-26
 
 Adds users.email_verified (bool) and users.email_verification_sent_at
@@ -17,8 +17,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = '0044_add_email_verification'
-down_revision: Union[str, None] = '0043_typed_service_media'
+revision: str = '0045_add_email_verification'
+down_revision: Union[str, None] = '0044_booking_client_note'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
