@@ -15,7 +15,10 @@ source of truth for two sibling client repos, each with its own `CLAUDE.md`:
 
 - `knag9753/front_end_desiconnect` (`…/GitHub/front_end_desiconnect`) — native
   iOS SwiftUI client.
-- `dabkeyanik/jorna-website` (`…/GitHub/jorna-website`) — Next.js web app.
+- `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — Next.js
+  web app. Transferred from `dabkeyanik/jorna-website` in 2026-08;
+  `jornaevents-commits` is the account driving development on it going
+  forward (old URLs still redirect).
 
 A booking/pricing/escrow change almost always touches this repo plus one or
 both clients. If a client repo's docs describe backend behavior differently
