@@ -154,6 +154,29 @@ scrubbing of auth material.
 
 ---
 
+## CI/CD hardening status (as of 2026-08-31)
+
+A follow-up review found CI existed in all three repos but wasn't reliably
+enforced or connected to deploy. Status of closing those gaps:
+
+| Gap | jorna-website | Desiconnect | front_end_desiconnect |
+|---|---|---|---|
+| Branch protection on `main` (PR required, status checks required, no force-push/delete) | **Done** — `required_pull_request_reviews` (0 approvals required, solo dev) + `required_status_checks` on `Lint, typecheck, test, build` and `E2E (Playwright)` | **Not done** | **Not done** |
+| Deploy coupled to CI | **In progress** — PR #12 adds a `deploy` job gated on CI passing on a push to `main`; open, not yet merged (waiting on `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` repo secrets so the first run succeeds cleanly) | Already existed — Railway's `checkSuites` flag gates `alembic upgrade head` on `Backend CI` going green | N/A — no CD pipeline exists for iOS; App Store/TestFlight release stays manual |
+| Failure alerting | GitHub-native only (no new webhook/integration by design) — relies on the account's GitHub notification settings for failed workflow runs; not yet independently confirmed as configured | same | same |
+
+**Why Desiconnect and front_end_desiconnect are still unprotected:** both
+are owned by the `knag9753` GitHub account; the session that did this work
+was authenticated as `dabkeyanik`, which has push access but not admin on
+those two repos — the branch-protection API call 404s (GitHub masks a
+permission error as "not found" on this endpoint) without admin. Setting it
+there needs either a `gh auth` session actually authenticated as `knag9753`,
+or someone with admin access running the equivalent `gh api -X PUT
+repos/knag9753/<repo>/branches/main/protection` call directly. Until then,
+**a direct `git push origin main` on either repo still bypasses CI** —
+`CLAUDE.md`'s "merge to main only when told" rule is convention only, not
+enforced, on these two.
+
 ## Sources
 - `Desiconnect/.github/workflows/ci.yml`, `railway.toml`,
   `server/app/observability.py`, `server/app/config.py`,
