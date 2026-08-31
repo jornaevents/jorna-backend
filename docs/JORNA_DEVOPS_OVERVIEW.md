@@ -95,17 +95,28 @@ Runs on every push/PR to `main`, two jobs:
   `NEXT_PUBLIC_API_BASE_URL` host makes any unmocked route 404 loudly
   instead of silently hitting production).
 
-**Deploy:** `npm run deploy` — `npm ci` (not local `node_modules`), builds
-into `public/app`, `wrangler pages deploy public`, then polls every route on
-`https://jornaevents.com` and re-deploys until three consecutive sweeps all
-return 200. `npm run deploy:once` skips the `npm ci` + verification loop.
-Deploy is **not gated on CI** — it's a manually invoked script, so a green
-CI run and an actual deploy are two separate steps. Dependabot opens weekly
-update PRs for `web/`, root (wrangler), and GitHub Actions.
+**Deploy:** automatic on merge to `main` — a third CI job (`deploy`) runs
+`npm run deploy` once `build` and `e2e` both pass, authenticating to
+Cloudflare via `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` repo secrets
+instead of a local `wrangler login` session. `npm run deploy` itself: `npm
+ci` at the repo root (needed for `wrangler`, a root-level devDependency —
+CI's first live run failed here, since only `web/`'s deps were being
+installed) then in `web/`, builds into `public/app`, `wrangler pages deploy
+public`, then polls every route and re-deploys until three consecutive
+sweeps return 200. **CI verifies against `https://jorna-events.pages.dev`,
+not the production domain** — `jornaevents.com`'s bot/WAF protection 403s
+every request from GitHub Actions' runner IPs specifically (the actual
+`wrangler` upload always succeeded; confirmed the same routes are a clean
+200 from any other network), so `DEPLOY_DOMAIN` is overridden for CI only.
+A human running `npm run deploy` locally still verifies the real
+`jornaevents.com` domain. `npm run deploy:once` skips the `npm ci` +
+verification loop entirely. Dependabot opens weekly update PRs for `web/`,
+root (wrangler), and GitHub Actions.
 
-`*.pages.dev` is **not** a usable staging URL — backend CORS only allows
-`https://jornaevents.com`, so every sign-in/booking/listing call fails CORS
-on the `.pages.dev` preview host.
+`*.pages.dev` is **not** a usable staging URL for manual testing — backend
+CORS only allows `https://jornaevents.com`, so every sign-in/booking/listing
+call fails CORS on the `.pages.dev` preview host, even though CI now uses
+that host to verify a deploy landed.
 
 ---
 
@@ -162,20 +173,46 @@ enforced or connected to deploy. Status of closing those gaps:
 | Gap | jorna-website | Desiconnect | front_end_desiconnect |
 |---|---|---|---|
 | Branch protection on `main` (PR required, status checks required, no force-push/delete) | **Done** — `required_pull_request_reviews` (0 approvals required, solo dev) + `required_status_checks` on `Lint, typecheck, test, build` and `E2E (Playwright)` | **Not done** | **Not done** |
-| Deploy coupled to CI | **In progress** — PR #12 adds a `deploy` job gated on CI passing on a push to `main`; open, not yet merged (waiting on `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` repo secrets so the first run succeeds cleanly) | Already existed — Railway's `checkSuites` flag gates `alembic upgrade head` on `Backend CI` going green | N/A — no CD pipeline exists for iOS; App Store/TestFlight release stays manual |
+| Deploy coupled to CI | **Done and verified live** — `deploy` job gated on `build`+`e2e` passing on a push to `main`; confirmed end-to-end (merged PR → wrangler upload → route-verify sweep green → `jornaevents.com` serving the change) | Already existed — Railway's `checkSuites` flag gates `alembic upgrade head` on `Backend CI` going green | N/A — no CD pipeline exists for iOS; App Store/TestFlight release stays manual |
 | Failure alerting | GitHub-native only (no new webhook/integration by design) — relies on the account's GitHub notification settings for failed workflow runs; not yet independently confirmed as configured | same | same |
 
+**jorna-website was transferred mid-hardening**, from `dabkeyanik` to
+`jornaevents-commits` — the account now driving development on all three
+repos (per the user; ownership transfer of the other two is pending, done
+by the user separately). The transfer **reset branch protection to
+nothing**; it had to be reapplied once `jornaevents-commits` had admin
+access (also needed the `workflow` OAuth scope added via `gh auth refresh
+-s workflow` — the default login scope didn't include it, and pushing an
+edited `.github/workflows/*.yml` file is rejected without it).
+
+Getting the `deploy` job from "added" to "actually works" took two
+follow-up fixes, both from watching real runs fail:
+1. **Missing root install** — `wrangler` is a root-level devDependency
+   (`wrangler.jsonc` lives at the repo root); the job only ever installed
+   `web/`'s deps, so `npx --no-install wrangler` had nothing to run and
+   failed 4/4 retry attempts immediately. Fixed by adding a root `npm ci`
+   step.
+2. **Cloudflare zone bot protection blocks CI's own verification** — once
+   the install was fixed, `wrangler pages deploy` started succeeding
+   every time, but the post-deploy route-verify sweep 403'd on every route.
+   Not a real failure: the exact same routes returned clean 200s from every
+   other network tested. `jornaevents.com`'s bot/WAF protection was
+   blocking GitHub Actions' runner IPs specifically. Fixed by pointing
+   CI's verification at `https://jorna-events.pages.dev` (same deployment,
+   different hostname, not behind that zone's WAF) via `DEPLOY_DOMAIN`;
+   local `npm run deploy` still verifies the real production domain.
+
 **Why Desiconnect and front_end_desiconnect are still unprotected:** both
-are owned by the `knag9753` GitHub account; the session that did this work
-was authenticated as `dabkeyanik`, which has push access but not admin on
-those two repos — the branch-protection API call 404s (GitHub masks a
-permission error as "not found" on this endpoint) without admin. Setting it
-there needs either a `gh auth` session actually authenticated as `knag9753`,
-or someone with admin access running the equivalent `gh api -X PUT
-repos/knag9753/<repo>/branches/main/protection` call directly. Until then,
-**a direct `git push origin main` on either repo still bypasses CI** —
-`CLAUDE.md`'s "merge to main only when told" rule is convention only, not
-enforced, on these two.
+are owned by the `knag9753` GitHub account, and — per the user — that
+account's access will be sorted out separately later; for now this session
+only has push, not admin, there. Setting branch protection needs either a
+`gh auth` session actually authenticated as `knag9753` (the branch-
+protection API 404s for a non-admin — GitHub masks the permission error as
+"not found" on this endpoint), or someone with admin access running the
+equivalent `gh api -X PUT repos/knag9753/<repo>/branches/main/protection`
+call directly. Until then, **a direct `git push origin main` on either repo
+still bypasses CI** — `CLAUDE.md`'s "merge to main only when told" rule is
+convention only, not enforced, on these two.
 
 ## Sources
 - `Desiconnect/.github/workflows/ci.yml`, `railway.toml`,
