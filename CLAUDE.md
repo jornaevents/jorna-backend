@@ -73,6 +73,45 @@ descriptions of a contract they don't own.
   the FastAPI app's runtime — it doesn't get imported by `server/`.
 - Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
+## Diagnosing a failed Railway deploy
+
+The production database is **Supabase Postgres**, reached only via the
+`DATABASE_URL` env var on the `Desiconnect` service — **not** the `Postgres`
+plugin sitting in the same Railway project (`superb-encouragement`), which is
+an unused/empty leftover and easy to check by mistake.
+
+Railway's `checkSuites` deploy-trigger flag is **on**: a push to `main` now
+waits for the `Backend CI` GitHub check suite (`Lint + test` +
+`Migration chain (Postgres)`, `.github/workflows/ci.yml`) to go green before
+Railway even attempts `alembic upgrade head` against production. The
+migration-chain CI job catches a broken `down_revision` link, a duplicate
+head, or bad migration SQL — it does **not** catch a migration that was run
+directly against prod without ever being committed (that's what caused the
+2026-08-30 incident: `alembic_version` was stamped to a revision, `0045_
+vendor_specializations`, that existed nowhere in git — fix was restamping to
+the real current head).
+
+```bash
+railway login                                  # first time in a fresh session; opens a browser
+railway link --project superb-encouragement    # picks workspace/env interactively — run these two yourself
+railway service Desiconnect                    # link the service (not the Postgres plugin)
+
+railway status                                 # is the current deploy Online / Building / Deploy failed
+railway logs --deployment --latest --lines 100 # deploy-phase logs even if the deploy failed
+railway redeploy --service Desiconnect --yes   # retry after a fix
+
+# One-off read against the real prod DB, using Railway's own injected
+# DATABASE_URL rather than a value copy-pasted (and possibly mistyped) by hand:
+railway run --service Desiconnect bash -c 'psql "$DATABASE_URL" -c "SELECT version_num FROM alembic_version;"'
+```
+
+**Alembic gotcha:** a migration's filename and its actual `revision = "..."`
+string inside the file are not always the same (e.g.
+`0044_add_booking_client_note.py` internally has
+`revision = "0044_booking_client_note"`, no "add_"). When restamping
+`alembic_version` by hand, use `alembic heads` / grep the file's `revision =`
+line — never assume the filename is the ID.
+
 ## Commands
 
 ```bash
@@ -84,8 +123,11 @@ venv/bin/python -m uvicorn main:app --reload  # run locally (needs a .env — se
 venv/bin/alembic upgrade head                 # apply migrations (server/alembic/, NOT root alembic.ini)
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint + the full test suite on every PR
-into `main`.
+CI (`.github/workflows/ci.yml`, job `Backend CI`) runs two jobs on every PR
+into `main`: `Lint + test` (ruff + pytest, sqlite-backed) and
+`Migration chain (Postgres)` (applies the full Alembic chain to a clean
+Postgres 16 container). Railway waits for both to pass before deploying —
+see "Diagnosing a failed Railway deploy" above.
 
 ## Keeping this doc layer current
 
