@@ -89,3 +89,8 @@ ALLOWED_ORIGINS: list[str] = (
     if _raw_origins
     else ["http://localhost:3000", "http://localhost:8080"]
 )
+# Optional regex, ORed with ALLOWED_ORIGINS by CORSMiddleware — lets a whole
+# subdomain pattern in through one setting instead of editing the list per
+# deploy. Used for jorna-website's per-PR Cloudflare Pages previews
+# (pr-<n>.jorna-events.pages.dev), which we can't enumerate in advance.
+ALLOWED_ORIGIN_REGEX: str | None = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
