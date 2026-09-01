@@ -68,6 +68,59 @@ def test_create_booking(seeded_db):
     assert "booking_id" in data
 
 
+def test_create_booking_rejects_non_positive_guest_count(seeded_db):
+    user = seeded_db["user"]
+    service = seeded_db["service"]
+    headers = make_auth_headers(user)
+
+    for bad_count in (-5, 0):
+        response = client.post(
+            "/bookings",
+            json={
+                "service_id": service.service_id,
+                "event_name": "Test Event",
+                "time_start": "13:00",
+                "time_end": "15:00",
+                "location": "123 Test St",
+                "date_iso": "2026-05-01",
+                "guest_count": bad_count,
+                "venue_latitude": 34.0,
+                "venue_longitude": -118.0,
+            },
+            headers=headers,
+        )
+        assert response.status_code == 422, bad_count
+
+
+def test_update_booking_rejects_non_positive_guest_count(seeded_db):
+    user = seeded_db["user"]
+    service = seeded_db["service"]
+    headers = make_auth_headers(user)
+
+    create = client.post(
+        "/bookings",
+        json={
+            "service_id": service.service_id,
+            "event_name": "Test Event",
+            "time_start": "13:00",
+            "time_end": "15:00",
+            "location": "123 Test St",
+            "date_iso": "2026-05-01",
+            "venue_latitude": 34.0,
+            "venue_longitude": -118.0,
+        },
+        headers=headers,
+    )
+    booking_id = create.json()["booking_id"]
+
+    response = client.patch(
+        f"/bookings/{booking_id}",
+        json={"guest_count": -5},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
 def test_client_note_round_trips_to_client_and_vendor(seeded_db):
     """What the client writes in 'Anything the vendor should know?' must be
     stored and read back identically by both parties — this is the field the
