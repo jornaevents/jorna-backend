@@ -35,7 +35,7 @@ class BookingCreate(BaseModel):
     location: str
     date_iso: str    # e.g. "2026-03-01"
     date_end: Optional[str] = None    # e.g. "2026-03-03" for a multi-day event
-    guest_count: Optional[int] = None  # lets per-person services price rate x guests
+    guest_count: Optional[int] = Field(default=None, ge=1)  # lets per-person services price rate x guests
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
     bundle_id: Optional[str] = Field(default=None, examples=[None])
@@ -45,7 +45,7 @@ class BookingCreate(BaseModel):
 class BookingUpdate(BaseModel):
     date_iso: Optional[str] = None
     date_end: Optional[str] = None
-    guest_count: Optional[int] = None
+    guest_count: Optional[int] = Field(default=None, ge=1)
     time_start: Optional[str] = None
     time_end: Optional[str] = None
     location: Optional[str] = None
