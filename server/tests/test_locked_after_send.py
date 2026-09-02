@@ -644,6 +644,74 @@ def test_a_flat_rate_service_asks_for_no_quantity(plan, unit):
         db.close()
 
 
+def test_a_flat_rate_service_can_opt_into_requiring_a_headcount(plan):
+    """require_guest_count is additive: a flat rate normally asks for nothing,
+    but a vendor can opt into a headcount anyway."""
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["flat_service_id"]
+        ).first()
+        service.price_unit = "event"
+        service.require_guest_count = True
+        db.commit()
+
+        created = _book(plan, db, guest_count=None)
+        with pytest.raises(BundleError) as e:
+            select_bundle(
+                bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+            )
+        assert "guest count" in e.value.detail
+    finally:
+        db.close()
+
+
+def test_a_flat_rate_service_can_opt_into_requiring_a_performer_count(plan):
+    """Same idea, for require_performer_count."""
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["flat_service_id"]
+        ).first()
+        service.price_unit = "event"
+        service.require_performer_count = True
+        db.commit()
+
+        created = _book(plan, db, guest_count=None, performer_count=None)
+        with pytest.raises(BundleError) as e:
+            select_bundle(
+                bundle_id=created["bundle_id"], caller_user_id=plan["user_id"], db=db
+            )
+        assert "performer count" in e.value.detail
+    finally:
+        db.close()
+
+
+def test_opted_in_and_price_unit_driven_requirements_are_independent(plan):
+    """A per-performer service that also opts into requiring a guest count
+    demands both — the two checks don't short-circuit each other."""
+    db = _db()
+    try:
+        service = db.query(Service).filter(
+            Service.service_id == plan["per_performer_service_id"]
+        ).first()
+        service.require_guest_count = True
+        db.commit()
+
+        created = _book(
+            plan, db, service_id=plan["per_performer_service_id"],
+            guest_count=None, performer_count=None,
+        )
+        gaps = booking_gaps(
+            db.query(Booking).filter(Booking.booking_id == created["booking_id"]).first(),
+            service,
+        )
+        assert "a guest count" in gaps
+        assert "a performer count" in gaps
+    finally:
+        db.close()
+
+
 def test_the_gate_and_the_pricer_never_disagree():
     """The property, rather than a list of examples.
 

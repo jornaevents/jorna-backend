@@ -174,6 +174,13 @@ class Service(Base):
     location = Column(String(255), nullable=True)
     venue_latitude = Column(Float, nullable=True)
     venue_longitude = Column(Float, nullable=True)
+    # Opt-in extras: a vendor can demand a guest/performer count even when the
+    # price unit itself doesn't need one to compute a total (e.g. a flat-rate
+    # caterer who still wants a headcount before deciding to accept). Additive
+    # only — booking_gaps() ORs these with the price-unit-driven requirement,
+    # never loosens it.
+    require_guest_count = Column(Boolean, nullable=False, default=False)
+    require_performer_count = Column(Boolean, nullable=False, default=False)
 
 
 class Booking(Base):
