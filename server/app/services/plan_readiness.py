@@ -35,6 +35,7 @@ COMMITTED_FIELDS = (
     "date_iso",
     "date_end",
     "guest_count",
+    "performer_count",
     "time_start",
     "time_end",
     "location",
@@ -162,6 +163,9 @@ def booking_gaps(
         # this check without satisfying checkout.
         if not (booking.guest_count or 0):
             gaps.append("a guest count")
+    elif kind == "performer":
+        if not (booking.performer_count or 0):
+            gaps.append("a performer count")
 
     return gaps
 
@@ -262,6 +266,7 @@ _FIELD_NAMES = {
     "date_iso": "date",
     "date_end": "end date",
     "guest_count": "guest count",
+    "performer_count": "performer count",
     "time_start": "start time",
     "time_end": "end time",
     "location": "address",
