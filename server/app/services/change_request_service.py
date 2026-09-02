@@ -347,6 +347,7 @@ def _reprice(booking: Booking, service: Service | None, fields: dict) -> int | N
     return estimate_amount_cents(
         service,
         guest_count=booking.guest_count,
+        performer_count=booking.performer_count,
         date_iso=fields["date_iso"],
         date_end=fields["date_end"],
         time_start=fields["time_start"],

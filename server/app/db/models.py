@@ -138,7 +138,7 @@ class Service(Base):
         # from Base.metadata is the schema production runs, and a value that
         # would be refused in production is refused in a test too.
         CheckConstraint(
-            "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event')",
+            "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event', 'performer')",
             name="ck_services_price_unit",
         ),
     )
@@ -192,6 +192,9 @@ class Booking(Base):
     # (rate x guests) can be (re)computed and audited at booking + checkout time
     # instead of silently falling back to the bare per-person rate.
     guest_count = Column(Integer, nullable=True)
+    # Same idea as guest_count, for a per-performer service (entertainment
+    # groups charging by how many performers they're asked to provide).
+    performer_count = Column(Integer, nullable=True)
     # Free text the client leaves when requesting the booking ("Anything the
     # vendor should know?"), shown to the vendor alongside the request before
     # they accept/decline. Optional; most bookings carry none.

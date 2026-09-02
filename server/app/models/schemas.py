@@ -28,6 +28,7 @@ class PriceUnit(str, Enum):
     HOUR = "hour"
     DAY = "day"
     EVENT = "event"
+    PERFORMER = "performer"
 
 
 PRICE_UNITS = tuple(u.value for u in PriceUnit)
