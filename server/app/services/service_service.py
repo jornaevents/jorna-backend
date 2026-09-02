@@ -38,6 +38,8 @@ def _service_dict(service: Service) -> dict:
         "location": service.location,
         "venue_latitude": service.venue_latitude,
         "venue_longitude": service.venue_longitude,
+        "require_guest_count": service.require_guest_count,
+        "require_performer_count": service.require_performer_count,
     }
 
 
@@ -82,6 +84,8 @@ def create_service(
     location: Optional[str] = None,
     venue_latitude: Optional[float] = None,
     venue_longitude: Optional[float] = None,
+    require_guest_count: bool = False,
+    require_performer_count: bool = False,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -114,6 +118,8 @@ def create_service(
         location=location,
         venue_latitude=venue_latitude,
         venue_longitude=venue_longitude,
+        require_guest_count=require_guest_count,
+        require_performer_count=require_performer_count,
     )
     db.add(service)
     db.commit()

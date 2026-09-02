@@ -251,6 +251,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "price_pending_quantity": total_cents is None,
         "guest_count": booking.guest_count,
         "performer_count": booking.performer_count,
+        # Denormalized from the service so a client can run its own gap-check
+        # (bookingGaps()) against the booking alone — see plan_readiness.booking_gaps.
+        "require_guest_count": bool(service.require_guest_count) if service else False,
+        "require_performer_count": bool(service.require_performer_count) if service else False,
         # What the client said when requesting this — shown to the vendor
         # alongside the request, before they accept/decline.
         "client_note": booking.client_note,

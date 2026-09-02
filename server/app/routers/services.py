@@ -84,6 +84,10 @@ class UpdateServiceRequest(BaseModel):
     location: Optional[str] = None
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
+    # Opt-in extras — demand a guest/performer count even when price_unit
+    # doesn't itself need one. Additive only; see Service model comment.
+    require_guest_count: Optional[bool] = None
+    require_performer_count: Optional[bool] = None
 
     @field_validator("price_unit")
     @classmethod
@@ -122,6 +126,10 @@ class CreateServiceRequest(BaseModel):
     location: Optional[str] = None
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
+    # Opt-in extras — demand a guest/performer count even when price_unit
+    # doesn't itself need one. Additive only; see Service model comment.
+    require_guest_count: bool = False
+    require_performer_count: bool = False
 
     @field_validator("price_unit")
     @classmethod
@@ -171,6 +179,8 @@ def create_service_route(
             location=body.location,
             venue_latitude=body.venue_latitude,
             venue_longitude=body.venue_longitude,
+            require_guest_count=body.require_guest_count,
+            require_performer_count=body.require_performer_count,
             db=db,
         )
     except ServiceError as e:

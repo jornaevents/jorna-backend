@@ -120,6 +120,10 @@ def _booking_summary(
         "date_end": booking.date_end,
         "guest_count": booking.guest_count,
         "performer_count": booking.performer_count,
+        # Denormalized from the service so a client can run its own gap-check
+        # (bookingGaps()) against the booking alone — see plan_readiness.booking_gaps.
+        "require_guest_count": bool(service.require_guest_count) if service else False,
+        "require_performer_count": bool(service.require_performer_count) if service else False,
         # What the client said when requesting this — see BookingCreate.client_note.
         "client_note": booking.client_note,
         "time_start": booking.time_start,
