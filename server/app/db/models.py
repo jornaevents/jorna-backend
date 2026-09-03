@@ -60,6 +60,11 @@ class User(Base):
     open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
     flexible_on_location = Column(Boolean, nullable=False, default=False)
 
+    # Where the message-digest sweep left off — a message is only ever in one
+    # digest, the next one after it arrives, so the sweep needs to know per
+    # user what "since last time" means. Null until their first digest.
+    last_message_digest_at = Column(DateTime, nullable=True)
+
 
 class PushToken(Base):
     """A device's FCM registration token for one user.

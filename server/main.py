@@ -185,6 +185,12 @@ _ESCROW_RELEASE_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 # minutes" arriving with ten to go is worse than useless to somebody who still
 # has to park.
 _CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
+# Batched, not per-message — a message is only ever in the next digest after
+# it arrives, so a shorter interval only means someone waits less between
+# a message landing and their digest catching it. 20 minutes is short enough
+# that the digest still reads as "new," long enough that a real conversation
+# reads as one email rather than several.
+_MESSAGE_DIGEST_INTERVAL_SECONDS = 20 * 60
 
 
 async def _periodic_token_cleanup():
@@ -249,6 +255,27 @@ async def _periodic_checkin_reminders():
         await asyncio.sleep(_CHECKIN_REMINDER_INTERVAL_SECONDS)
 
 
+async def _periodic_message_digests():
+    """Email anyone with unread messages a summary, every twenty minutes.
+
+    Same shape as the sweeps above — own session per pass, failures logged
+    rather than fatal. Idempotent through each user's own
+    last_message_digest_at, which the sweep advances whether or not it found
+    anything to send: a user with nothing new costs one cheap query, not a
+    resend attempt every pass.
+    """
+    from app.db.database import SessionLocal
+    from app.services.message_digest_service import send_due_digests
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                send_due_digests(db=session)
+        except Exception as exc:
+            logger.warning("Message digest sweep failed: %s", exc)
+        await asyncio.sleep(_MESSAGE_DIGEST_INTERVAL_SECONDS)
+
+
 # ── App setup ─────────────────────────────────────────────────────────
 
 
@@ -310,11 +337,12 @@ async def lifespan(app: FastAPI):
                     INITIAL_ADMIN_EMAIL,
                 )
 
-    # Start the daily sweeps.
+    # Start the background sweeps.
     background = [
         asyncio.create_task(_periodic_token_cleanup()),
         asyncio.create_task(_periodic_escrow_release()),
         asyncio.create_task(_periodic_checkin_reminders()),
+        asyncio.create_task(_periodic_message_digests()),
     ]
 
     yield
