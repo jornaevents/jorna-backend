@@ -85,6 +85,14 @@ def test_health_check():
     assert response.json()["status"] == "ok"
 
 
+def test_google_site_verification_file():
+    """Google Search Console's HTML-file domain-verification method — the
+    exact filename and body content are what Search Console checks."""
+    response = client.get("/googleec2daeb88a212390.html")
+    assert response.status_code == 200
+    assert response.text == "google-site-verification: googleec2daeb88a212390.html"
+
+
 def test_register_user():
     response = client.post(
         "/auth/register",

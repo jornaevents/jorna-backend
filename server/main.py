@@ -23,7 +23,7 @@ from app.observability import init_sentry
 init_sentry()
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -517,6 +517,19 @@ def health(db: Session = Depends(get_db)):
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok"}
+
+
+@app.get("/googleec2daeb88a212390.html", include_in_schema=False)
+def google_site_verification():
+    """Proves Jorna controls this Railway subdomain, via Google Search
+    Console's HTML-file method — DNS verification isn't an option here,
+    since Railway (not Jorna) owns up.railway.app's DNS. Required before
+    events().watch() (Google Calendar push notifications,
+    calendar_service.watch_calendar) will send anything to this domain.
+    One static file per verified domain; safe to leave in place
+    indefinitely once verified.
+    """
+    return PlainTextResponse("google-site-verification: googleec2daeb88a212390.html")
 
 
 @app.post("/auth/register")
