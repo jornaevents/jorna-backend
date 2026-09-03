@@ -13,10 +13,10 @@ Startup (`lifespan()` in `main.py`) validates required env vars are set
 (`SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` — the app refuses
 to boot without these), bootstraps `INITIAL_ADMIN_EMAIL` as an admin if set,
 creates tables directly (`Base.metadata.create_all`) when running on SQLite
-(local/test only — Postgres uses Alembic instead), and starts three
+(local/test only — Postgres uses Alembic instead), and starts four
 background `asyncio` sweeps that run for the life of the process: expired
-token cleanup (daily), escrow auto-release (daily), and check-in reminder
-emails (every 5 minutes).
+token cleanup (daily), escrow auto-release (daily), check-in reminder emails
+(every 5 minutes), and message-digest emails (every 20 minutes).
 
 ## Database & migrations
 
