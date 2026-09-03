@@ -253,6 +253,12 @@ class Booking(Base):
     # a manual resend into it would mean a client nudging a vendor early had
     # switched off the real reminder by doing them a favour.
     checkin_reminder_resent_at = Column(DateTime, nullable=True)
+    # This booking's event on the vendor's own Google Calendar, if one has
+    # been written back — null until approval creates it, cleared again once
+    # the booking ends (declined, cancelled, refunded). The one field
+    # calendar_service needs to tell "create" from "update" from "nothing to
+    # delete."
+    google_event_id = Column(String(255), nullable=True)
 
 
 class Bundle(Base):

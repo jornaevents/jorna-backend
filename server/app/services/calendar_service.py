@@ -14,11 +14,12 @@ from datetime import datetime, timedelta
 # because we only use the calendar scope — the extra ones come from Google automatically.
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
+from googleapiclient.errors import HttpError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import SECRET_KEY
-from app.db.models import Vendor, VendorAvailability, Booking
+from app.db.models import Bundle, Service, Vendor, VendorAvailability, Booking
 from app.utils.calendar import (
     get_google_auth_flow,
     create_google_calendar_service,
@@ -172,6 +173,127 @@ def has_calendar_write_access(vendor: Vendor) -> bool:
     return bool(vendor.google_access_token) and WRITE_SCOPE in (
         vendor.google_granted_scopes or ""
     )
+
+
+# ── Write-back ────────────────────────────────────────────────────────
+#
+# Jorna → the vendor's own Google Calendar, one event per approved booking.
+# Both functions are best-effort by the same contract as every other
+# best-effort write in this codebase (post_offer_message, notify_*): a
+# calendar write failing must never fail the booking action that triggered
+# it, so every call site wraps the whole body and only logs.
+
+
+def _booking_datetimes(booking: Booking) -> tuple[datetime, datetime] | None:
+    """Same construction get_vendor_availability uses for internal busy
+    blocks (booking_service.get_vendor_availability) — treats the stored
+    wall-clock hours as UTC. None when the hours aren't real yet ("TBD" or
+    unset): a calendar event needs actual times, and guessing an all-day
+    span here would tell the vendor something the booking hasn't said.
+    """
+    last_day = booking.date_end or booking.date_iso
+    try:
+        start = datetime.fromisoformat(f"{booking.date_iso}T{booking.time_start}:00+00:00")
+        end = datetime.fromisoformat(f"{last_day}T{booking.time_end}:00+00:00")
+        if end <= start:
+            end += timedelta(days=1)
+        return start, end
+    except (ValueError, TypeError):
+        return None
+
+
+def sync_booking_to_calendar(booking: Booking, db: Session) -> None:
+    """Create or update this booking as an event on the vendor's own Google
+    Calendar. No-ops silently if the vendor isn't connected, connected
+    read-only, or the booking has no real hours yet — none of those are
+    errors, just nothing to do.
+    """
+    try:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+        if not vendor or not has_calendar_write_access(vendor):
+            return
+
+        when = _booking_datetimes(booking)
+        if when is None:
+            return
+        start, end = when
+
+        service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+        bundle = (
+            db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+            if booking.bundle_id
+            else None
+        )
+        event_name = (bundle.event_name if bundle else None) or "Jorna booking"
+        summary = f"{event_name} — {service.name}" if service else event_name
+
+        body = {
+            "summary": summary,
+            "description": "Booked through Jorna.",
+            "start": {"dateTime": start.isoformat()},
+            "end": {"dateTime": end.isoformat()},
+        }
+        if booking.location:
+            body["location"] = booking.location
+
+        gcal, creds = create_google_calendar_service(
+            vendor.google_access_token, vendor.google_refresh_token
+        )
+        calendar_id = vendor.calendar_id or "primary"
+
+        if booking.google_event_id:
+            created = gcal.events().update(
+                calendarId=calendar_id, eventId=booking.google_event_id, body=body
+            ).execute()
+        else:
+            created = gcal.events().insert(calendarId=calendar_id, body=body).execute()
+            booking.google_event_id = created.get("id")
+
+        if creds.token and creds.token != vendor.google_access_token:
+            vendor.google_access_token = creds.token
+
+        db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Couldn't sync booking %s to Google Calendar: %s", booking.booking_id, exc
+        )
+
+
+def remove_booking_from_calendar(booking: Booking, db: Session) -> None:
+    """Delete this booking's event, if write-back ever created one. Safe to
+    call on a booking that never had one (no-op) or whose vendor has since
+    disconnected (just clears the id — nothing to delete against)."""
+    if not booking.google_event_id:
+        return
+    try:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+        if not vendor or not vendor.google_access_token:
+            booking.google_event_id = None
+            db.commit()
+            return
+
+        gcal, creds = create_google_calendar_service(
+            vendor.google_access_token, vendor.google_refresh_token
+        )
+        calendar_id = vendor.calendar_id or "primary"
+        try:
+            gcal.events().delete(
+                calendarId=calendar_id, eventId=booking.google_event_id
+            ).execute()
+        except HttpError as exc:
+            # Already gone — deleted by hand on the vendor's side, say — is
+            # the outcome this call wanted anyway, not a failure of it.
+            if exc.resp.status != 404:
+                raise
+
+        if creds.token and creds.token != vendor.google_access_token:
+            vendor.google_access_token = creds.token
+        booking.google_event_id = None
+        db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Couldn't remove booking %s from Google Calendar: %s", booking.booking_id, exc
+        )
 
 
 # ── Availability ──────────────────────────────────────────────────────

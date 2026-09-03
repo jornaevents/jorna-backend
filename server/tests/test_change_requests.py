@@ -257,6 +257,36 @@ def test_accept_moves_the_booking(plan):
     assert plan["bookings"][0].date_iso == NEW_DATE
 
 
+def test_accepting_updates_the_vendors_calendar_event(plan, mocker):
+    """The booking already has a Google event (approval created it) — a
+    reschedule acceptance should move it, not leave it on the old date."""
+    db = plan["db"]
+    booking = plan["bookings"][0]
+    vendor, _, _ = plan["vendors"][0]
+    vendor.google_access_token = "tok"
+    vendor.google_refresh_token = "refresh"
+    vendor.google_granted_scopes = "https://www.googleapis.com/auth/calendar.events"
+    booking.google_event_id = "evt_already_there"
+    db.commit()
+
+    events = mocker.MagicMock()
+    events.update.return_value.execute.return_value = {"id": "evt_already_there"}
+    gcal = mocker.MagicMock()
+    gcal.events.return_value = events
+    creds = mocker.MagicMock()
+    creds.token = "tok"
+    mocker.patch(
+        "app.services.calendar_service.create_google_calendar_service",
+        return_value=(gcal, creds),
+    )
+
+    _propose(plan)
+    _answer(plan, 0, accept=True)
+
+    events.update.assert_called_once()
+    events.insert.assert_not_called()
+
+
 def test_decline_leaves_it_alone(plan):
     db = plan["db"]
     _propose(plan)

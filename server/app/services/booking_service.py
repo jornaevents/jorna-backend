@@ -1047,6 +1047,18 @@ def update_booking_status(
             )
             db.rollback()
 
+    # The vendor's own Google Calendar, if they're connected with write
+    # access — same best-effort contract as the notification dispatch just
+    # below: never lets a calendar problem fail the status change itself.
+    if status_str == BookingStatus.APPROVED.value:
+        from app.services.calendar_service import sync_booking_to_calendar
+
+        sync_booking_to_calendar(booking, db)
+    elif status_str == BookingStatus.REJECTED.value and booking.google_event_id:
+        from app.services.calendar_service import remove_booking_from_calendar
+
+        remove_booking_from_calendar(booking, db)
+
     client, vendor_obj, vendor_user, service = _get_booking_parties(db, booking)
     _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     _event_name = (_bundle.event_name if _bundle else None) or "Event"
