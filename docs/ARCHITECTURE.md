@@ -13,10 +13,12 @@ Startup (`lifespan()` in `main.py`) validates required env vars are set
 (`SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` — the app refuses
 to boot without these), bootstraps `INITIAL_ADMIN_EMAIL` as an admin if set,
 creates tables directly (`Base.metadata.create_all`) when running on SQLite
-(local/test only — Postgres uses Alembic instead), and starts four
+(local/test only — Postgres uses Alembic instead), and starts six
 background `asyncio` sweeps that run for the life of the process: expired
 token cleanup (daily), escrow auto-release (daily), check-in reminder emails
-(every 5 minutes), and message-digest emails (every 20 minutes).
+(every 5 minutes), message-digest emails (every 20 minutes), Google Calendar
+push-channel renewal (daily), and a Google Calendar busy-time re-sync safety
+net under that channel (every 4 hours).
 
 ## Database & migrations
 

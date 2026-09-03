@@ -10,10 +10,12 @@ the `/auth/*` routes directly (not split into a router).
 ## `server/main.py`
 
 App entry point. Registers all routers, CORS, security headers, rate
-limiting (`app/limiter.py`), Sentry init, the four background sweeps
+limiting (`app/limiter.py`), Sentry init, the six background sweeps
 (refresh/reset token cleanup, escrow auto-release, check-in reminders,
-message digests — the first two daily, check-in reminders every 5 min,
-message digests every 20 min), and the `/auth/*` endpoints
+message digests, Google Calendar channel renewal, Google Calendar busy-time
+re-sync — the first two daily, check-in reminders every 5 min, message
+digests every 20 min, calendar channel renewal daily, calendar re-sync
+every 4 hours), and the `/auth/*` endpoints
 (register, login, Google sign-in, password reset, profile completion,
 logout). Also owns a handful of non-API HTML "bounce back to the app"
 landing pages Stripe/Google OAuth redirect to (`/payment-complete`,

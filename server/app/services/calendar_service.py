@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # google_auth_oauthlib raises an error if Google returns extra scopes (e.g. openid,
 # userinfo.email) beyond what was explicitly requested. Relaxing this is safe here
@@ -18,13 +18,25 @@ from googleapiclient.errors import HttpError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.config import SECRET_KEY
+from app.config import GOOGLE_CALENDAR_WEBHOOK_URL, SECRET_KEY
 from app.db.models import Bundle, Service, Vendor, VendorAvailability, Booking
 from app.utils.calendar import (
     get_google_auth_flow,
     create_google_calendar_service,
     get_freebusy_schedule,
 )
+
+# How far ahead the busy-block cache reaches. Generous on purpose — the
+# overwhelming majority of browsing and booking happens well inside six
+# months out; a request that reaches past it falls back to a live freebusy
+# call for just that request rather than trying to cache every possible
+# future date range.
+BUSY_CACHE_DAYS_AHEAD = 180
+
+# Google's own cap on how long an events.watch() channel may run before it
+# must be re-created — the renewal sweep re-watches anything closer to this
+# than its own interval, so a channel is never allowed to actually lapse.
+CHANNEL_LIFETIME = timedelta(days=7)
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +168,14 @@ def handle_google_callback(
         db.commit()
     except Exception as e:
         raise CalendarError(400, f"Failed to fetch Google tokens: {str(e)}")
+
+    # Warm the busy-block cache immediately rather than leaving it empty
+    # until the next sweep, and open a push-notification channel so future
+    # changes refresh it without waiting on one. Both best-effort — a vendor
+    # is connected either way; these just decide how fresh the display is
+    # in the meantime.
+    refresh_busy_cache(vendor, db)
+    watch_calendar(vendor, db)
 
     return {"message": "Google Calendar successfully connected"}
 
@@ -296,6 +316,145 @@ def remove_booking_from_calendar(booking: Booking, db: Session) -> None:
         )
 
 
+# ── Busy-block cache + push notifications ────────────────────────────
+#
+# get_vendor_availability used to call Google's freebusy API live on every
+# request. This section keeps a per-vendor cache warm instead, refreshed by
+# whichever of three triggers fires first: a Google push notification (near
+# real-time), the periodic re-sync sweep (a safety net for a missed or
+# lapsed notification), or a request landing past the cached window (a
+# direct live fallback, scoped to just that request).
+
+
+def refresh_busy_cache(vendor: Vendor, db: Session, *, now: datetime | None = None) -> bool:
+    """Re-fetch this vendor's Google busy blocks for the cached window and
+    store them. Best-effort — returns whether it actually refreshed.
+    """
+    if not vendor.google_access_token:
+        return False
+    now = now or datetime.now(timezone.utc)
+    try:
+        service, creds = create_google_calendar_service(
+            vendor.google_access_token, vendor.google_refresh_token
+        )
+        window_end = now + timedelta(days=BUSY_CACHE_DAYS_AHEAD)
+        busy = get_freebusy_schedule(
+            service,
+            now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            window_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        vendor.google_busy_cache = [
+            {"start": b["start"], "end": b["end"]} for b in busy
+        ]
+        vendor.google_busy_synced_at = now
+
+        if creds.token and creds.token != vendor.google_access_token:
+            vendor.google_access_token = creds.token
+
+        db.commit()
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Couldn't refresh Google busy cache for vendor %s: %s", vendor.vendor_id, exc
+        )
+        return False
+
+
+def watch_calendar(vendor: Vendor, db: Session, *, now: datetime | None = None) -> bool:
+    """Ask Google to POST GOOGLE_CALENDAR_WEBHOOK_URL when this vendor's
+    calendar changes. google_channel_id is generated fresh each call — high
+    entropy and never exposed anywhere else, so it doubles as the channel's
+    bearer credential: the webhook handler trusts a POST that quotes it back
+    correctly, the same way a bearer token is trusted. Best-effort — a
+    vendor stays connected and cached either way; this only affects how
+    quickly a change is noticed.
+    """
+    if not vendor.google_access_token:
+        return False
+    now = now or datetime.now(timezone.utc)
+    try:
+        service, creds = create_google_calendar_service(
+            vendor.google_access_token, vendor.google_refresh_token
+        )
+        channel_id = secrets.token_urlsafe(32)
+        calendar_id = vendor.calendar_id or "primary"
+        resp = service.events().watch(
+            calendarId=calendar_id,
+            body={
+                "id": channel_id,
+                "type": "web_hook",
+                "address": GOOGLE_CALENDAR_WEBHOOK_URL,
+            },
+        ).execute()
+
+        vendor.google_channel_id = channel_id
+        vendor.google_channel_resource_id = resp.get("resourceId")
+        # Google returns expiration as a string of milliseconds since epoch;
+        # fall back to our own cap if it's missing rather than leave the
+        # channel with no renewal date at all.
+        expiration_ms = resp.get("expiration")
+        vendor.google_channel_expires_at = (
+            datetime.fromtimestamp(int(expiration_ms) / 1000, tz=timezone.utc)
+            if expiration_ms
+            else now + CHANNEL_LIFETIME
+        )
+
+        if creds.token and creds.token != vendor.google_access_token:
+            vendor.google_access_token = creds.token
+
+        db.commit()
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Couldn't open a Google Calendar watch channel for vendor %s: %s",
+            vendor.vendor_id, exc,
+        )
+        return False
+
+
+def handle_calendar_webhook(*, channel_id: str | None, db: Session) -> None:
+    """A Google push notification arrived. Google's notification carries no
+    diff — "something changed" is the whole message — so this just re-runs
+    the same fetch the periodic sweep does, for the one vendor the channel
+    belongs to.
+    """
+    if not channel_id:
+        return
+    vendor = db.query(Vendor).filter(Vendor.google_channel_id == channel_id).first()
+    if not vendor:
+        # An unknown or since-renewed channel. Google doesn't want an error
+        # back for this — it just means one more notification than the
+        # channel's own lifetime warranted.
+        return
+    refresh_busy_cache(vendor, db)
+
+
+def renew_expiring_channels(*, db: Session, now: datetime | None = None) -> int:
+    """Re-watch every channel expiring soon. Returns how many renewed."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=24)
+    vendors = (
+        db.query(Vendor)
+        .filter(
+            Vendor.google_access_token.isnot(None),
+            Vendor.google_channel_expires_at.isnot(None),
+            Vendor.google_channel_expires_at <= cutoff,
+        )
+        .all()
+    )
+    return sum(1 for vendor in vendors if watch_calendar(vendor, db, now=now))
+
+
+def resync_all_connected_vendors(*, db: Session, now: datetime | None = None) -> int:
+    """Re-pull busy blocks for every connected vendor, regardless of webhook
+    activity — the safety net under the push channel. Returns how many
+    refreshed successfully.
+    """
+    now = now or datetime.now(timezone.utc)
+    vendors = db.query(Vendor).filter(Vendor.google_access_token.isnot(None)).all()
+    return sum(1 for vendor in vendors if refresh_busy_cache(vendor, db, now=now))
+
+
 # ── Availability ──────────────────────────────────────────────────────
 
 
@@ -361,33 +520,58 @@ def get_vendor_availability(
                 continue
         internal_busy.append((bk_start, bk_end))
 
-    # 3. Google Calendar busy blocks
+    # 3. Google Calendar busy blocks — read from the cache watch_calendar's
+    #    push channel and the periodic re-sync sweep keep warm, rather than
+    #    a live API call on every request the way this used to work. Falls
+    #    back to a live fetch, scoped to just this request, when there's no
+    #    cache yet or the request reaches past the cached window.
     google_busy: list[tuple[datetime, datetime]] = []
     google_calendar_connected = bool(vendor.google_access_token)
     google_calendar_error: str | None = None
 
     if vendor.google_access_token:
-        try:
-            service, creds = create_google_calendar_service(
-                vendor.google_access_token, vendor.google_refresh_token
-            )
-            # Ensure full RFC3339 format — Google rejects bare dates like "2026-05-03"
-            rfc_start = start_date if "T" in start_date else f"{start_date}T00:00:00Z"
-            rfc_end = end_date if "T" in end_date else f"{end_date}T23:59:59Z"
-            g_busy = get_freebusy_schedule(service, rfc_start, rfc_end)
-            for busy in g_busy:
-                gb_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
-                gb_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
-                google_busy.append((gb_start, gb_end))
+        req_start = datetime.fromisoformat(
+            start_date if "T" in start_date else f"{start_date}T00:00:00+00:00"
+        )
+        req_end = datetime.fromisoformat(
+            end_date if "T" in end_date else f"{end_date}T23:59:59+00:00"
+        )
+        synced_at = vendor.google_busy_synced_at
+        cache_covers = synced_at is not None and req_end <= synced_at.replace(
+            tzinfo=timezone.utc
+        ) + timedelta(days=BUSY_CACHE_DAYS_AHEAD)
 
-            # Persist refreshed token if it changed
-            if creds.token and creds.token != vendor.google_access_token:
-                vendor.google_access_token = creds.token
-                db.commit()
-                logger.info("Persisted refreshed Google access token for vendor %s", vendor_id)
-        except Exception as exc:
-            logger.warning("Google Calendar fetch failed for vendor %s: %s", vendor_id, exc)
-            google_calendar_error = f"Google Calendar error: {exc}"
+        if cache_covers:
+            for item in vendor.google_busy_cache or []:
+                try:
+                    gb_start = datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
+                    gb_end = datetime.fromisoformat(item["end"].replace("Z", "+00:00"))
+                except (KeyError, ValueError):
+                    continue
+                if gb_end >= req_start and gb_start <= req_end:
+                    google_busy.append((gb_start, gb_end))
+        else:
+            try:
+                service, creds = create_google_calendar_service(
+                    vendor.google_access_token, vendor.google_refresh_token
+                )
+                # Ensure full RFC3339 format — Google rejects bare dates like "2026-05-03"
+                rfc_start = start_date if "T" in start_date else f"{start_date}T00:00:00Z"
+                rfc_end = end_date if "T" in end_date else f"{end_date}T23:59:59Z"
+                g_busy = get_freebusy_schedule(service, rfc_start, rfc_end)
+                for busy in g_busy:
+                    gb_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
+                    gb_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
+                    google_busy.append((gb_start, gb_end))
+
+                # Persist refreshed token if it changed
+                if creds.token and creds.token != vendor.google_access_token:
+                    vendor.google_access_token = creds.token
+                    db.commit()
+                    logger.info("Persisted refreshed Google access token for vendor %s", vendor_id)
+            except Exception as exc:
+                logger.warning("Google Calendar fetch failed for vendor %s: %s", vendor_id, exc)
+                google_calendar_error = f"Google Calendar error: {exc}"
 
     return {
         "vendor_id": vendor_id,

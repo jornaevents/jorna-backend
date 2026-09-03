@@ -33,6 +33,15 @@ GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv(
 # Where the backend redirects the vendor's browser after OAuth completes.
 FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# Where Google POSTs a push notification when a watched calendar changes.
+# Must be a publicly reachable HTTPS URL — Railway's own deployment URL
+# satisfies this with no extra infra. Google requires this to be set on the
+# same OAuth-verified domain as the app, same as the redirect URI above.
+GOOGLE_CALENDAR_WEBHOOK_URL: str = os.getenv(
+    "GOOGLE_CALENDAR_WEBHOOK_URL",
+    "http://localhost:8000/vendors/google-calendar/webhook",
+)
+
 # Base URL of the Jorna web app. Used to build Stripe Checkout return URLs for
 # browser clients, which need to land back in the web app rather than on the
 # iOS deep-link bridge page. Not client-supplied — that would be an open redirect.
