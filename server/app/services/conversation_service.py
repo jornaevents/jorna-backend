@@ -479,6 +479,40 @@ def post_offer_message(
         logger.warning("Couldn't post offer message for booking %s: %s", booking_id, exc)
 
 
+def post_system_message(
+    *, booking_id: str, sender_user_id: str, content: str, meta: dict | None, db: Session
+) -> None:
+    """Write an event-log line into the booking's thread — a reschedule
+    proposed, accepted, declined, withdrawn, or expired.
+
+    Same best-effort shape as post_offer_message and the same reasoning:
+    change_request_service owns the reschedule itself, this owns only the
+    sentence about it, and that sentence failing to post must never fail
+    the reschedule action that triggered it. `sender_user_id` attributes
+    the line (whoever's action caused it) but nothing renders it as coming
+    from them — the frontend shows kind="system" as an unattributed,
+    centered line, not a chat bubble.
+    """
+    try:
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        if not booking:
+            return
+        thread = open_booking_thread(
+            booking_id=booking_id, caller_user_id=sender_user_id, db=db
+        )
+        send_group_message(
+            conversation_id=thread["conversation_id"],
+            content=content,
+            caller_user_id=sender_user_id,
+            db=db,
+            kind="system",
+            meta=meta,
+            skip_limits=True,
+        )
+    except Exception as exc:
+        logger.warning("Couldn't post system message for booking %s: %s", booking_id, exc)
+
+
 # ── Membership updates ────────────────────────────────────────────────
 
 

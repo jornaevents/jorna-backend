@@ -236,6 +236,10 @@ def propose(
         db.refresh(cr)
 
     _notify(created, db, kind="proposed")
+    for cr in created:
+        _post_reschedule_message(
+            cr, action="proposed", sender_user_id=caller_user_id, db=db, message=message
+        )
     return {"requests": [_dict(cr) for cr in created], "count": len(created)}
 
 
@@ -283,6 +287,9 @@ def respond(
         cr.resolved_at = _now()
         db.commit()
         _notify([cr], db, kind="declined")
+        _post_reschedule_message(
+            cr, action="declined", sender_user_id=caller_user_id, db=db, message=message
+        )
         return _dict(cr, booking)
 
     # The same guard approval uses. Excluding this booking, because its own
@@ -326,12 +333,18 @@ def respond(
         cr.response_message = message or None
         db.commit()
         _notify([cr], db, kind="needs_consent")
+        _post_reschedule_message(
+            cr, action="needs_consent", sender_user_id=caller_user_id, db=db, message=message
+        )
         return _dict(cr, booking, service)
 
     _apply(cr, booking, service, fields, new_cents, db)
     cr.response_message = message or None
     db.commit()
     _notify([cr], db, kind="accepted")
+    _post_reschedule_message(
+        cr, action="accepted", sender_user_id=caller_user_id, db=db, message=message
+    )
     return _dict(cr, booking, service)
 
 
@@ -455,6 +468,7 @@ def consent(*, change_request_id: str, caller_user_id: str, db: Session) -> dict
     db.commit()
 
     _notify([cr], db, kind="accepted")
+    _post_reschedule_message(cr, action="consented", sender_user_id=caller_user_id, db=db)
     return {
         **_dict(cr, booking, service),
         "additional_cents": max(difference, 0),
@@ -495,6 +509,8 @@ def withdraw(*, bundle_id: str, caller_user_id: str, db: Session) -> dict:
         cr.status = WITHDRAWN
         cr.resolved_at = now
     db.commit()
+    for cr in open_requests:
+        _post_reschedule_message(cr, action="withdrawn", sender_user_id=caller_user_id, db=db)
     return {"withdrawn": len(open_requests)}
 
 
@@ -591,10 +607,65 @@ def expire_due(*, db: Session, now: datetime | None = None) -> dict:
         cr.resolved_at = now
     if stale:
         db.commit()
+    # Attributed to whoever proposed it — always the client in v1 (see
+    # ChangeRequest.proposed_by) — worded impersonally in _reschedule_line
+    # so it doesn't read as them announcing their own request's expiry.
+    for cr in stale:
+        _post_reschedule_message(cr, action="expired", sender_user_id=cr.proposed_by, db=db)
     return {"expired": [cr.change_request_id for cr in stale]}
 
 
 # ── Notifications ─────────────────────────────────────────────────────
+
+
+def _reschedule_line(action: str, message: str | None = None) -> str:
+    """The sentence a system message carries into the booking's thread.
+
+    Same convention as negotiation_service._offer_line: a short lead, plus
+    whoever acted's own note when there is one — so a thread reader gets
+    the same "why", not just the "what", as the push notification does.
+    """
+    lead = {
+        "proposed": "Proposed a new date for this booking",
+        "accepted": "Accepted the new date",
+        "declined": "Declined the reschedule",
+        "needs_consent": "The new date costs more — waiting on the client to approve",
+        "consented": "Approved the new price. The move is final",
+        "withdrawn": "Withdrew the reschedule request",
+        "expired": "The reschedule request expired without a response",
+    }.get(action, action)
+    return f"{lead} — {message.strip()}" if message and message.strip() else lead
+
+
+def _post_reschedule_message(
+    cr: "ChangeRequest", *, action: str, sender_user_id: str, db: Session,
+    message: str | None = None,
+) -> None:
+    """Write this reschedule event into the booking's own thread.
+
+    Best-effort — a failure here must never surface as a failure of the
+    reschedule action itself. post_system_message already swallows its own
+    errors, but this wraps the call too: _reschedule_line or the import
+    itself failing must not propagate any more than a failure inside
+    post_system_message would. Local import: conversation_service pulls in
+    more of the app than this module needs at load time, same reasoning as
+    the other cross-service imports below.
+    """
+    try:
+        from app.services.conversation_service import post_system_message
+
+        post_system_message(
+            booking_id=cr.booking_id,
+            sender_user_id=sender_user_id,
+            content=_reschedule_line(action, message),
+            meta={"change_request_id": cr.change_request_id, "action": action},
+            db=db,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Couldn't post reschedule message for booking %s (%s): %s",
+            cr.booking_id, action, exc,
+        )
 
 
 def _notify(requests: list[ChangeRequest], db: Session, *, kind: str) -> None:
