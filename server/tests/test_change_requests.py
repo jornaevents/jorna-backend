@@ -16,7 +16,18 @@ from dotenv import load_dotenv
 load_dotenv()
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_chatbot.db")
 
-from app.db.models import Booking, Bundle, ChangeRequest, Service, User, Vendor
+from app.db.models import (
+    Booking,
+    Bundle,
+    ChangeRequest,
+    Conversation,
+    ConversationMember,
+    GroupMessage,
+    GroupMessageRead,
+    Service,
+    User,
+    Vendor,
+)
 from app.models.schemas import BookingStatus
 from app.services import change_request_service as crs
 from app.services.change_request_service import ChangeRequestError
@@ -84,6 +95,31 @@ def plan():
     # what a search finds. Reverse order, so no foreign key is orphaned.
     db.rollback()
     booking_ids = [b.booking_id for b in bookings]
+    # propose/respond/withdraw/expire_due each open (and post into) the
+    # booking's own thread now — clean those up too, same reasoning as
+    # everything else here: real rows in a DB shared across test modules.
+    conv_ids = [
+        c.conversation_id
+        for c in db.query(Conversation).filter(Conversation.booking_id.in_(booking_ids)).all()
+    ]
+    if conv_ids:
+        msg_ids = [
+            m.message_id
+            for m in db.query(GroupMessage).filter(GroupMessage.conversation_id.in_(conv_ids)).all()
+        ]
+        if msg_ids:
+            db.query(GroupMessageRead).filter(
+                GroupMessageRead.message_id.in_(msg_ids)
+            ).delete(synchronize_session=False)
+        db.query(GroupMessage).filter(
+            GroupMessage.conversation_id.in_(conv_ids)
+        ).delete(synchronize_session=False)
+        db.query(ConversationMember).filter(
+            ConversationMember.conversation_id.in_(conv_ids)
+        ).delete(synchronize_session=False)
+        db.query(Conversation).filter(
+            Conversation.conversation_id.in_(conv_ids)
+        ).delete(synchronize_session=False)
     db.query(ChangeRequest).filter(
         ChangeRequest.booking_id.in_(booking_ids)
     ).delete(synchronize_session=False)
@@ -539,3 +575,102 @@ def test_accepting_does_not_unlock_a_refund(plan, mocker):
             booking_id=plan["bookings"][0].booking_id,
             caller_user_id=plan["client"].user_id, db=plan["db"],
         )
+
+
+# ── Posting into the booking's own conversation ─────────────────────────
+
+
+def _thread_messages(plan, index):
+    """Every kind="system" message in this booking's own thread, oldest first —
+    opening the thread is idempotent, so this is a safe read."""
+    from app.services.conversation_service import open_booking_thread
+
+    db = plan["db"]
+    booking = plan["bookings"][index]
+    thread = open_booking_thread(
+        booking_id=booking.booking_id,
+        caller_user_id=plan["client"].user_id,
+        db=db,
+    )
+    return (
+        db.query(GroupMessage)
+        .filter(
+            GroupMessage.conversation_id == thread["conversation_id"],
+            GroupMessage.kind == "system",
+        )
+        .order_by(GroupMessage.created_at.asc())
+        .all()
+    )
+
+
+def test_proposing_posts_into_each_bookings_thread(plan):
+    _propose(plan)
+    for index in (0, 1):
+        messages = _thread_messages(plan, index)
+        assert len(messages) == 1
+        assert messages[0].content == "Proposed a new date for this booking"
+        assert messages[0].sender_id == plan["client"].user_id
+
+
+def test_accepting_posts_into_the_thread(plan):
+    _propose(plan)
+    _answer(plan, 0, accept=True)
+    messages = _thread_messages(plan, 0)
+    assert [m.content for m in messages] == [
+        "Proposed a new date for this booking",
+        "Accepted the new date",
+    ]
+    assert messages[1].sender_id == plan["vendors"][0][1].user_id
+
+
+def test_declining_posts_into_the_thread(plan):
+    _propose(plan)
+    _answer(plan, 0, accept=False, message="Already booked that weekend.")
+    messages = _thread_messages(plan, 0)
+    assert messages[-1].content == "Declined the reschedule — Already booked that weekend."
+
+
+def test_withdrawing_posts_into_every_open_threads(plan):
+    _propose(plan)
+    _answer(plan, 0, accept=False)  # one already settled — should get no withdraw line
+    crs.withdraw(
+        bundle_id=plan["bundle"].bundle_id,
+        caller_user_id=plan["client"].user_id, db=plan["db"],
+    )
+    assert [m.content for m in _thread_messages(plan, 0)] == [
+        "Proposed a new date for this booking",
+        "Declined the reschedule",
+    ]
+    assert [m.content for m in _thread_messages(plan, 1)] == [
+        "Proposed a new date for this booking",
+        "Withdrew the reschedule request",
+    ]
+
+
+def test_expiring_posts_into_the_thread_attributed_to_the_proposer(plan):
+    db = plan["db"]
+    _propose(plan)
+    for cr in _requests(plan):
+        cr.created_at = datetime.now(timezone.utc) - timedelta(
+            days=crs.RESPONSE_WINDOW_DAYS, hours=1
+        )
+    db.commit()
+    crs.expire_due(db=db)
+
+    messages = _thread_messages(plan, 0)
+    assert messages[-1].content == "The reschedule request expired without a response"
+    # proposed_by is always the client in v1 — worded impersonally so this
+    # doesn't read as the client announcing their own request's expiry.
+    assert messages[-1].sender_id == plan["client"].user_id
+
+
+def test_a_failed_message_post_does_not_fail_the_reschedule_action(plan, mocker):
+    """post_system_message is best-effort — matching post_offer_message's own
+    contract, since the reschedule itself must never fail because a chat
+    message didn't send."""
+    mocker.patch(
+        "app.services.conversation_service.post_system_message",
+        side_effect=RuntimeError("boom"),
+    )
+    result = _propose(plan)
+    assert result["count"] == 2
