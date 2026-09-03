@@ -403,6 +403,13 @@ def _apply(
     except Exception as exc:  # noqa: BLE001
         logger.warning("change request: venue re-sync failed: %s", exc)
 
+    # The booking already has a Google event (it was approved to get a
+    # change request in the first place) — this becomes an update, same
+    # best-effort contract, own internal try/except.
+    from app.services.calendar_service import sync_booking_to_calendar
+
+    sync_booking_to_calendar(booking, db)
+
 
 def _refund_difference(booking: Booking, amount_cents: int) -> None:
     """Return what a shortened booking no longer costs.
