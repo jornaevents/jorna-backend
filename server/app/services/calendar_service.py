@@ -146,12 +146,32 @@ def handle_google_callback(
         vendor.google_access_token = credentials.token
         vendor.google_refresh_token = credentials.refresh_token
         vendor.calendar_id = "primary"
+        # What Google actually granted, not what SCOPES asked for — a vendor
+        # can decline part of the consent screen, and Google never widens a
+        # standing grant on its own later. This is the one place a token is
+        # minted, so it's the one place that can know.
+        vendor.google_granted_scopes = " ".join(credentials.scopes or [])
 
         db.commit()
     except Exception as e:
         raise CalendarError(400, f"Failed to fetch Google tokens: {str(e)}")
 
     return {"message": "Google Calendar successfully connected"}
+
+
+# ── Scope check ───────────────────────────────────────────────────────
+
+WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+
+
+def has_calendar_write_access(vendor: Vendor) -> bool:
+    """Whether this vendor's own Google grant covers writing events —
+    checked, never assumed, since SCOPES describes what's requested on a
+    fresh connect, not what any particular vendor's token actually carries.
+    """
+    return bool(vendor.google_access_token) and WRITE_SCOPE in (
+        vendor.google_granted_scopes or ""
+    )
 
 
 # ── Availability ──────────────────────────────────────────────────────

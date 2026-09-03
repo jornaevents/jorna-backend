@@ -121,6 +121,13 @@ class Vendor(Base):
     google_access_token = Column(String(512), nullable=True)
     google_refresh_token = Column(String(512), nullable=True)
     calendar_id = Column(String(255), nullable=True)
+    # Space-separated scope string Google actually granted on the OAuth
+    # callback — not assumed from what was requested. Google doesn't
+    # silently widen a standing grant when the app starts asking for more,
+    # so a vendor who connected before a scope existed has this missing it;
+    # every write path checks for "calendar.events" here before attempting
+    # anything; a connect since then reads this as the source of truth.
+    google_granted_scopes = Column(Text, nullable=True)
 
     # Stripe Connect — set during vendor onboarding
     stripe_account_id = Column(String(255), nullable=True)

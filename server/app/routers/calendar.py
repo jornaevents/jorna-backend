@@ -16,6 +16,7 @@ from app.services.calendar_service import (
     get_google_auth_url as svc_get_google_auth_url,
     handle_google_callback as svc_handle_google_callback,
     get_vendor_availability as svc_get_vendor_availability,
+    has_calendar_write_access,
 )
 
 router = APIRouter(prefix="/vendors", tags=["calendar"])
@@ -134,7 +135,13 @@ def calendar_status(
     answers it in the terms the question was asked.
     """
     vendor = _own_vendor(vendor_id, current_user, db)
-    return {"google_calendar_connected": bool(vendor.google_access_token)}
+    return {
+        "google_calendar_connected": bool(vendor.google_access_token),
+        # False for a vendor connected before this scope existed — Google
+        # doesn't widen a standing grant, so they need to reconnect before
+        # bookings can start writing to their calendar.
+        "google_calendar_write_enabled": has_calendar_write_access(vendor),
+    }
 
 
 @router.get("/{vendor_id}/availability", summary="Get vendor open time slots")

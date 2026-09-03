@@ -11,7 +11,18 @@ logger = logging.getLogger(__name__)
 # You will need to download your Google OAuth Client ID JSON file and place it in the server directory
 # Configure these for your environment
 CLIENT_SECRETS_FILE = os.environ.get("GOOGLE_CLIENT_SECRETS_FILE", "client_secret.json")
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+# .readonly powers the existing busy-time display; .events is the narrowest
+# scope that lets Jorna create/update/delete the one event per booking it
+# writes back — not full calendar management. A vendor who connected before
+# .events was requested holds a token scoped to .readonly only; Google does
+# not silently upgrade a standing grant, so calendar_service persists exactly
+# what was granted (Vendor.google_granted_scopes) and every write path checks
+# it before attempting anything, rather than assuming this list is what any
+# given vendor's token actually carries.
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/calendar.events',
+]
 
 
 def _load_client_config() -> dict | None:

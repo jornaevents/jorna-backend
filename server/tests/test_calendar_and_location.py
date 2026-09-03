@@ -33,6 +33,10 @@ def test_google_auth_callback_success(mocker):
     mock_flow.return_value = mock_flow_instance
     mock_flow_instance.credentials.token = "fake_access_token"
     mock_flow_instance.credentials.refresh_token = "fake_refresh_token"
+    mock_flow_instance.credentials.scopes = [
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+    ]
 
     state = _make_state(vendor_id)
     # Don't follow the redirect — the callback redirects to the frontend
@@ -47,6 +51,7 @@ def test_google_auth_callback_success(mocker):
     vendor_fresh = db2.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     assert vendor_fresh.google_access_token == "fake_access_token"
     assert vendor_fresh.google_refresh_token == "fake_refresh_token"
+    assert "calendar.events" in vendor_fresh.google_granted_scopes
     db2.close()
 
 
@@ -275,7 +280,47 @@ def test_calendar_status_is_not_public():
 
     ok = client.get(f"/vendors/{vendor_id}/calendar-status", headers=headers)
     assert ok.status_code == 200
-    assert ok.json() == {"google_calendar_connected": False}
+    assert ok.json() == {
+        "google_calendar_connected": False,
+        "google_calendar_write_enabled": False,
+    }
+
+
+def test_write_enabled_is_false_for_a_readonly_grant():
+    """A vendor connected before calendar.events existed — Google doesn't
+    widen a standing grant, so they're read-only until they reconnect."""
+    vendor_id, headers = _vendor_with_owner("cal_readonly@test.com")
+    db = TestingSessionLocal()
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    vendor.google_access_token = "tok"
+    vendor.google_granted_scopes = "https://www.googleapis.com/auth/calendar.readonly"
+    db.commit()
+    db.close()
+
+    ok = client.get(f"/vendors/{vendor_id}/calendar-status", headers=headers)
+    assert ok.json() == {
+        "google_calendar_connected": True,
+        "google_calendar_write_enabled": False,
+    }
+
+
+def test_write_enabled_is_true_once_the_events_scope_is_granted():
+    vendor_id, headers = _vendor_with_owner("cal_writable@test.com")
+    db = TestingSessionLocal()
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+    vendor.google_access_token = "tok"
+    vendor.google_granted_scopes = (
+        "https://www.googleapis.com/auth/calendar.readonly "
+        "https://www.googleapis.com/auth/calendar.events"
+    )
+    db.commit()
+    db.close()
+
+    ok = client.get(f"/vendors/{vendor_id}/calendar-status", headers=headers)
+    assert ok.json() == {
+        "google_calendar_connected": True,
+        "google_calendar_write_enabled": True,
+    }
 
 
 def test_callback_returns_a_browser_to_the_web_app(mocker):
@@ -286,6 +331,7 @@ def test_callback_returns_a_browser_to_the_web_app(mocker):
     flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
     flow.return_value.credentials.token = "tok"
     flow.return_value.credentials.refresh_token = "refresh"
+    flow.return_value.credentials.scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
 
     state = _encode_state(vendor_id, "test-code-verifier", "web")
     r = client.get(
@@ -306,6 +352,7 @@ def test_callback_still_returns_ios_to_the_bridge_page(mocker):
     flow = mocker.patch("app.services.calendar_service.get_google_auth_flow")
     flow.return_value.credentials.token = "tok"
     flow.return_value.credentials.refresh_token = "refresh"
+    flow.return_value.credentials.scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
 
     for state in (
         _encode_state(vendor_id, "test-code-verifier", "ios"),
