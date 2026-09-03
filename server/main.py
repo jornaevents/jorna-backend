@@ -191,6 +191,8 @@ _CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
 # that the digest still reads as "new," long enough that a real conversation
 # reads as one email rather than several.
 _MESSAGE_DIGEST_INTERVAL_SECONDS = 20 * 60
+_CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+_CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS = 4 * 60 * 60  # every 4 hours
 
 
 async def _periodic_token_cleanup():
@@ -276,6 +278,43 @@ async def _periodic_message_digests():
         await asyncio.sleep(_MESSAGE_DIGEST_INTERVAL_SECONDS)
 
 
+async def _periodic_calendar_channel_renewal():
+    """Re-watch any Google Calendar push channel expiring within a day.
+
+    Google caps a channel at about a week, so a daily sweep leaves several
+    days of margin against a missed pass — same shape as the sweeps above,
+    own session per pass, failures logged rather than fatal.
+    """
+    from app.db.database import SessionLocal
+    from app.services.calendar_service import renew_expiring_channels
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                renew_expiring_channels(db=session)
+        except Exception as exc:
+            logger.warning("Calendar channel renewal sweep failed: %s", exc)
+        await asyncio.sleep(_CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS)
+
+
+async def _periodic_calendar_busy_resync():
+    """Re-pull busy blocks for every connected vendor, every four hours —
+    the safety net under the push channel above: a missed or lapsed
+    notification is never more than a few hours stale, not silently wrong
+    until someone happens to reconnect.
+    """
+    from app.db.database import SessionLocal
+    from app.services.calendar_service import resync_all_connected_vendors
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                resync_all_connected_vendors(db=session)
+        except Exception as exc:
+            logger.warning("Calendar busy-time resync sweep failed: %s", exc)
+        await asyncio.sleep(_CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS)
+
+
 # ── App setup ─────────────────────────────────────────────────────────
 
 
@@ -343,6 +382,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_periodic_escrow_release()),
         asyncio.create_task(_periodic_checkin_reminders()),
         asyncio.create_task(_periodic_message_digests()),
+        asyncio.create_task(_periodic_calendar_channel_renewal()),
+        asyncio.create_task(_periodic_calendar_busy_resync()),
     ]
 
     yield

@@ -128,6 +128,25 @@ class Vendor(Base):
     # every write path checks for "calendar.events" here before attempting
     # anything; a connect since then reads this as the source of truth.
     google_granted_scopes = Column(Text, nullable=True)
+    # A cached copy of this vendor's Google busy blocks (list of {start, end}
+    # ISO strings), covering roughly the next several months — kept fresh by
+    # a push-notification channel plus a periodic sweep, rather than fetched
+    # live from Google on every /availability request the way it used to be.
+    # Null/stale is never fatal to a read: get_vendor_availability falls back
+    # to a live fetch when the cache is empty or the request reaches past it.
+    google_busy_cache = Column(JSON, nullable=True)
+    google_busy_synced_at = Column(DateTime, nullable=True)
+    # Google Calendar push-notification channel bookkeeping. google_channel_id
+    # doubles as the channel's bearer credential, not just its identifier —
+    # high-entropy and never exposed anywhere else, so a webhook POST quoting
+    # it back is itself sufficient proof it came from the channel this vendor
+    # owns (see calendar_service.watch_calendar). resource_id is what Google's
+    # API needs to address the specific watched resource; expires_at is when
+    # the channel needs renewing (~7 days, Google's own cap for this resource
+    # type).
+    google_channel_id = Column(String(64), nullable=True, unique=True)
+    google_channel_resource_id = Column(String(255), nullable=True)
+    google_channel_expires_at = Column(DateTime, nullable=True)
 
     # Stripe Connect — set during vendor onboarding
     stripe_account_id = Column(String(255), nullable=True)
