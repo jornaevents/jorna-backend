@@ -91,6 +91,29 @@ def _change_request_summary(cr) -> dict | None:
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
+def _refund_preview(booking: Booking) -> dict:
+    """cancellation_split's numbers, shaped for a client that just wants the
+    countdown — pure, so it's cheap to compute for every booking in a list."""
+    from datetime import datetime, timedelta, timezone
+    from app.services.stripe_service import GRACE_HOURS, cancellation_split
+
+    now = datetime.now(timezone.utc)
+    split = cancellation_split(booking, now)
+    confirmed_at = booking.confirmed_at
+    if confirmed_at is not None and confirmed_at.tzinfo is None:
+        confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+    amount = booking.amount_cents or 0
+    return {
+        "full_refund_until": (
+            (confirmed_at + timedelta(hours=GRACE_HOURS)).isoformat() if confirmed_at else None
+        ),
+        "vendor_pct_now": (
+            round(split["vendor_cents"] / amount * 100, 1) if amount else 0.0
+        ),
+        "client_refund_now_cents": split["refund_to_client_cents"],
+    }
+
+
 def _booking_summary(
     booking: Booking,
     service: Service | None,
@@ -142,12 +165,20 @@ def _booking_summary(
         # not vendor-wide. Key name kept for client compatibility.
         "open_to_price_negotiation": service.negotiable if service else False,
         # Vendor-approval timestamp (when the vendor accepted the request).
+        # Also what the 24-hour cancellation grace window runs from — see
+        # stripe_service.cancellation_split.
         "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,
-        # Escrow lifecycle. Clients need these to show the release state honestly:
-        # who still has to confirm, and whether the refund window is open. The
-        # 24-hour refund window runs from paid_at (see request_refund), not from
-        # the vendor's approval.
+        # Escrow lifecycle. Clients need these to show the release state
+        # honestly: who still has to confirm, and (via refund_preview below)
+        # what cancelling would pay out right now.
         "paid_at": booking.paid_at.isoformat() if booking.paid_at else None,
+        # What stripe_service.cancel_booking would pay out this instant — the
+        # same numbers the UI's eligibility countdown reads, computed once
+        # here rather than reimplemented in JS. Only meaningful while there's
+        # something to cancel.
+        "refund_preview": (
+            _refund_preview(booking) if booking.payment_status == "paid" else None
+        ),
         "customer_confirmed_at": (
             booking.customer_confirmed_at.isoformat() if booking.customer_confirmed_at else None
         ),

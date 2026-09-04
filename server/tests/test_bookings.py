@@ -552,11 +552,12 @@ class TestVendorCancellingAnAcceptedBooking:
             self._teardown(db, s); db.close()
 
     @pytest.mark.parametrize(
-        "payment_status", ["processing", "paid", "released", "refunded", "disputed"]
+        "payment_status", ["processing", "released", "refunded", "disputed"]
     )
     def test_money_having_moved_blocks_it(self, payment_status):
         """Including 'processing' — money in flight is the worst moment to walk
-        away, not an exempt one."""
+        away, not an exempt one. 'paid' is the exception now — see
+        test_vendor_cancelling_a_paid_booking_refunds_it below."""
         from app.services.booking_service import BookingError
         from tests.test_api import TestingSessionLocal
 
@@ -568,6 +569,26 @@ class TestVendorCancellingAnAcceptedBooking:
             assert caught.value.status_code == 400
             db.refresh(s["booking"])
             assert s["booking"].status == "approved", "cancelled with money on it"
+        finally:
+            self._teardown(db, s); db.close()
+
+    def test_vendor_cancelling_a_paid_booking_refunds_it(self, mocker):
+        """A vendor backing out of an accepted, paid booking is no longer
+        blocked outright — it always triggers a full refund to the client,
+        no ramp, since the vendor is the one breaking the commitment."""
+        from tests.test_api import TestingSessionLocal
+
+        refund = mocker.patch("stripe.Refund.create")
+        db = TestingSessionLocal()
+        s = self._setup(db, payment_status="paid")
+        s["booking"].payment_intent_id = "pi_vendor_cancel_test"
+        db.commit()
+        try:
+            self._cancel(db, s)
+            refund.assert_called_once()
+            db.refresh(s["booking"])
+            assert s["booking"].status == "rejected"
+            assert s["booking"].payment_status == "refunded"
         finally:
             self._teardown(db, s); db.close()
 

@@ -57,11 +57,16 @@ All in `app/services/stripe_service.py`. Shape of the flow:
 5. If a client never confirms, `auto_release_due` (called by the daily sweep
    in `main.py`) releases funds automatically after a deadline, so a vendor
    isn't held hostage by an unresponsive client.
-6. Disputes (`raise_dispute`/`resolve_dispute`) and refunds
-   (`request_refund`, `refund_after_failed_reschedule`) are separate paths
+6. Disputes (`raise_dispute`/`resolve_dispute`) and cancellations
+   (`cancel_booking`, `refund_after_failed_reschedule`) are separate paths
    that can interrupt the above at various points — read `docs/DECISIONS.md`
    for the reasoning behind specific edge cases (failed transfers, mid-flow
    cancellations) rather than assuming the happy path above is the only one.
+   `cancel_booking` is a full refund within `GRACE_HOURS` (24h) of the
+   vendor's acceptance; after that, up to the day before the event, the
+   client gets nothing back and the payment splits between the platform and
+   the vendor on a linear ramp instead (`cancellation_split` — 99%/1% right
+   after grace, sliding to 1%/99% by the day before the event).
 
 `StripeWebhookEvent` (in `db/models.py`) records processed webhook event IDs
 for idempotency — Stripe can and does redeliver.

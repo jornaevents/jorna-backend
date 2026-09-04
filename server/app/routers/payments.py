@@ -19,7 +19,8 @@ from app.services.stripe_service import (
     sync_booking_payment,
     handle_stripe_webhook,
     confirm_event,
-    request_refund,
+    cancel_booking,
+    cancellation_preview,
     raise_dispute,
     resolve_dispute,
     create_card_setup_session,
@@ -214,21 +215,44 @@ def confirm_booking_event(
 
 
 @router.post(
-    "/bookings/{booking_id}/refund",
-    summary="Request a refund (within 24 hours of booking confirmation)",
+    "/bookings/{booking_id}/cancel",
+    summary="Cancel a paid booking (full refund within 24h, split with the vendor after)",
 )
 @limiter.limit("3/minute")
-def refund_booking(
+def cancel_booking_route(
     request: Request,
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Issue a full refund if the request is within 24 hours of when the
-    vendor confirmed the booking. Returns 400 outside that window.
+    """Full refund if this is within 24 hours of the vendor accepting.
+    After that, up to the day before the event, the client gets nothing back
+    and the payment splits between the platform and the vendor instead —
+    see stripe_service.cancellation_split for the ramp.
     """
     try:
-        return request_refund(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+        return cancel_booking(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get(
+    "/bookings/{booking_id}/cancellation-preview",
+    summary="What cancelling this booking would pay out right now",
+)
+def cancellation_preview_route(
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """The numbers behind the eligibility countdown — full-refund deadline,
+    and the vendor's current cut if cancelled this instant — computed from
+    the same function cancel_booking itself uses.
+    """
+    try:
+        return cancellation_preview(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
     except StripeError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
