@@ -15,7 +15,10 @@ import pytest
 from app.db.models import (
     Booking,
     Bundle,
+    Conversation,
+    ConversationMember,
     Event,
+    GroupMessage,
     Message,
     RefreshToken,
     Review,
@@ -137,6 +140,39 @@ def test_a_vendor_account_takes_its_listings_with_it():
     assert db.query(VendorAvailability).filter(VendorAvailability.vendor_id == vid).count() == 0
     # Their client's booking goes too — it was a booking with them.
     assert db.query(Booking).filter(Booking.booking_id == booking.booking_id).first() is None
+    db.close()
+
+
+def test_a_vendor_account_takes_a_booking_subject_conversation_with_it():
+    """A conversation attached directly to a booking (subject_type="booking",
+    e.g. a vendor enquiry that became a booking) lives outside the bundle
+    cascade — _delete_bundle_cascade only ever looks up conversations by
+    bundle_id. Reproduces the real bug: deleting the vendor side of a booking
+    whose bundle belongs to the client used to die on
+    fk_conversations_booking_id with a raw exception surfaced to the client."""
+    db = TestingSessionLocal()
+    client = _user(db, f"delc_{uuid.uuid4().hex[:8]}")
+    vuser, vendor, svc, _, _, booking = _plan(db, client)
+    now = datetime.now(timezone.utc)
+    conv = Conversation(
+        subject_type="booking", booking_id=booking.booking_id, vendor_id=vendor.vendor_id,
+        client_user_id=client.user_id, type="direct", name="Booking chat", created_at=now,
+    )
+    db.add(conv); db.commit(); db.refresh(conv)
+    db.add(ConversationMember(conversation_id=conv.conversation_id, user_id=client.user_id, joined_at=now))
+    db.add(ConversationMember(conversation_id=conv.conversation_id, user_id=vuser.user_id, joined_at=now))
+    db.add(GroupMessage(conversation_id=conv.conversation_id, sender_id=client.user_id,
+                        content="hi", created_at=now))
+    db.commit()
+    uid = vuser.user_id
+    conv_id = conv.conversation_id
+
+    delete_user(user_id=uid, db=db)  # used to raise UserError(500, "Delete failed: ...")
+
+    assert not _exists(db, uid)
+    assert db.query(Conversation).filter(Conversation.conversation_id == conv_id).first() is None
+    assert db.query(ConversationMember).filter(ConversationMember.conversation_id == conv_id).count() == 0
+    assert db.query(GroupMessage).filter(GroupMessage.conversation_id == conv_id).count() == 0
     db.close()
 
 

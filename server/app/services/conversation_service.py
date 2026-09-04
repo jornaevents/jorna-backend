@@ -299,11 +299,12 @@ def _assert_not_blocked(a: str, b: str, db: Session) -> None:
 def _create_thread(
     *, subject_type: str, client_user_id: str, other_user_id: str,
     vendor_id: str | None, booking_id: str | None, db: Session,
+    bundle_id: str | None = None,
 ) -> Conversation:
     now = datetime.now(timezone.utc)
     conv = Conversation(
         subject_type=subject_type,
-        bundle_id=None,
+        bundle_id=bundle_id,
         booking_id=booking_id,
         vendor_id=vendor_id,
         client_user_id=client_user_id,
@@ -441,8 +442,16 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
             other_user_id=vendor_user.user_id,
             vendor_id=booking.vendor_id,
             booking_id=booking_id,
+            bundle_id=booking.bundle_id,
             db=db,
         )
+    elif conv.bundle_id is None and booking.bundle_id is not None:
+        # Self-heal a thread created before bundle_id was tracked here — every
+        # open is a chance to backfill it, on top of (not instead of) the
+        # one-time migration for threads nobody happens to open again.
+        conv.bundle_id = booking.bundle_id
+        db.commit()
+        db.refresh(conv)
 
     return get_conversation(
         conversation_id=conv.conversation_id, caller_user_id=caller_user_id, db=db
@@ -477,6 +486,40 @@ def post_offer_message(
         )
     except Exception as exc:
         logger.warning("Couldn't post offer message for booking %s: %s", booking_id, exc)
+
+
+def post_system_message(
+    *, booking_id: str, sender_user_id: str, content: str, meta: dict | None, db: Session
+) -> None:
+    """Write an event-log line into the booking's thread — a reschedule
+    proposed, accepted, declined, withdrawn, or expired.
+
+    Same best-effort shape as post_offer_message and the same reasoning:
+    change_request_service owns the reschedule itself, this owns only the
+    sentence about it, and that sentence failing to post must never fail
+    the reschedule action that triggered it. `sender_user_id` attributes
+    the line (whoever's action caused it) but nothing renders it as coming
+    from them — the frontend shows kind="system" as an unattributed,
+    centered line, not a chat bubble.
+    """
+    try:
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        if not booking:
+            return
+        thread = open_booking_thread(
+            booking_id=booking_id, caller_user_id=sender_user_id, db=db
+        )
+        send_group_message(
+            conversation_id=thread["conversation_id"],
+            content=content,
+            caller_user_id=sender_user_id,
+            db=db,
+            kind="system",
+            meta=meta,
+            skip_limits=True,
+        )
+    except Exception as exc:
+        logger.warning("Couldn't post system message for booking %s: %s", booking_id, exc)
 
 
 # ── Membership updates ────────────────────────────────────────────────

@@ -1021,6 +1021,15 @@ def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict
     except Exception as exc:  # noqa: BLE001
         logger.warning("request_refund: venue re-sync failed for %s: %s", booking_id, exc)
     db.commit()
+
+    # Refunded this early is the client cancelling — status stays "approved"
+    # (nothing here changes that), but the vendor's calendar shouldn't keep
+    # holding a date that's off.
+    if booking.google_event_id:
+        from app.services.calendar_service import remove_booking_from_calendar
+
+        remove_booking_from_calendar(booking, db)
+
     logger.info("Refund issued for booking %s", booking_id)
 
     return {"message": "Refund issued successfully. Funds will be returned within 5–10 business days."}
@@ -1125,6 +1134,12 @@ def refund_after_failed_reschedule(
     except Exception as exc:  # noqa: BLE001
         logger.warning("reschedule refund: venue re-sync failed for %s: %s", booking_id, exc)
     db.commit()
+
+    if booking.google_event_id:
+        from app.services.calendar_service import remove_booking_from_calendar
+
+        remove_booking_from_calendar(booking, db)
+
     logger.info(
         "Reschedule refund of %s cents issued for booking %s", amount, booking_id
     )
@@ -1207,6 +1222,12 @@ def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("resolve_dispute: venue re-sync failed for %s: %s", booking_id, exc)
         db.commit()
+
+        if booking.google_event_id:
+            from app.services.calendar_service import remove_booking_from_calendar
+
+            remove_booking_from_calendar(booking, db)
+
         logger.info("Dispute resolved: refund issued for booking %s", booking_id)
         return {"message": "Dispute resolved. Customer has been refunded.", "payment_status": "refunded"}
 

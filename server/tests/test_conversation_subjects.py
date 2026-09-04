@@ -228,6 +228,56 @@ class TestBookingThreads:
         assert resp.status_code == 403
 
 
+class TestBookingThreadBundleId:
+    """A booking thread carries its plan's id, so the client can deep-link
+    an offer/reschedule message back to the specific booking rather than a
+    generic dashboard."""
+
+    def _bundle(self, world):
+        from app.db.models import Bundle
+
+        db = world["db"]
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(
+            user_id=world["client_user"].user_id, name="Wedding", event_name="Wedding",
+            status="confirmed", created_at=now, updated_at=now,
+        )
+        db.add(bundle)
+        db.commit()
+        db.refresh(bundle)
+        return bundle
+
+    def test_a_new_thread_carries_the_bookings_bundle_id(self, world):
+        db = world["db"]
+        bundle = self._bundle(world)
+        world["booking"].bundle_id = bundle.bundle_id
+        db.commit()
+
+        resp = client.post(f"/conversations/booking/{world['booking'].booking_id}",
+                           headers=make_auth_headers(world["client_user"]))
+        assert resp.json()["bundle_id"] == bundle.bundle_id
+
+    def test_an_existing_thread_self_heals_its_bundle_id(self, world):
+        """A thread opened before its booking had a bundle_id (every thread
+        created before this change) picks it up the next time it's opened,
+        on top of — not instead of — the one-time migration."""
+        db = world["db"]
+        booking_id = world["booking"].booking_id
+
+        first = client.post(f"/conversations/booking/{booking_id}",
+                            headers=make_auth_headers(world["client_user"])).json()
+        assert first["bundle_id"] is None
+
+        bundle = self._bundle(world)
+        world["booking"].bundle_id = bundle.bundle_id
+        db.commit()
+
+        second = client.post(f"/conversations/booking/{booking_id}",
+                             headers=make_auth_headers(world["client_user"])).json()
+        assert second["conversation_id"] == first["conversation_id"]
+        assert second["bundle_id"] == bundle.bundle_id
+
+
 # ── The inbox ─────────────────────────────────────────────────────────
 
 

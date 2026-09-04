@@ -23,7 +23,7 @@ from app.observability import init_sentry
 init_sentry()
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -31,7 +31,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
+from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
@@ -185,6 +185,14 @@ _ESCROW_RELEASE_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 # minutes" arriving with ten to go is worse than useless to somebody who still
 # has to park.
 _CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
+# Batched, not per-message — a message is only ever in the next digest after
+# it arrives, so a shorter interval only means someone waits less between
+# a message landing and their digest catching it. 20 minutes is short enough
+# that the digest still reads as "new," long enough that a real conversation
+# reads as one email rather than several.
+_MESSAGE_DIGEST_INTERVAL_SECONDS = 20 * 60
+_CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS = 24 * 60 * 60  # daily
+_CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS = 4 * 60 * 60  # every 4 hours
 
 
 async def _periodic_token_cleanup():
@@ -249,6 +257,64 @@ async def _periodic_checkin_reminders():
         await asyncio.sleep(_CHECKIN_REMINDER_INTERVAL_SECONDS)
 
 
+async def _periodic_message_digests():
+    """Email anyone with unread messages a summary, every twenty minutes.
+
+    Same shape as the sweeps above — own session per pass, failures logged
+    rather than fatal. Idempotent through each user's own
+    last_message_digest_at, which the sweep advances whether or not it found
+    anything to send: a user with nothing new costs one cheap query, not a
+    resend attempt every pass.
+    """
+    from app.db.database import SessionLocal
+    from app.services.message_digest_service import send_due_digests
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                send_due_digests(db=session)
+        except Exception as exc:
+            logger.warning("Message digest sweep failed: %s", exc)
+        await asyncio.sleep(_MESSAGE_DIGEST_INTERVAL_SECONDS)
+
+
+async def _periodic_calendar_channel_renewal():
+    """Re-watch any Google Calendar push channel expiring within a day.
+
+    Google caps a channel at about a week, so a daily sweep leaves several
+    days of margin against a missed pass — same shape as the sweeps above,
+    own session per pass, failures logged rather than fatal.
+    """
+    from app.db.database import SessionLocal
+    from app.services.calendar_service import renew_expiring_channels
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                renew_expiring_channels(db=session)
+        except Exception as exc:
+            logger.warning("Calendar channel renewal sweep failed: %s", exc)
+        await asyncio.sleep(_CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS)
+
+
+async def _periodic_calendar_busy_resync():
+    """Re-pull busy blocks for every connected vendor, every four hours —
+    the safety net under the push channel above: a missed or lapsed
+    notification is never more than a few hours stale, not silently wrong
+    until someone happens to reconnect.
+    """
+    from app.db.database import SessionLocal
+    from app.services.calendar_service import resync_all_connected_vendors
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                resync_all_connected_vendors(db=session)
+        except Exception as exc:
+            logger.warning("Calendar busy-time resync sweep failed: %s", exc)
+        await asyncio.sleep(_CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS)
+
+
 # ── App setup ─────────────────────────────────────────────────────────
 
 
@@ -310,11 +376,14 @@ async def lifespan(app: FastAPI):
                     INITIAL_ADMIN_EMAIL,
                 )
 
-    # Start the daily sweeps.
+    # Start the background sweeps.
     background = [
         asyncio.create_task(_periodic_token_cleanup()),
         asyncio.create_task(_periodic_escrow_release()),
         asyncio.create_task(_periodic_checkin_reminders()),
+        asyncio.create_task(_periodic_message_digests()),
+        asyncio.create_task(_periodic_calendar_channel_renewal()),
+        asyncio.create_task(_periodic_calendar_busy_resync()),
     ]
 
     yield
@@ -362,6 +431,7 @@ app.include_router(admin.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -488,6 +558,19 @@ def health(db: Session = Depends(get_db)):
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok"}
+
+
+@app.get("/googleec2daeb88a212390.html", include_in_schema=False)
+def google_site_verification():
+    """Proves Jorna controls this Railway subdomain, via Google Search
+    Console's HTML-file method — DNS verification isn't an option here,
+    since Railway (not Jorna) owns up.railway.app's DNS. Required before
+    events().watch() (Google Calendar push notifications,
+    calendar_service.watch_calendar) will send anything to this domain.
+    One static file per verified domain; safe to leave in place
+    indefinitely once verified.
+    """
+    return PlainTextResponse("google-site-verification: googleec2daeb88a212390.html")
 
 
 @app.post("/auth/register")

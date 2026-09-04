@@ -250,6 +250,11 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "price_unit": service.price_unit if service else None,
         "price_pending_quantity": total_cents is None,
         "guest_count": booking.guest_count,
+        "performer_count": booking.performer_count,
+        # Denormalized from the service so a client can run its own gap-check
+        # (bookingGaps()) against the booking alone — see plan_readiness.booking_gaps.
+        "require_guest_count": bool(service.require_guest_count) if service else False,
+        "require_performer_count": bool(service.require_performer_count) if service else False,
         # What the client said when requesting this — shown to the vendor
         # alongside the request, before they accept/decline.
         "client_note": booking.client_note,
@@ -496,6 +501,8 @@ def _normalize_unit(price_unit: str | None) -> str | None:
         return "event"
     if u.startswith("person") or u in ("head", "plate", "guest", "pax"):
         return "person"
+    if u.startswith(("performer", "dancer", "entertainer")):
+        return "performer"
     return None
 
 
@@ -523,7 +530,7 @@ def canonical_price_unit(value: str | None) -> str | None:
     if unit is None:
         raise ValueError(
             f"'{value}' isn't a pricing unit we can charge against. "
-            "Use one of: person, hour, day, event."
+            "Use one of: person, hour, day, event, performer."
         )
     return unit
 
@@ -571,6 +578,7 @@ def estimate_amount_cents(
     service: Service | None,
     *,
     guest_count: int | None = None,
+    performer_count: int | None = None,
     date_iso: str | None = None,
     date_end: str | None = None,
     time_start: str | None = None,
@@ -580,8 +588,9 @@ def estimate_amount_cents(
     price_unit. Returns None when the quantity can't be determined — the caller
     then leaves amount_cents nil and the booking prices at the flat rate.
 
-    person -> guest_count; day -> days in the date range; hour -> hours in the
-    event time window; event/unknown/missing-data -> None (flat rate).
+    person -> guest_count; performer -> performer_count; day -> days in the
+    date range; hour -> hours in the event time window; event/unknown/missing-
+    data -> None (flat rate).
     """
     if not service:
         return None
@@ -593,6 +602,11 @@ def estimate_amount_cents(
     if unit == "person":
         if guest_count and guest_count > 0:
             return round(rate * guest_count * 100)
+        return None
+
+    if unit == "performer":
+        if performer_count and performer_count > 0:
+            return round(rate * performer_count * 100)
         return None
 
     if unit == "day":
@@ -641,6 +655,7 @@ def resolve_total_cents(booking: Booking, service: Service | None) -> int | None
     est = estimate_amount_cents(
         service,
         guest_count=booking.guest_count,
+        performer_count=booking.performer_count,
         date_iso=booking.date_iso,
         date_end=booking.date_end,
         time_start=booking.time_start,
@@ -662,6 +677,7 @@ def pending_quantity_reason(service: Service | None) -> str:
     unit = _normalize_unit(service.price_unit) if service else None
     return {
         "person": "the guest count",
+        "performer": "the performer count",
         "day": "the event dates",
         "hour": "the start and end times",
     }.get(unit, "the event details")
@@ -681,6 +697,7 @@ def create_booking(
     bundle_id: str | None = None,
     date_end: str | None = None,
     guest_count: int | None = None,
+    performer_count: int | None = None,
     client_note: str | None = None,
     db: Session,
 ) -> dict:
@@ -727,6 +744,7 @@ def create_booking(
 
         proposed = Booking(
             date_iso=date_iso, date_end=date_end, guest_count=guest_count,
+            performer_count=performer_count,
             time_start=time_start, time_end=time_end, location=location,
         )
         gaps = booking_gaps(proposed, service)
@@ -780,6 +798,7 @@ def create_booking(
         date_iso=date_iso,
         date_end=date_end,
         guest_count=guest_count,
+        performer_count=performer_count,
         client_note=client_note,
         venue_latitude=venue_latitude,
         venue_longitude=venue_longitude,
@@ -793,6 +812,7 @@ def create_booking(
     est = estimate_amount_cents(
         service,
         guest_count=guest_count,
+        performer_count=performer_count,
         date_iso=date_iso,
         date_end=date_end,
         time_start=time_start,
@@ -1027,6 +1047,18 @@ def update_booking_status(
             )
             db.rollback()
 
+    # The vendor's own Google Calendar, if they're connected with write
+    # access — same best-effort contract as the notification dispatch just
+    # below: never lets a calendar problem fail the status change itself.
+    if status_str == BookingStatus.APPROVED.value:
+        from app.services.calendar_service import sync_booking_to_calendar
+
+        sync_booking_to_calendar(booking, db)
+    elif status_str == BookingStatus.REJECTED.value and booking.google_event_id:
+        from app.services.calendar_service import remove_booking_from_calendar
+
+        remove_booking_from_calendar(booking, db)
+
     client, vendor_obj, vendor_user, service = _get_booking_parties(db, booking)
     _bundle = db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first() if booking.bundle_id else None
     _event_name = (_bundle.event_name if _bundle else None) or "Event"
@@ -1081,8 +1113,8 @@ def update_booking(
 
     refuse_locked_changes(booking, update_data, db)
 
-    allowed_fields = {"date_iso", "date_end", "guest_count", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
-    quantity_fields = {"date_iso", "date_end", "guest_count", "time_start", "time_end"}
+    allowed_fields = {"date_iso", "date_end", "guest_count", "performer_count", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
+    quantity_fields = {"date_iso", "date_end", "guest_count", "performer_count", "time_start", "time_end"}
     touched_quantity = False
     for field, value in update_data.items():
         if field in allowed_fields:
@@ -1101,6 +1133,7 @@ def update_booking(
         booking.amount_cents = estimate_amount_cents(
             service,
             guest_count=booking.guest_count,
+            performer_count=booking.performer_count,
             date_iso=booking.date_iso,
             date_end=booking.date_end,
             time_start=booking.time_start,

@@ -60,6 +60,11 @@ class User(Base):
     open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
     flexible_on_location = Column(Boolean, nullable=False, default=False)
 
+    # Where the message-digest sweep left off — a message is only ever in one
+    # digest, the next one after it arrives, so the sweep needs to know per
+    # user what "since last time" means. Null until their first digest.
+    last_message_digest_at = Column(DateTime, nullable=True)
+
 
 class PushToken(Base):
     """A device's FCM registration token for one user.
@@ -123,6 +128,32 @@ class Vendor(Base):
     google_access_token = Column(String(512), nullable=True)
     google_refresh_token = Column(String(512), nullable=True)
     calendar_id = Column(String(255), nullable=True)
+    # Space-separated scope string Google actually granted on the OAuth
+    # callback — not assumed from what was requested. Google doesn't
+    # silently widen a standing grant when the app starts asking for more,
+    # so a vendor who connected before a scope existed has this missing it;
+    # every write path checks for "calendar.events" here before attempting
+    # anything; a connect since then reads this as the source of truth.
+    google_granted_scopes = Column(Text, nullable=True)
+    # A cached copy of this vendor's Google busy blocks (list of {start, end}
+    # ISO strings), covering roughly the next several months — kept fresh by
+    # a push-notification channel plus a periodic sweep, rather than fetched
+    # live from Google on every /availability request the way it used to be.
+    # Null/stale is never fatal to a read: get_vendor_availability falls back
+    # to a live fetch when the cache is empty or the request reaches past it.
+    google_busy_cache = Column(JSON, nullable=True)
+    google_busy_synced_at = Column(DateTime, nullable=True)
+    # Google Calendar push-notification channel bookkeeping. google_channel_id
+    # doubles as the channel's bearer credential, not just its identifier —
+    # high-entropy and never exposed anywhere else, so a webhook POST quoting
+    # it back is itself sufficient proof it came from the channel this vendor
+    # owns (see calendar_service.watch_calendar). resource_id is what Google's
+    # API needs to address the specific watched resource; expires_at is when
+    # the channel needs renewing (~7 days, Google's own cap for this resource
+    # type).
+    google_channel_id = Column(String(64), nullable=True, unique=True)
+    google_channel_resource_id = Column(String(255), nullable=True)
+    google_channel_expires_at = Column(DateTime, nullable=True)
 
     # Stripe Connect — set during vendor onboarding
     stripe_account_id = Column(String(255), nullable=True)
@@ -145,7 +176,7 @@ class Service(Base):
         # from Base.metadata is the schema production runs, and a value that
         # would be refused in production is refused in a test too.
         CheckConstraint(
-            "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event')",
+            "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event', 'performer')",
             name="ck_services_price_unit",
         ),
     )
@@ -181,6 +212,13 @@ class Service(Base):
     location = Column(String(255), nullable=True)
     venue_latitude = Column(Float, nullable=True)
     venue_longitude = Column(Float, nullable=True)
+    # Opt-in extras: a vendor can demand a guest/performer count even when the
+    # price unit itself doesn't need one to compute a total (e.g. a flat-rate
+    # caterer who still wants a headcount before deciding to accept). Additive
+    # only — booking_gaps() ORs these with the price-unit-driven requirement,
+    # never loosens it.
+    require_guest_count = Column(Boolean, nullable=False, default=False)
+    require_performer_count = Column(Boolean, nullable=False, default=False)
 
 
 class Booking(Base):
@@ -199,6 +237,9 @@ class Booking(Base):
     # (rate x guests) can be (re)computed and audited at booking + checkout time
     # instead of silently falling back to the bare per-person rate.
     guest_count = Column(Integer, nullable=True)
+    # Same idea as guest_count, for a per-performer service (entertainment
+    # groups charging by how many performers they're asked to provide).
+    performer_count = Column(Integer, nullable=True)
     # Free text the client leaves when requesting the booking ("Anything the
     # vendor should know?"), shown to the vendor alongside the request before
     # they accept/decline. Optional; most bookings carry none.
@@ -238,6 +279,12 @@ class Booking(Base):
     # a manual resend into it would mean a client nudging a vendor early had
     # switched off the real reminder by doing them a favour.
     checkin_reminder_resent_at = Column(DateTime, nullable=True)
+    # This booking's event on the vendor's own Google Calendar, if one has
+    # been written back — null until approval creates it, cleared again once
+    # the booking ends (declined, cancelled, refunded). The one field
+    # calendar_service needs to tell "create" from "update" from "nothing to
+    # delete."
+    google_event_id = Column(String(255), nullable=True)
 
 
 class Bundle(Base):

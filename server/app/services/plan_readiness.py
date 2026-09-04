@@ -35,6 +35,7 @@ COMMITTED_FIELDS = (
     "date_iso",
     "date_end",
     "guest_count",
+    "performer_count",
     "time_start",
     "time_end",
     "location",
@@ -156,12 +157,21 @@ def booking_gaps(
         gaps.append("a start and end time")
 
     kind = _price_unit_kind(service.price_unit if service else None)
-    if kind == "person":
+    # A vendor can also opt into demanding either count regardless of price
+    # unit (Service.require_guest_count / require_performer_count) — a flat
+    # rate caterer who still wants a headcount before deciding, say. That's
+    # additive on top of the price-unit-driven requirement below, never a way
+    # to loosen it, and the two checks are independent: a service could in
+    # principle need both at once.
+    if kind == "person" or (service and service.require_guest_count):
         # The booking's own count, not the event's: the total is resolved from
         # the booking that's priced, so an event-level headcount would satisfy
         # this check without satisfying checkout.
         if not (booking.guest_count or 0):
             gaps.append("a guest count")
+    if kind == "performer" or (service and service.require_performer_count):
+        if not (booking.performer_count or 0):
+            gaps.append("a performer count")
 
     return gaps
 
@@ -262,6 +272,7 @@ _FIELD_NAMES = {
     "date_iso": "date",
     "date_end": "end date",
     "guest_count": "guest count",
+    "performer_count": "performer count",
     "time_start": "start time",
     "time_end": "end time",
     "location": "address",

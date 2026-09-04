@@ -2,7 +2,7 @@
 
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,8 @@ from app.services.calendar_service import (
     get_google_auth_url as svc_get_google_auth_url,
     handle_google_callback as svc_handle_google_callback,
     get_vendor_availability as svc_get_vendor_availability,
+    handle_calendar_webhook as svc_handle_calendar_webhook,
+    has_calendar_write_access,
 )
 
 router = APIRouter(prefix="/vendors", tags=["calendar"])
@@ -134,7 +136,13 @@ def calendar_status(
     answers it in the terms the question was asked.
     """
     vendor = _own_vendor(vendor_id, current_user, db)
-    return {"google_calendar_connected": bool(vendor.google_access_token)}
+    return {
+        "google_calendar_connected": bool(vendor.google_access_token),
+        # False for a vendor connected before this scope existed — Google
+        # doesn't widen a standing grant, so they need to reconnect before
+        # bookings can start writing to their calendar.
+        "google_calendar_write_enabled": has_calendar_write_access(vendor),
+    }
 
 
 @router.get("/{vendor_id}/availability", summary="Get vendor open time slots")
@@ -157,3 +165,27 @@ def vendor_availability(
         )
     except CalendarError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/google-calendar/webhook", summary="Google Calendar push notification")
+def google_calendar_webhook(
+    x_goog_channel_id: str | None = Header(None, alias="X-Goog-Channel-ID"),
+    x_goog_resource_state: str | None = Header(None, alias="X-Goog-Resource-State"),
+    db: Session = Depends(get_db),
+):
+    """Google POSTs here, with no body, whenever a watched calendar changes.
+
+    Always 200s, even for a channel it doesn't recognize — this isn't a
+    caller Jorna can push an error back to usefully, and a non-2xx response
+    is exactly what makes Google retry-storm an endpoint. The channel id
+    doubles as its own bearer credential (see calendar_service.watch_calendar):
+    generated with real entropy and never exposed anywhere else, so a POST
+    quoting it back correctly is itself sufficient to trust.
+
+    "sync" is the one Google sends immediately after watch() succeeds, to
+    confirm the channel is live — not a real change, so it's not worth a
+    fetch. Anything else means go find out what changed.
+    """
+    if x_goog_channel_id and x_goog_resource_state != "sync":
+        svc_handle_calendar_webhook(channel_id=x_goog_channel_id, db=db)
+    return {"ok": True}

@@ -1,3 +1,5 @@
+> **Superseded.** This file is kept for history only — current, maintained content lives in docs/API.md's Bookings & bundles section and docs/ARCHITECTURE.md's Payments & escrow section. If this file says something different, trust the newer doc.
+
 # Booking, Bundle & Payment Flow
 
 ## Overview
