@@ -87,3 +87,31 @@ mechanics, chatbot endpoints, booking/bundle flow, vendor categories) and
 this file. They're kept for history rather than deleted outright — each now
 has a pointer at the top to where its content lives now. Don't treat them as
 current; if one says something `docs/API.md` doesn't, the newer doc wins.
+
+## 11. A cancelled booking's money splits on a linear ramp, not a flat cutoff
+
+`stripe_service.cancel_booking`/`cancellation_split` replaced the old flat
+`request_refund` (full refund within 24h of payment, nothing after). The
+new shape: full refund for `GRACE_HOURS` (24h) after the *vendor accepts*,
+then — instead of refunds simply stopping — the client's payment splits
+between the platform and the vendor on a ramp from 99%/1% right after grace
+to 1%/99% by the day before the event.
+
+The ramp exists because a flat cutoff treats "cancelled an hour after the
+window closed" the same as "cancelled the day before the wedding," and the
+vendor's position in those two cases isn't remotely the same — the closer to
+the event, the less realistic it is they can fill the date with other work,
+so the policy shifts to protecting them rather than the platform's take as
+the date approaches. The platform keeps the larger share early (when a
+cancellation is still relatively low-cost for the vendor to absorb) and the
+smaller share late (when it isn't).
+
+Vendor-initiated cancellation of an already-accepted, paid booking is a
+separate, deliberately asymmetric rule: always a full refund to the client,
+at any point, no ramp — a vendor backing out of a commitment forfeits their
+share entirely, unlike a client changing their mind.
+
+The existing flat 90/10 reschedule-decline refund
+(`RESCHEDULE_CANCELLATION_PCT`, `refund_after_failed_reschedule`) is
+deliberately untouched by this — that's "the vendor can't meet a new date
+the client asked for," not a cancellation, and doesn't reuse the ramp.

@@ -204,11 +204,18 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
     bookings = db.query(Booking).filter(Booking.vendor_id == vendor_id).all()
 
     def net_cents(b: Booking) -> int:
+        # A cancelled booking's vendor share came from the cancellation split,
+        # not the ordinary platform fee — amount_cents minus platform_fee_cents
+        # would be the wrong number (and platform_fee_cents is usually unset
+        # for one anyway, since it's never charged past the send/accept step).
+        if b.payment_status == "cancelled":
+            return b.vendor_cancellation_cents or 0
         amount = b.amount_cents or 0
         fee = b.platform_fee_cents or 0
         return max(amount - fee, 0)
 
     released = [b for b in bookings if b.payment_status == "released"]
+    cancelled = [b for b in bookings if b.payment_status == "cancelled"]
     in_escrow = [b for b in bookings if b.payment_status in ("paid", "processing")]
     disputed = [b for b in bookings if b.payment_status == "disputed"]
     refunded = [b for b in bookings if b.payment_status == "refunded"]
@@ -264,7 +271,10 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
 
     return {
         "vendor_id": vendor_id,
-        "total_released_cents": sum(net_cents(b) for b in released),
+        # released and cancelled are both "paid to the vendor," just via
+        # different mechanisms (an event-completion Transfer vs. a
+        # cancellation-split Transfer) — net_cents already branches on which.
+        "total_released_cents": sum(net_cents(b) for b in released + cancelled),
         "in_escrow_cents": sum(net_cents(b) for b in in_escrow),
         "upcoming_cents": sum(upcoming_cents(b) for b in upcoming),
         "upcoming_count": len(upcoming),
@@ -954,85 +964,229 @@ def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
     return {"released": released, "failed": failed, "cutoff": cutoff}
 
 
-# ── Refund ────────────────────────────────────────────────────────────
+# ── Cancellation & refund ─────────────────────────────────────────────
 
-REFUND_WINDOW_HOURS = 24
+# How long after the vendor accepts a client keeps an unconditional full
+# refund. After this, cancelling stops being about changing your mind and
+# starts costing the vendor a held date — see cancellation_split.
+GRACE_HOURS = 24
 
 
-def request_refund(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
-    """Issue a full refund if the customer cancels within 24 hours of paying.
+def _parse_event_date(value: str | None):
+    """A booking's date_iso/date_end, parsed loosely. None for TBD/unparseable —
+    an unscheduled event never triggers the ramp; a cancellation on one is
+    always still within the grace-or-better outcome (see cancellation_split)."""
+    if not value:
+        return None
+    s = value.strip()
+    if not s or s.upper() == "TBD":
+        return None
+    from datetime import date as _date
+    try:
+        return _date.fromisoformat(s[:10])
+    except ValueError:
+        return None
 
-    The window runs from when the customer actually paid (``paid_at``), NOT from
-    vendor approval — otherwise a client who pays a day or more after approval
-    would have little or no window left the moment they pay.
 
-    Raises StripeError 400 if outside the refund window or not eligible.
+def cancellation_split(booking: Booking, now: datetime) -> dict:
+    """What cancelling this booking right now would pay out.
+
+    Full refund to the client for GRACE_HOURS after the vendor accepts. After
+    that, up to the day before the event, the client gets nothing back and the
+    payment instead splits between the platform and the vendor — 99% platform
+    / 1% vendor right after the grace period, sliding linearly to 1% / 99% by
+    the day before the event. The closer to the event, the more the vendor is
+    protected, since they turned down other work to hold the date.
+
+    A booking accepted too close to the event for the ramp to have room to run
+    (grace end lands on or after "the day before") jumps straight to the 99%
+    vendor / 1% platform end the moment grace closes, rather than trying to
+    interpolate over a negative or zero-length window.
+
+    Returns cents; has no opinion on eligibility (a released/refunded/disputed
+    booking, or one whose event has passed) — that's the caller's gate.
+    """
+    amount = booking.amount_cents or 0
+    confirmed_at = booking.confirmed_at
+    if confirmed_at is not None and confirmed_at.tzinfo is None:
+        confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+
+    # Never accepted — nothing has started the grace clock, so there is
+    # nothing to protect the vendor from yet.
+    if confirmed_at is None:
+        return {"refund_to_client_cents": amount, "vendor_cents": 0, "platform_cents": 0}
+
+    t0 = confirmed_at + timedelta(hours=GRACE_HOURS)
+    if now < t0:
+        return {"refund_to_client_cents": amount, "vendor_cents": 0, "platform_cents": 0}
+
+    event_date = _parse_event_date(booking.date_iso)
+    t1 = (
+        datetime.combine(event_date, datetime.min.time(), tzinfo=timezone.utc)
+        - timedelta(days=1)
+        if event_date
+        else None
+    )
+    ratio = 1.0 if (t1 is None or t1 <= t0) else min(max((now - t0) / (t1 - t0), 0.0), 1.0)
+
+    vendor_pct = 1 + 98 * ratio
+    vendor_cents = round(amount * vendor_pct / 100)
+    return {
+        "refund_to_client_cents": 0,
+        "vendor_cents": vendor_cents,
+        "platform_cents": amount - vendor_cents,
+    }
+
+
+def cancellation_preview(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """What cancel_booking would pay out right now — for the UI's eligibility
+    countdown, so it reads the same numbers the real action would use rather
+    than reimplementing the ramp in JS. Same shape ``_booking_summary``
+    embeds inline as ``refund_preview`` — this is the standalone version for
+    a caller that only has a booking id."""
+    from app.services.bundle_service import _refund_preview
+
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+
+    return _refund_preview(booking)
+
+
+def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The client cancelling a paid booking, at any point up to the event.
+
+    Replaces the old flat request_refund. Within GRACE_HOURS of the vendor's
+    acceptance, this is a full refund exactly as before. Past it, the client
+    gets nothing back — the payment splits between the platform and the
+    vendor instead (cancellation_split), the vendor's share moving out by the
+    same Transfer mechanism _release_funds uses for a completed event.
     """
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise StripeError(404, "Booking not found")
-
     if booking.user_id != caller_user_id:
         raise StripeError(403, "You are not the customer for this booking")
 
-    if booking.payment_status not in ("paid", "processing"):
+    if booking.payment_status != "paid":
         raise StripeError(
             400,
-            f"Booking is not eligible for a refund (payment status: '{booking.payment_status}')",
+            f"Booking is not eligible for cancellation (payment status: "
+            f"'{booking.payment_status}')",
         )
-
-    if booking.payment_status == "released":
-        raise StripeError(400, "Funds have already been released to the vendor")
-
-    # Check the 24-hour refund window from when the customer actually paid.
-    if not booking.paid_at:
-        raise StripeError(400, "Booking payment has not completed — cannot process refund")
-
-    now = datetime.now(timezone.utc)
-    paid_at = booking.paid_at
-    # Make timezone-aware if stored as naive UTC
-    if paid_at.tzinfo is None:
-        paid_at = paid_at.replace(tzinfo=timezone.utc)
-
-    if now - paid_at > timedelta(hours=REFUND_WINDOW_HOURS):
-        raise StripeError(
-            400,
-            f"Refund window has closed. Refunds are only available within "
-            f"{REFUND_WINDOW_HOURS} hours of payment.",
-        )
-
     if not booking.payment_intent_id:
         raise StripeError(500, "No payment intent found for this booking")
 
-    try:
-        stripe.Refund.create(
-            payment_intent=booking.payment_intent_id,
-            reason="requested_by_customer",
-        )
-    except stripe.StripeError as e:
-        raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
+    event_date = _parse_event_date(booking.date_iso)
+    if event_date is not None:
+        from app.services.booking_service import venue_today
 
-    booking.payment_status = "refunded"
-    # If this was the venue, re-sync so its anchor clears and the other vendors
-    # stop being able to check in against a venue that's now refunded.
+        if venue_today(booking) >= event_date:
+            raise StripeError(
+                400,
+                "This event has already happened, or is happening now — "
+                "cancellation is no longer available. Raise a problem instead "
+                "if something has gone wrong.",
+            )
+
+    now = datetime.now(timezone.utc)
+    split = cancellation_split(booking, now)
+    refund_cents = split["refund_to_client_cents"]
+    vendor_cents = split["vendor_cents"]
+
+    if refund_cents > 0:
+        try:
+            stripe.Refund.create(
+                payment_intent=booking.payment_intent_id,
+                reason="requested_by_customer",
+            )
+        except stripe.StripeError as e:
+            raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
+        booking.payment_status = "refunded"
+    elif vendor_cents > 0:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+        if not vendor or not vendor.stripe_account_id:
+            raise StripeError(500, "Vendor Stripe account not found — cannot pay out their share")
+        try:
+            stripe.Transfer.create(
+                amount=vendor_cents,
+                currency=booking.currency,
+                destination=vendor.stripe_account_id,
+                transfer_group=booking.booking_id,
+                metadata={"booking_id": booking.booking_id, "reason": "cancellation"},
+                idempotency_key=f"cancel_{booking.booking_id}",
+            )
+        except stripe.StripeError as e:
+            raise StripeError(502, f"Stripe transfer failed: {e.user_message or str(e)}")
+        booking.payment_status = "cancelled"
+    else:
+        # amount_cents was 0 or unset — nothing to move either way, but the
+        # booking still needs to come off the books as cancelled.
+        booking.payment_status = "cancelled"
+
+    from app.models.schemas import BookingStatus
+
+    booking.status = BookingStatus.REJECTED.value
+    booking.cancelled_at = now
+    booking.refund_cents = refund_cents
+    booking.vendor_cancellation_cents = vendor_cents
+
     try:
         from app.services.booking_service import sync_event_venue
         sync_event_venue(booking.bundle_id, db)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("request_refund: venue re-sync failed for %s: %s", booking_id, exc)
+        logger.warning("cancel_booking: venue re-sync failed for %s: %s", booking_id, exc)
     db.commit()
 
-    # Refunded this early is the client cancelling — status stays "approved"
-    # (nothing here changes that), but the vendor's calendar shouldn't keep
-    # holding a date that's off.
     if booking.google_event_id:
         from app.services.calendar_service import remove_booking_from_calendar
 
         remove_booking_from_calendar(booking, db)
 
-    logger.info("Refund issued for booking %s", booking_id)
+    try:
+        from app.services.conversation_service import post_system_message
 
-    return {"message": "Refund issued successfully. Funds will be returned within 5–10 business days."}
+        if refund_cents > 0:
+            line = "The client cancelled this booking. It was within the 24-hour grace period, so they've been refunded in full."
+        elif vendor_cents > 0:
+            line = (
+                f"The client cancelled this booking. ${vendor_cents / 100:,.2f} of what "
+                "they paid has been sent to the vendor for holding the date."
+            )
+        else:
+            line = "The client cancelled this booking."
+        post_system_message(
+            booking_id=booking_id, sender_user_id=caller_user_id, content=line,
+            meta={"kind": "cancellation", "refund_cents": refund_cents, "vendor_cents": vendor_cents},
+            db=db,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cancel_booking: couldn't post system message for %s: %s", booking_id, exc)
+
+    logger.info(
+        "Booking %s cancelled: %d refunded to client, %d transferred to vendor",
+        booking_id, refund_cents, vendor_cents,
+    )
+
+    if refund_cents > 0:
+        message = "Booking cancelled. You've been refunded in full — funds will return within 5–10 business days."
+    elif vendor_cents > 0:
+        message = (
+            f"Booking cancelled. This is past the 24-hour grace period, so "
+            f"${vendor_cents / 100:,.2f} goes to the vendor for holding the date — "
+            "nothing is refunded to you."
+        )
+    else:
+        message = "Booking cancelled."
+
+    return {
+        "message": message,
+        "refund_cents": refund_cents,
+        "vendor_cancellation_cents": vendor_cents,
+        "payment_status": booking.payment_status,
+    }
 
 
 # ── Refund after a reschedule falls through ───────────────────────────
@@ -1088,7 +1242,7 @@ def refund_after_failed_reschedule(
         )
 
     # The gate. Without a fallen-through request this is just an ordinary
-    # refund demand outside the window, and request_refund already answers that.
+    # cancellation, and cancel_booking already answers that.
     settled = (
         db.query(ChangeRequest)
         .filter(

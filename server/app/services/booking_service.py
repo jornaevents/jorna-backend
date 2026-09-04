@@ -931,19 +931,24 @@ def update_booking_status(
         # no way out of a booking at all, so the only honest options were to
         # tell the client in the chat and hope, or not turn up.
         #
-        # Only while the money hasn't moved. Past that the client is out of
-        # pocket for a date they're holding, and unwinding it is a refund with
-        # its own rules — not a status change. MONEY_MOVED_STATUSES is the same
-        # set the delete paths refuse on, including 'processing', because money
-        # in flight is the worst moment to walk away, not an exempt one.
+        # 'paid' is the one money-moved state this is allowed from — see the
+        # refund below. Every other money-moved state stays blocked
+        # (MONEY_MOVED_STATUSES minus 'paid'; the delete paths still refuse on
+        # all of them, including 'processing', because money in flight is the
+        # worst moment to walk away): a Stripe charge still in flight, funds
+        # already released to the vendor, or a booking already refunded/
+        # disputed/cancelled isn't a plain "vendor changed their mind."
         cancelling = (
             status_str == BookingStatus.REJECTED.value
             and booking.status == BookingStatus.APPROVED.value
         )
+        _refund_client_on_cancel = False
         if cancelling:
             from app.services.bundle_service import _money_has_moved
 
-            if _money_has_moved(booking):
+            if booking.payment_status == "paid":
+                _refund_client_on_cancel = True
+            elif _money_has_moved(booking):
                 raise BookingError(
                     400,
                     "This booking has already been paid for, so it can't be "
@@ -1022,6 +1027,30 @@ def update_booking_status(
         sync_event_venue(booking.bundle_id, db)
     db.commit()
     db.refresh(booking)
+
+    # A vendor pulling out of an accepted, paid booking always owes the
+    # client every cent back — no ramp, unlike a client-initiated
+    # cancellation (stripe_service.cancel_booking). They're the one breaking
+    # the commitment, so they forfeit their share entirely rather than
+    # keeping any of it for having held the date.
+    if status_str == BookingStatus.REJECTED.value and _refund_client_on_cancel:
+        import stripe
+
+        try:
+            if not booking.payment_intent_id:
+                raise ValueError("No payment intent found for this booking")
+            stripe.Refund.create(
+                payment_intent=booking.payment_intent_id,
+                reason="requested_by_customer",
+            )
+            booking.payment_status = "refunded"
+            db.commit()
+            db.refresh(booking)
+        except Exception as exc:  # noqa: BLE001 — including stripe.StripeError
+            logger.error(
+                "Vendor-cancel refund failed for booking %s: %s", booking.booking_id, exc
+            )
+            db.rollback()
 
     # Accepting is what triggers the charge. The client saved a card when they
     # sent the plan precisely so this moment wouldn't wait on them coming back —

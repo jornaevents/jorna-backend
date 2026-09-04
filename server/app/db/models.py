@@ -259,13 +259,16 @@ class Booking(Base):
     # straight from Stripe on return from checkout (safety net for a delayed or
     # misconfigured payment_intent.succeeded webhook). See sync_booking_payment.
     checkout_session_id = Column(String(255), nullable=True)
-    # unpaid | processing | paid | released | refunded | disputed
+    # unpaid | processing | paid | released | refunded | cancelled | disputed
+    # 'cancelled' is distinct from 'refunded': it's a post-grace client
+    # cancellation split between the platform and the vendor, not a 100%
+    # refund — see cancelled_at / refund_cents / vendor_cancellation_cents.
     payment_status = Column(String(50), nullable=False, default="unpaid")
     amount_cents = Column(Integer, nullable=True)       # total charged to customer
     platform_fee_cents = Column(Integer, nullable=True) # Desiconnect's cut
     currency = Column(String(10), nullable=False, default="usd")
-    confirmed_at = Column(DateTime, nullable=True)      # when the vendor approved the request
-    paid_at = Column(DateTime, nullable=True)           # when Stripe payment succeeded — the 24h refund window runs from here
+    confirmed_at = Column(DateTime, nullable=True)      # when the vendor approved the request — the 24h cancellation grace window runs from here (see stripe_service.cancellation_split)
+    paid_at = Column(DateTime, nullable=True)           # when Stripe payment succeeded
     customer_confirmed_at = Column(DateTime, nullable=True)
     vendor_confirmed_at = Column(DateTime, nullable=True)
     funds_released_at = Column(DateTime, nullable=True)
@@ -285,6 +288,19 @@ class Booking(Base):
     # calendar_service needs to tell "create" from "update" from "nothing to
     # delete."
     google_event_id = Column(String(255), nullable=True)
+
+    # Set only by stripe_service.cancel_booking — a client cancelling a paid,
+    # accepted booking. Kept apart from platform_fee_cents (the ordinary
+    # transaction fee) because a cancellation splits the money on its own
+    # schedule: refund_cents is what went back to the client (0, or the full
+    # amount_cents, never in between — see cancellation_split), and
+    # vendor_cancellation_cents is what was transferred to the vendor as
+    # their share of a booking that didn't get a full refund. Whatever's left
+    # of amount_cents after both is the platform's share, implicitly (never
+    # transferred anywhere, so not worth its own column).
+    cancelled_at = Column(DateTime, nullable=True)
+    refund_cents = Column(Integer, nullable=True)
+    vendor_cancellation_cents = Column(Integer, nullable=True)
 
 
 class Bundle(Base):
