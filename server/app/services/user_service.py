@@ -10,6 +10,7 @@ from app.db.models import (
     Bundle,
     ChangeRequest,
     ContentReport,
+    Conversation,
     ConversationMember,
     Event,
     GroupMessage,
@@ -86,6 +87,10 @@ def delete_user(*, user_id: str, db: Session) -> None:
     conversations and event, and _delete_booking_cascade takes a booking's
     negotiations, messages and reviews. Reusing them keeps this path honest with
     the ones clients already use, including their refusal when money has moved.
+    What neither reaches is a direct thread with no bundle or booking behind
+    it — an enquiry, a client asking a vendor a question before any plan
+    exists — since both cascades walk from a bundle/booking, not from a
+    person; that gets its own cleanup below, by client_user_id/vendor_id.
     """
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
@@ -161,6 +166,45 @@ def delete_user(*, user_id: str, db: Session) -> None:
         db.query(Message).filter(
             or_(Message.sender_id == user_id, Message.receiver_id == user_id)
         ).delete(synchronize_session=False)
+
+        # Direct threads with no bundle or booking behind them — an "enquiry",
+        # a client asking a vendor a question before any plan exists (see
+        # Conversation.bundle_id's docstring). _delete_bundle_cascade and
+        # _delete_booking_cascade above only ever look for a conversation
+        # hanging off a bundle/booking they're deleting, so they can't reach
+        # one that hangs off a person instead — this deleted bookings and
+        # bundles first and then went straight for the user, same shape as
+        # the bug this function's own docstring describes, just one layer
+        # further down. Filtered on client_user_id/vendor_id rather than
+        # subject_type == "enquiry" by name, so it also catches anything else
+        # that ever ends up pointing at this user/vendor with no bundle or
+        # booking to have been cleaned up through.
+        convo_sides = [Conversation.client_user_id == user_id]
+        if vendor_id:
+            convo_sides.append(Conversation.vendor_id == vendor_id)
+        leftover_conv_ids = [
+            c.conversation_id for c in db.query(Conversation).filter(or_(*convo_sides)).all()
+        ]
+        if leftover_conv_ids:
+            leftover_msg_ids = [
+                m.message_id
+                for m in db.query(GroupMessage)
+                .filter(GroupMessage.conversation_id.in_(leftover_conv_ids))
+                .all()
+            ]
+            if leftover_msg_ids:
+                db.query(GroupMessageRead).filter(
+                    GroupMessageRead.message_id.in_(leftover_msg_ids)
+                ).delete(synchronize_session=False)
+                db.query(GroupMessage).filter(
+                    GroupMessage.conversation_id.in_(leftover_conv_ids)
+                ).delete(synchronize_session=False)
+            db.query(ConversationMember).filter(
+                ConversationMember.conversation_id.in_(leftover_conv_ids)
+            ).delete(synchronize_session=False)
+            db.query(Conversation).filter(
+                Conversation.conversation_id.in_(leftover_conv_ids)
+            ).delete(synchronize_session=False)
 
         own_negotiations = [
             n.negotiation_id

@@ -176,6 +176,72 @@ def test_a_vendor_account_takes_a_booking_subject_conversation_with_it():
     db.close()
 
 
+def test_an_enquiry_conversation_with_no_bundle_or_booking_is_cleaned_up():
+    """The real bug: an enquiry (a client asking a vendor a question before
+    any plan exists — subject_type="enquiry", both bundle_id and booking_id
+    null) hangs off neither a bundle nor a booking, so neither
+    _delete_bundle_cascade nor _delete_booking_cascade ever finds it. Used to
+    die on fk_conversations_client_user_id."""
+    db = TestingSessionLocal()
+    client = _user(db, f"delc_{uuid.uuid4().hex[:8]}")
+    _logged_in(db, client)
+    vuser = _user(db, f"delv_{uuid.uuid4().hex[:8]}")
+    vendor = Vendor(user_id=vuser.user_id, bio="b", rating=4.5, num_events=1, category="dj")
+    db.add(vendor); db.commit(); db.refresh(vendor)
+
+    now = datetime.now(timezone.utc)
+    conv = Conversation(
+        subject_type="enquiry", vendor_id=vendor.vendor_id, client_user_id=client.user_id,
+        type="direct", name="", created_at=now,
+    )
+    db.add(conv); db.commit(); db.refresh(conv)
+    db.add(ConversationMember(conversation_id=conv.conversation_id, user_id=client.user_id, joined_at=now))
+    db.add(ConversationMember(conversation_id=conv.conversation_id, user_id=vuser.user_id, joined_at=now))
+    db.add(GroupMessage(conversation_id=conv.conversation_id, sender_id=client.user_id,
+                        content="Are you free June 1st?", created_at=now))
+    db.commit()
+    uid = client.user_id
+    conv_id = conv.conversation_id
+
+    delete_user(user_id=uid, db=db)  # used to raise UserError(500, "Delete failed: ...")
+
+    assert not _exists(db, uid)
+    assert db.query(Conversation).filter(Conversation.conversation_id == conv_id).first() is None
+    assert db.query(ConversationMember).filter(ConversationMember.conversation_id == conv_id).count() == 0
+    assert db.query(GroupMessage).filter(GroupMessage.conversation_id == conv_id).count() == 0
+    db.close()
+
+
+def test_a_vendor_deleting_their_account_takes_enquiry_conversations_too():
+    """Same bug, the other side — a vendor's account also carries vendor_id
+    on the enquiry, which would otherwise trip fk_conversations_vendor_id the
+    moment the Vendor row itself is deleted."""
+    db = TestingSessionLocal()
+    client = _user(db, f"delc_{uuid.uuid4().hex[:8]}")
+    vuser = _user(db, f"delv_{uuid.uuid4().hex[:8]}")
+    vendor = Vendor(user_id=vuser.user_id, bio="b", rating=4.5, num_events=1, category="dj")
+    db.add(vendor); db.commit(); db.refresh(vendor)
+
+    now = datetime.now(timezone.utc)
+    conv = Conversation(
+        subject_type="enquiry", vendor_id=vendor.vendor_id, client_user_id=client.user_id,
+        type="direct", name="", created_at=now,
+    )
+    db.add(conv); db.commit(); db.refresh(conv)
+    db.add(ConversationMember(conversation_id=conv.conversation_id, user_id=client.user_id, joined_at=now))
+    db.add(ConversationMember(conversation_id=conv.conversation_id, user_id=vuser.user_id, joined_at=now))
+    db.commit()
+    uid = vuser.user_id
+    conv_id = conv.conversation_id
+
+    delete_user(user_id=uid, db=db)
+
+    assert not _exists(db, uid)
+    assert db.query(Vendor).filter(Vendor.vendor_id == vendor.vendor_id).first() is None
+    assert db.query(Conversation).filter(Conversation.conversation_id == conv_id).first() is None
+    db.close()
+
+
 @pytest.mark.parametrize("status", ["paid", "released", "disputed", "processing", "refunded"])
 def test_money_against_a_booking_refuses_the_whole_delete(status):
     """Deleting the account wouldn't return the money, only the record of where
