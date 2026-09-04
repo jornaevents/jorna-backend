@@ -1,7 +1,7 @@
 """record the client/vendor split when a paid booking is cancelled
 
-Revision ID: 0052_booking_cancellation_split
-Revises: 0051_google_busy_cache
+Revision ID: 0053_booking_cancellation_split
+Revises: 0052_merge_heads
 Create Date: 2026-09-04
 
 Backs the new cancellation policy (stripe_service.cancel_booking /
@@ -21,8 +21,8 @@ Additive only: 3 new nullable columns, no backfill, no new table.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0052_booking_cancellation_split"
-down_revision = "0051_google_busy_cache"
+revision = "0053_booking_cancellation_split"
+down_revision = "0052_merge_heads"
 branch_labels = None
 depends_on = None
 
