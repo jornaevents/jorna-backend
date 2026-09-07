@@ -103,6 +103,9 @@ class UpdateVendorRequest(BaseModel):
     open_to_price_negotiation: Optional[bool] = None
     open_to_location_negotiation: Optional[bool] = None
     instagram_username: Optional[str] = None
+    payment_method: Optional[str] = None
+    venmo_handle: Optional[str] = None
+    zelle_contact: Optional[str] = None
 
     @field_validator("specializations")
     @classmethod
