@@ -787,6 +787,11 @@ def create_booking(
     if existing:
         return _idempotent_response(existing)
 
+    # Snapshot the vendor's payment track now, not read live later — a vendor
+    # switching tracks after this booking exists shouldn't change the deal
+    # a client already agreed to.
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+
     booking = Booking(
         booking_id=str(uuid.uuid4()),
         user_id=user_id,
@@ -804,6 +809,7 @@ def create_booking(
         venue_longitude=venue_longitude,
         status=BookingStatus.PENDING.value,
         bundle_id=bundle_id,
+        payment_method=vendor.payment_method if vendor else None,
     )
     # Estimate the total = rate x quantity from everything the booking carries.
     # When the quantity is still unknown (e.g. a per-person service with no guest

@@ -159,6 +159,14 @@ class Vendor(Base):
     stripe_account_id = Column(String(255), nullable=True)
     stripe_onboarding_complete = Column(Boolean, nullable=False, default=False)
 
+    # Payment track the vendor has chosen — "stripe" keeps the existing
+    # card-charge/escrow flow; "manual" means the vendor is paid directly via
+    # Venmo/Zelle and Jorna never touches the money. Defaults to "stripe" so
+    # every existing vendor's behavior is unchanged until they opt in.
+    payment_method = Column(String(20), nullable=False, default="stripe")
+    venmo_handle = Column(String(255), nullable=True)
+    zelle_contact = Column(String(255), nullable=True)
+
     # Instagram integration
     instagram_username = Column(String(100), nullable=True, unique=True)
     # Auto-populated by the scraper — kept separate from user-inputted tags
@@ -301,6 +309,13 @@ class Booking(Base):
     cancelled_at = Column(DateTime, nullable=True)
     refund_cents = Column(Integer, nullable=True)
     vendor_cancellation_cents = Column(Integer, nullable=True)
+
+    # Snapshot of the vendor's payment_method at the moment this booking was
+    # created, so a vendor changing tracks later never rewrites the terms of
+    # a booking already in flight. Null for any booking created before this
+    # column existed — consumed starting in a later phase to decide whether
+    # the accept-time charge and cancellation-split logic run at all.
+    payment_method = Column(String(20), nullable=True)
 
 
 class Bundle(Base):

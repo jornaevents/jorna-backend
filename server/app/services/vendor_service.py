@@ -154,6 +154,9 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "tags": sorted(t.name for t in v.tags),
         "instagram_username": v.instagram_username,
         "instagram_tags": v.instagram_tags or [],
+        "payment_method": v.payment_method,
+        "venmo_handle": v.venmo_handle,
+        "zelle_contact": v.zelle_contact,
     }
 
 
@@ -194,10 +197,20 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
                 raise VendorError(400, "That Instagram account is already linked to another vendor")
         update_data["instagram_username"] = ig
 
+    if "payment_method" in update_data and update_data["payment_method"] not in ("stripe", "manual"):
+        raise VendorError(400, "payment_method must be 'stripe' or 'manual'")
+
+    if "venmo_handle" in update_data:
+        update_data["venmo_handle"] = (update_data["venmo_handle"] or "").strip() or None
+
+    if "zelle_contact" in update_data:
+        update_data["zelle_contact"] = (update_data["zelle_contact"] or "").strip() or None
+
     for field, value in update_data.items():
         if field in ["bio", "category", "subcategory", "specializations", "travel_radius_miles",
                      "open_to_long_distance", "open_to_price_negotiation",
-                     "open_to_location_negotiation", "instagram_username"]:
+                     "open_to_location_negotiation", "instagram_username",
+                     "payment_method", "venmo_handle", "zelle_contact"]:
             setattr(vendor, field, value)
     
     db.commit()

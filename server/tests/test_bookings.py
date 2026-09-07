@@ -453,6 +453,80 @@ def test_unauthenticated_booking_rejected():
     assert response.status_code in (401, 403)
 
 
+# ── payment_method snapshot (optional-escrow Phase 1) ──────────────────
+#
+# Booking.payment_method is stamped from the vendor's current setting at
+# creation time, not read live later — so a vendor switching tracks after a
+# booking already exists doesn't change the terms of that booking.
+
+def test_create_booking_snapshots_vendors_payment_method(seeded_db):
+    from app.db.models import Booking as BookingModel
+
+    user = seeded_db["user"]
+    service = seeded_db["service"]
+    headers = make_auth_headers(user)
+
+    response = client.post(
+        "/bookings",
+        json={
+            "service_id": service.service_id,
+            "event_name": "Test Event",
+            "time_start": "13:00",
+            "time_end": "15:00",
+            "location": "123 Test St",
+            "date_iso": "2026-05-01",
+            "venue_latitude": 34.0,
+            "venue_longitude": -118.0,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    booking_id = response.json()["booking_id"]
+
+    db = TestingSessionLocal()
+    booking = db.query(BookingModel).filter(BookingModel.booking_id == booking_id).first()
+    assert booking.payment_method == "stripe"
+    db.close()
+
+
+def test_create_booking_snapshots_manual_payment_method(seeded_db):
+    from app.db.models import Booking as BookingModel, Vendor as VendorModel
+
+    user = seeded_db["user"]
+    vendor = seeded_db["vendor"]
+    service = seeded_db["service"]
+    headers = make_auth_headers(user)
+
+    db = TestingSessionLocal()
+    db.query(VendorModel).filter(VendorModel.vendor_id == vendor.vendor_id).update(
+        {"payment_method": "manual", "venmo_handle": "@vendor"}
+    )
+    db.commit()
+    db.close()
+
+    response = client.post(
+        "/bookings",
+        json={
+            "service_id": service.service_id,
+            "event_name": "Test Event",
+            "time_start": "13:00",
+            "time_end": "15:00",
+            "location": "123 Test St",
+            "date_iso": "2026-05-01",
+            "venue_latitude": 34.0,
+            "venue_longitude": -118.0,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    booking_id = response.json()["booking_id"]
+
+    db = TestingSessionLocal()
+    booking = db.query(BookingModel).filter(BookingModel.booking_id == booking_id).first()
+    assert booking.payment_method == "manual"
+    db.close()
+
+
 # ── A vendor pulling out of a booking they accepted ───────────────────
 #
 # A vendor whose circumstances changed had no way out of an accepted booking at
