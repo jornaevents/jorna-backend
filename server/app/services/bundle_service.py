@@ -157,6 +157,15 @@ def _booking_summary(
         "service_subcategory": service.subcategory if service else None,
         "vendor_name": f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else None,
         "vendor_id": booking.vendor_id,
+        # "stripe" (protected, escrow-held) or "manual" (paid directly via
+        # Venmo/Zelle) — a snapshot of the vendor's setting at send time, not
+        # read live from the vendor. Null predates this feature; treated as
+        # "stripe" everywhere it's read.
+        "payment_method": booking.payment_method,
+        # Only meaningful (and only sent) on a manual-track booking — where to
+        # actually send the money, since Jorna isn't collecting it.
+        "vendor_venmo_handle": vendor.venmo_handle if vendor and booking.payment_method == "manual" else None,
+        "vendor_zelle_contact": vendor.zelle_contact if vendor and booking.payment_method == "manual" else None,
         "price": price,
         "price_unit": service.price_unit if service else None,
         "price_pending_quantity": total_cents is None,

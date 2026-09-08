@@ -21,6 +21,8 @@ from app.services.stripe_service import (
     confirm_event,
     cancel_booking,
     cancellation_preview,
+    mark_booking_paid,
+    confirm_payment_received,
     raise_dispute,
     resolve_dispute,
     create_card_setup_session,
@@ -251,6 +253,46 @@ def cancellation_preview_route(
     """
     try:
         return cancellation_preview(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/mark-paid",
+    summary="Client: mark a manual-track booking as paid",
+)
+@limiter.limit("5/minute")
+def mark_booking_paid_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Self-reported — Jorna never touches this money. The vendor still needs
+    to confirm receiving it (see confirm-received)."""
+    try:
+        return mark_booking_paid(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/confirm-received",
+    summary="Vendor: confirm receiving a manual-track client's direct payment",
+)
+@limiter.limit("5/minute")
+def confirm_payment_received_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Self-reported, same as mark-paid — the vendor's side of the manual
+    track's two-sided attestation."""
+    try:
+        return confirm_payment_received(
             booking_id=booking_id, caller_user_id=current_user.user_id, db=db
         )
     except StripeError as e:

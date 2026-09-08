@@ -345,6 +345,35 @@ def test_approve_booking(seeded_db):
     assert booking.status == "approved"
 
 
+def test_approve_skips_the_charge_for_a_manual_track_booking(seeded_db, mocker):
+    charge = mocker.patch("app.services.stripe_service.charge_saved_card")
+    db = seeded_db["db"]
+    user = seeded_db["user"]
+    vendor = seeded_db["vendor"]
+    vendor_user = seeded_db["vendor_user"]
+    service = seeded_db["service"]
+
+    booking = Booking(
+        user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
+        time_start="10:00", time_end="11:30",
+        location="145 Main St", date_iso="2026-03-02",
+        venue_latitude=40.0, venue_longitude=-70.0, status="pending",
+        payment_method="manual",
+    )
+    db.add(booking)
+    db.commit()
+    db.refresh(booking)
+
+    headers = make_auth_headers(vendor_user)
+    response = client.put(
+        f"/bookings/{booking.booking_id}/status",
+        json={"status": "approved"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    charge.assert_not_called()
+
+
 def test_client_cannot_approve(seeded_db):
     db = seeded_db["db"]
     user = seeded_db["user"]
