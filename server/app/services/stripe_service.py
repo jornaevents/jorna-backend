@@ -1052,32 +1052,108 @@ def cancellation_preview(*, booking_id: str, caller_user_id: str, db: Session) -
     if booking.user_id != caller_user_id:
         raise StripeError(403, "You are not the customer for this booking")
 
+    if booking.payment_status != "paid":
+        # Nothing held — either it's a manual-track booking (never reaches
+        # "paid") or a Stripe one that hasn't been charged yet. Either way
+        # there's no refund ramp to preview.
+        return None
     return _refund_preview(booking)
 
 
+def _finish_cancellation(
+    *, booking: Booking, caller_user_id: str, db: Session,
+    refund_cents: int, vendor_cents: int,
+) -> dict:
+    """Shared tail for cancel_booking's manual and Stripe branches: flip the
+    status, best-effort calendar/chat bookkeeping, and the response payload.
+    Callers have already decided refund_cents/vendor_cents (both 0 for a
+    manual booking) and set payment_status themselves where it needs to
+    change."""
+    from app.models.schemas import BookingStatus
+
+    now = datetime.now(timezone.utc)
+    booking.status = BookingStatus.REJECTED.value
+    booking.cancelled_at = now
+    booking.refund_cents = refund_cents
+    booking.vendor_cancellation_cents = vendor_cents
+
+    try:
+        from app.services.booking_service import sync_event_venue
+        sync_event_venue(booking.bundle_id, db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cancel_booking: venue re-sync failed for %s: %s", booking.booking_id, exc)
+    db.commit()
+
+    if booking.google_event_id:
+        from app.services.calendar_service import remove_booking_from_calendar
+
+        remove_booking_from_calendar(booking, db)
+
+    try:
+        from app.services.conversation_service import post_system_message
+
+        if refund_cents > 0:
+            line = "The client cancelled this booking. It was within the 24-hour grace period, so they've been refunded in full."
+        elif vendor_cents > 0:
+            line = (
+                f"The client cancelled this booking. ${vendor_cents / 100:,.2f} of what "
+                "they paid has been sent to the vendor for holding the date."
+            )
+        elif booking.payment_method == "manual":
+            line = "The client cancelled this booking. Any payment sent directly is between them and the vendor — Jorna didn't hold it."
+        else:
+            line = "The client cancelled this booking."
+        post_system_message(
+            booking_id=booking.booking_id, sender_user_id=caller_user_id, content=line,
+            meta={"kind": "cancellation", "refund_cents": refund_cents, "vendor_cents": vendor_cents},
+            db=db,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cancel_booking: couldn't post system message for %s: %s", booking.booking_id, exc)
+
+    logger.info(
+        "Booking %s cancelled: %d refunded to client, %d transferred to vendor",
+        booking.booking_id, refund_cents, vendor_cents,
+    )
+
+    if booking.payment_method == "manual":
+        message = "Booking cancelled. Any payment you sent directly is between you and the vendor — Jorna doesn't hold or refund it."
+    elif refund_cents > 0:
+        message = "Booking cancelled. You've been refunded in full — funds will return within 5–10 business days."
+    elif vendor_cents > 0:
+        message = (
+            f"Booking cancelled. This is past the 24-hour grace period, so "
+            f"${vendor_cents / 100:,.2f} goes to the vendor for holding the date — "
+            "nothing is refunded to you."
+        )
+    else:
+        message = "Booking cancelled."
+
+    return {
+        "message": message,
+        "refund_cents": refund_cents,
+        "vendor_cancellation_cents": vendor_cents,
+        "payment_status": booking.payment_status,
+    }
+
+
 def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
-    """The client cancelling a paid booking, at any point up to the event.
+    """The client cancelling a booking, at any point up to the event.
 
     Replaces the old flat request_refund. Within GRACE_HOURS of the vendor's
     acceptance, this is a full refund exactly as before. Past it, the client
     gets nothing back — the payment splits between the platform and the
     vendor instead (cancellation_split), the vendor's share moving out by the
     same Transfer mechanism _release_funds uses for a completed event.
+
+    A manual-track booking skips all of that — Jorna never held the money,
+    so cancelling it is just a status change (see _finish_cancellation).
     """
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise StripeError(404, "Booking not found")
     if booking.user_id != caller_user_id:
         raise StripeError(403, "You are not the customer for this booking")
-
-    if booking.payment_status != "paid":
-        raise StripeError(
-            400,
-            f"Booking is not eligible for cancellation (payment status: "
-            f"'{booking.payment_status}')",
-        )
-    if not booking.payment_intent_id:
-        raise StripeError(500, "No payment intent found for this booking")
 
     event_date = _parse_event_date(booking.date_iso)
     if event_date is not None:
@@ -1090,6 +1166,21 @@ def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict
                 "cancellation is no longer available. Raise a problem instead "
                 "if something has gone wrong.",
             )
+
+    if booking.payment_method == "manual":
+        return _finish_cancellation(
+            booking=booking, caller_user_id=caller_user_id, db=db,
+            refund_cents=0, vendor_cents=0,
+        )
+
+    if booking.payment_status != "paid":
+        raise StripeError(
+            400,
+            f"Booking is not eligible for cancellation (payment status: "
+            f"'{booking.payment_status}')",
+        )
+    if not booking.payment_intent_id:
+        raise StripeError(500, "No payment intent found for this booking")
 
     now = datetime.now(timezone.utc)
     split = cancellation_split(booking, now)
@@ -1126,67 +1217,86 @@ def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict
         # booking still needs to come off the books as cancelled.
         booking.payment_status = "cancelled"
 
+    return _finish_cancellation(
+        booking=booking, caller_user_id=caller_user_id, db=db,
+        refund_cents=refund_cents, vendor_cents=vendor_cents,
+    )
+
+
+def mark_booking_paid(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The client attesting they've paid a manual-track vendor directly.
+
+    Self-reported and unverifiable — Jorna never touches this money. This is
+    the entire "payment status" a manual booking gets until the vendor
+    confirms receiving it (see confirm_payment_received)."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+    if booking.payment_method != "manual":
+        raise StripeError(400, "This booking is on the protected track — payment happens automatically")
+
     from app.models.schemas import BookingStatus
 
-    booking.status = BookingStatus.REJECTED.value
-    booking.cancelled_at = now
-    booking.refund_cents = refund_cents
-    booking.vendor_cancellation_cents = vendor_cents
+    if booking.status != BookingStatus.APPROVED.value:
+        raise StripeError(400, "This booking hasn't been accepted yet")
+    if booking.payment_status != "unpaid":
+        raise StripeError(400, f"Already marked (payment status: '{booking.payment_status}')")
 
-    try:
-        from app.services.booking_service import sync_event_venue
-        sync_event_venue(booking.bundle_id, db)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("cancel_booking: venue re-sync failed for %s: %s", booking_id, exc)
+    now = datetime.now(timezone.utc)
+    booking.payment_status = "marked_paid"
+    booking.manual_payment_marked_at = now
     db.commit()
-
-    if booking.google_event_id:
-        from app.services.calendar_service import remove_booking_from_calendar
-
-        remove_booking_from_calendar(booking, db)
+    db.refresh(booking)
 
     try:
         from app.services.conversation_service import post_system_message
 
-        if refund_cents > 0:
-            line = "The client cancelled this booking. It was within the 24-hour grace period, so they've been refunded in full."
-        elif vendor_cents > 0:
-            line = (
-                f"The client cancelled this booking. ${vendor_cents / 100:,.2f} of what "
-                "they paid has been sent to the vendor for holding the date."
-            )
-        else:
-            line = "The client cancelled this booking."
         post_system_message(
-            booking_id=booking_id, sender_user_id=caller_user_id, content=line,
-            meta={"kind": "cancellation", "refund_cents": refund_cents, "vendor_cents": vendor_cents},
-            db=db,
+            booking_id=booking_id, sender_user_id=caller_user_id,
+            content="The client marked this booking as paid.",
+            meta={"kind": "manual_payment_marked"}, db=db,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("cancel_booking: couldn't post system message for %s: %s", booking_id, exc)
+        logger.warning("mark_booking_paid: couldn't post system message for %s: %s", booking_id, exc)
 
-    logger.info(
-        "Booking %s cancelled: %d refunded to client, %d transferred to vendor",
-        booking_id, refund_cents, vendor_cents,
-    )
+    return {"message": "Marked as paid.", "payment_status": booking.payment_status}
 
-    if refund_cents > 0:
-        message = "Booking cancelled. You've been refunded in full — funds will return within 5–10 business days."
-    elif vendor_cents > 0:
-        message = (
-            f"Booking cancelled. This is past the 24-hour grace period, so "
-            f"${vendor_cents / 100:,.2f} goes to the vendor for holding the date — "
-            "nothing is refunded to you."
+
+def confirm_payment_received(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The vendor attesting they received a manual-track client's direct
+    payment. Same self-reported, unverifiable contract as mark_booking_paid."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    if not vendor or vendor.user_id != caller_user_id:
+        raise StripeError(403, "You are not the vendor for this booking")
+    if booking.payment_method != "manual":
+        raise StripeError(400, "This booking is on the protected track — payment happens automatically")
+    if booking.payment_status != "marked_paid":
+        raise StripeError(400, f"Nothing to confirm yet (payment status: '{booking.payment_status}')")
+
+    now = datetime.now(timezone.utc)
+    booking.payment_status = "confirmed_paid"
+    booking.manual_payment_confirmed_at = now
+    db.commit()
+    db.refresh(booking)
+
+    try:
+        from app.services.conversation_service import post_system_message
+
+        post_system_message(
+            booking_id=booking_id, sender_user_id=caller_user_id,
+            content="The vendor confirmed they received payment.",
+            meta={"kind": "manual_payment_confirmed"}, db=db,
         )
-    else:
-        message = "Booking cancelled."
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("confirm_payment_received: couldn't post system message for %s: %s", booking_id, exc)
 
-    return {
-        "message": message,
-        "refund_cents": refund_cents,
-        "vendor_cancellation_cents": vendor_cents,
-        "payment_status": booking.payment_status,
-    }
+    return {"message": "Confirmed.", "payment_status": booking.payment_status}
 
 
 # ── Refund after a reschedule falls through ───────────────────────────

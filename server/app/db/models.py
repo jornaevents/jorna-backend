@@ -268,9 +268,16 @@ class Booking(Base):
     # misconfigured payment_intent.succeeded webhook). See sync_booking_payment.
     checkout_session_id = Column(String(255), nullable=True)
     # unpaid | processing | paid | released | refunded | cancelled | disputed
+    #   | marked_paid | confirmed_paid
     # 'cancelled' is distinct from 'refunded': it's a post-grace client
     # cancellation split between the platform and the vendor, not a 100%
     # refund — see cancelled_at / refund_cents / vendor_cancellation_cents.
+    # marked_paid/confirmed_paid are the manual-track's own lifecycle (see
+    # manual_payment_marked_at/manual_payment_confirmed_at below) — kept
+    # distinct from 'paid', which specifically means Stripe processed a
+    # charge and Jorna is holding funds. Reusing 'paid' for a self-report
+    # would wrongly enable the held-funds release UI for money Jorna never
+    # touched.
     payment_status = Column(String(50), nullable=False, default="unpaid")
     amount_cents = Column(Integer, nullable=True)       # total charged to customer
     platform_fee_cents = Column(Integer, nullable=True) # Desiconnect's cut
@@ -313,9 +320,16 @@ class Booking(Base):
     # Snapshot of the vendor's payment_method at the moment this booking was
     # created, so a vendor changing tracks later never rewrites the terms of
     # a booking already in flight. Null for any booking created before this
-    # column existed — consumed starting in a later phase to decide whether
-    # the accept-time charge and cancellation-split logic run at all.
+    # column existed — treated as "stripe" everywhere it's read, since every
+    # such booking predates the manual track entirely.
     payment_method = Column(String(20), nullable=True)
+
+    # The manual track's own two-sided attestation — set by
+    # stripe_service.mark_booking_paid / confirm_payment_received. Neither
+    # is proof of anything; Jorna never touches this money, so these are
+    # just what each side told the app happened, timestamped for the record.
+    manual_payment_marked_at = Column(DateTime, nullable=True)
+    manual_payment_confirmed_at = Column(DateTime, nullable=True)
 
 
 class Bundle(Base):

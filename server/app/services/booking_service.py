@@ -282,6 +282,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "change_request": _open_change_request(booking, db),
         "status": booking.status,
         "payment_status": booking.payment_status,
+        # "stripe" (protected) or "manual" (paid directly, Venmo/Zelle) —
+        # snapshotted at send time. Null predates this feature; treated as
+        # "stripe" everywhere it's read.
+        "payment_method": booking.payment_method,
         "amount_cents": booking.amount_cents,
         "currency": booking.currency,
         "client_checked_in_at": booking.client_checked_in_at,
@@ -1068,7 +1072,11 @@ def update_booking_status(
     # a limit — and the vendor's answer is not the place to surface that. The
     # booking stays approved and unpaid, which is exactly the state the manual
     # Pay button already handles, so the client is asked in the usual way.
-    if status_str == BookingStatus.APPROVED.value:
+    # A manual-track booking has no card to charge — the client pays the
+    # vendor directly via mark_booking_paid/confirm_payment_received instead.
+    # payment_method is None for anything created before that track existed,
+    # which is always Stripe.
+    if status_str == BookingStatus.APPROVED.value and booking.payment_method != "manual":
         try:
             from app.services.stripe_service import CardChargeUnavailable, charge_saved_card
 
