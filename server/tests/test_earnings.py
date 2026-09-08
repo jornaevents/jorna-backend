@@ -87,6 +87,45 @@ def test_earnings_math(earnings_db):
     assert all(e["client_name"] == "Cleo Client" for e in data["history"])
 
 
+def test_earnings_self_reported_income(earnings_db):
+    """Manual-track income (self-reported, never touched by Jorna) is its
+    own bucket — never blended into total_released_cents/in_escrow_cents."""
+    db = earnings_db["db"]
+    vendor = earnings_db["vendor"]
+    vendor_user = earnings_db["vendor_user"]
+    client_user = earnings_db["client_user"]
+    service = db.query(Service).filter(Service.vendor_id == vendor.vendor_id).first()
+
+    confirmed = Booking(
+        user_id=client_user.user_id, vendor_id=vendor.vendor_id,
+        service_id=service.service_id, time_start="18:00", time_end="23:00",
+        location="Hall", date_iso="2026-10-02", status="approved",
+        payment_status="confirmed_paid", payment_method="manual", amount_cents=80_000,
+    )
+    awaiting = Booking(
+        user_id=client_user.user_id, vendor_id=vendor.vendor_id,
+        service_id=service.service_id, time_start="18:00", time_end="23:00",
+        location="Hall", date_iso="2026-10-03", status="approved",
+        payment_status="marked_paid", payment_method="manual", amount_cents=30_000,
+    )
+    db.add_all([confirmed, awaiting])
+    db.commit()
+
+    resp = client.get(
+        f"/payments/vendors/{vendor.vendor_id}/earnings",
+        headers=make_auth_headers(vendor_user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["self_reported_cents"] == 80_000
+    assert data["self_reported_pending_cents"] == 30_000
+    assert data["self_reported_pending_count"] == 1
+    # Doesn't leak into the Stripe-verified buckets from the base fixture.
+    assert data["total_released_cents"] == 95_000
+    assert data["in_escrow_cents"] == 47_500
+
+
 def test_earnings_requires_owner(earnings_db):
     vendor = earnings_db["vendor"]
     client_user = earnings_db["client_user"]

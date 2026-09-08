@@ -120,6 +120,11 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "tags": sorted(t.name for t in v.tags),
         "instagram_username": v.instagram_username,
         "instagram_tags": v.instagram_tags or [],
+        # "stripe" (protected, escrow-held) or "manual" (paid directly via
+        # Venmo/Zelle) — a client needs this before booking, so it's public.
+        # venmo_handle/zelle_contact stay private until an actual booking
+        # exists (see bundle_service._booking_summary).
+        "payment_method": v.payment_method,
     }
 
 
@@ -284,6 +289,7 @@ def list_vendors(
             "location": u.location,
             "pfp_url": u.pfp_url,
             "tags": [t.name for t in v.tags],
+            "payment_method": v.payment_method,
         }
         for v, u in rows
     ]
@@ -442,6 +448,7 @@ def search_vendors(
                 "travel_radius_miles": vendor.travel_radius_miles,
                 "open_to_long_distance": vendor.open_to_long_distance,
                 "tags": [t.name for t in vendor.tags],
+                "payment_method": vendor.payment_method,
             }
         )
 

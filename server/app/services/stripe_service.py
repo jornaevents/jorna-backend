@@ -222,6 +222,10 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
     # Approved but unpaid — the client still has to pay; estimate from the
     # booking amount when set, else the service's listed price.
     upcoming = [b for b in bookings if b.status == "approved" and b.payment_status == "unpaid"]
+    # Manual track — self-reported, never touched by Jorna, so kept out of
+    # total_released_cents entirely rather than blended in as if verified.
+    self_reported = [b for b in bookings if b.payment_status == "confirmed_paid"]
+    awaiting_confirmation = [b for b in bookings if b.payment_status == "marked_paid"]
 
     from app.services.booking_service import resolve_total_cents
 
@@ -281,6 +285,11 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
         "disputed_cents": sum(net_cents(b) for b in disputed),
         "refunded_cents": sum((b.amount_cents or 0) for b in refunded),
         "platform_fees_cents": sum((b.platform_fee_cents or 0) for b in released),
+        # Manual track — paid directly, confirmed by the vendor. Self-reported,
+        # so kept separate from every Stripe-verified bucket above.
+        "self_reported_cents": sum(net_cents(b) for b in self_reported),
+        "self_reported_pending_cents": sum(net_cents(b) for b in awaiting_confirmation),
+        "self_reported_pending_count": len(awaiting_confirmation),
         "history": history,
     }
 
