@@ -317,3 +317,65 @@ def test_full_negotiation_flow(seeded_db):
     offers = history.json()["offers"]
     assert len(offers) == 3
     assert [o["action"] for o in offers] == ["offer", "counter", "accept"]
+
+
+# ── Approving while a negotiation is open (regression) ───────────────
+
+def test_vendor_cannot_approve_while_negotiation_open(seeded_db):
+    client_user = seeded_db["client_user"]
+    vendor_user = seeded_db["vendor_user"]
+    booking = seeded_db["booking"]
+    db = seeded_db["db"]
+
+    start = client.post("/negotiations", json={
+        "booking_id": booking.booking_id, "amount_cents": 80000,
+        "message": "Can you do $800?",
+    }, headers=make_auth_headers(client_user))
+    assert start.status_code == 201
+
+    response = client.put(
+        f"/bookings/{booking.booking_id}/status",
+        json={"status": "approved"},
+        headers=make_auth_headers(vendor_user),
+    )
+
+    assert response.status_code == 409
+    assert "open price offer" in response.json()["detail"].lower()
+
+    db.refresh(booking)
+    assert booking.status == "negotiation_ongoing"
+
+
+def test_vendor_can_approve_after_negotiation_resolved(seeded_db):
+    """Once the open offer is resolved (here: rejected, price stays as
+    listed), the plain Accept path works again exactly as before — proves
+    the guard is scoped to an *open* negotiation, not to a booking that
+    merely once had one."""
+    client_user = seeded_db["client_user"]
+    vendor_user = seeded_db["vendor_user"]
+    booking = seeded_db["booking"]
+    db = seeded_db["db"]
+
+    start = client.post("/negotiations", json={
+        "booking_id": booking.booking_id, "amount_cents": 80000,
+    }, headers=make_auth_headers(client_user))
+    neg_id = start.json()["negotiation_id"]
+
+    reject = client.post(
+        f"/negotiations/{neg_id}/reject", json={},
+        headers=make_auth_headers(vendor_user),
+    )
+    assert reject.status_code == 200
+
+    db.refresh(booking)
+    assert booking.status == "pending"
+
+    response = client.put(
+        f"/bookings/{booking.booking_id}/status",
+        json={"status": "approved"},
+        headers=make_auth_headers(vendor_user),
+    )
+    assert response.status_code == 200
+
+    db.refresh(booking)
+    assert booking.status == "approved"

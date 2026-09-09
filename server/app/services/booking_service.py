@@ -1014,6 +1014,32 @@ def update_booking_status(
                 "don't overlap.",
             )
 
+    # A vendor can't lock in the listed price while a counter-offer is still
+    # on the table — that's this exact bug: clicking plain Accept here would
+    # silently discard an open Negotiation row with zero warning. Keyed off
+    # the Negotiation row itself (not booking.status) since that row is the
+    # thing that actually gets thrown away, and it's the source of truth
+    # regardless of how booking.status happens to read.
+    if status_str == BookingStatus.APPROVED.value:
+        from app.db.models import Negotiation
+
+        open_negotiation = (
+            db.query(Negotiation)
+            .filter(
+                Negotiation.booking_id == booking.booking_id,
+                Negotiation.status == "open",
+            )
+            .first()
+        )
+        if open_negotiation:
+            raise BookingError(
+                409,
+                "There's an open price offer on this booking. Accept, "
+                "counter, or decline it in the negotiation first — "
+                "approving here would lock in the original price and "
+                "throw away the offer.",
+            )
+
     booking.status = status_str
     if status_str == BookingStatus.APPROVED.value:
         booking.confirmed_at = datetime.now(timezone.utc)
