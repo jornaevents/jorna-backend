@@ -1,8 +1,18 @@
+from datetime import date, timedelta
+
 import pytest
 from app.db.models import Booking, User, Service, Vendor
 from app.limiter import limiter
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 import uuid
+
+
+def _future_date(offset_days: int = 180) -> str:
+    """A booking date guaranteed ahead of "today" — update_booking/create_booking
+    now refuse a past one (see is_in_the_past), and a hardcoded literal here
+    is exactly the fixture that already drifted into the past once before
+    (test_a_draft_can_be_completed_afterwards, jorna-backend #34)."""
+    return (date.today() + timedelta(days=offset_days)).isoformat()
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +78,7 @@ def test_create_booking(seeded_db):
             "time_start": "13:00",
             "time_end": "15:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-01",
+            "date_iso": _future_date(180),
             "venue_latitude": 34.0,
             "venue_longitude": -118.0,
         },
@@ -94,7 +104,7 @@ def test_create_booking_rejects_non_positive_guest_count(seeded_db):
                 "time_start": "13:00",
                 "time_end": "15:00",
                 "location": "123 Test St",
-                "date_iso": "2026-05-01",
+                "date_iso": _future_date(180),
                 "guest_count": bad_count,
                 "venue_latitude": 34.0,
                 "venue_longitude": -118.0,
@@ -117,7 +127,7 @@ def test_update_booking_rejects_non_positive_guest_count(seeded_db):
             "time_start": "13:00",
             "time_end": "15:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-01",
+            "date_iso": _future_date(180),
             "venue_latitude": 34.0,
             "venue_longitude": -118.0,
         },
@@ -147,7 +157,7 @@ def test_create_booking_rejects_non_positive_performer_count(seeded_db):
                 "time_start": "13:00",
                 "time_end": "15:00",
                 "location": "123 Test St",
-                "date_iso": "2026-05-01",
+                "date_iso": _future_date(180),
                 "performer_count": bad_count,
                 "venue_latitude": 34.0,
                 "venue_longitude": -118.0,
@@ -170,7 +180,7 @@ def test_update_booking_rejects_non_positive_performer_count(seeded_db):
             "time_start": "13:00",
             "time_end": "15:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-01",
+            "date_iso": _future_date(180),
             "venue_latitude": 34.0,
             "venue_longitude": -118.0,
         },
@@ -205,7 +215,7 @@ def test_client_note_round_trips_to_client_and_vendor(seeded_db):
             "time_start": "13:00",
             "time_end": "15:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-02",
+            "date_iso": _future_date(181),
             "client_note": note,
         },
         headers=client_headers,
@@ -236,7 +246,7 @@ def test_client_note_defaults_to_null(seeded_db):
             "time_start": "10:00",
             "time_end": "12:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-03",
+            "date_iso": _future_date(182),
         },
         headers=headers,
     )
@@ -262,7 +272,7 @@ def test_duplicate_booking_returns_existing(seeded_db):
         "time_start": "13:00",
         "time_end": "15:00",
         "location": "123 Test St",
-        "date_iso": "2026-06-01",
+        "date_iso": _future_date(210),
     }
     first = client.post("/bookings", json=payload, headers=headers)
     assert first.status_code == 200
@@ -278,7 +288,7 @@ def test_duplicate_booking_returns_existing(seeded_db):
     count = db.query(Booking).filter(
         Booking.bundle_id == first_data["bundle_id"],
         Booking.service_id == service.service_id,
-        Booking.date_iso == "2026-06-01",
+        Booking.date_iso == _future_date(210),
     ).count()
     assert count == 1
 
@@ -296,7 +306,7 @@ def test_rebook_allowed_after_rejection(seeded_db):
         "time_start": "10:00",
         "time_end": "12:00",
         "location": "123 Test St",
-        "date_iso": "2026-06-02",
+        "date_iso": _future_date(211),
     }
     first = client.post("/bookings", json=payload, headers=headers)
     assert first.status_code == 200
@@ -324,7 +334,7 @@ def test_approve_booking(seeded_db):
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
         time_start="10:00", time_end="11:30",
-        location="145 Main St", date_iso="2026-03-02",
+        location="145 Main St", date_iso=_future_date(120),
         venue_latitude=40.0, venue_longitude=-70.0, status="pending",
     )
     db.add(booking)
@@ -356,7 +366,7 @@ def test_approve_skips_the_charge_for_a_manual_track_booking(seeded_db, mocker):
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
         time_start="10:00", time_end="11:30",
-        location="145 Main St", date_iso="2026-03-02",
+        location="145 Main St", date_iso=_future_date(120),
         venue_latitude=40.0, venue_longitude=-70.0, status="pending",
         payment_method="manual",
     )
@@ -383,7 +393,7 @@ def test_client_cannot_approve(seeded_db):
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
         time_start="10:00", time_end="11:30",
-        location="145 Main St", date_iso="2026-03-02",
+        location="145 Main St", date_iso=_future_date(120),
         venue_latitude=40.0, venue_longitude=-70.0, status="pending",
     )
     db.add(booking)
@@ -409,7 +419,7 @@ def test_get_user_bookings(seeded_db):
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
         time_start="10:00", time_end="11:30",
-        location="145 Main St", date_iso="2026-03-02", status="pending",
+        location="145 Main St", date_iso=_future_date(120), status="pending",
     )
     db.add(booking)
     db.commit()
@@ -443,7 +453,7 @@ def test_get_vendor_bookings(seeded_db):
     booking = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
         time_start="10:00", time_end="11:30",
-        location="145 Main St", date_iso="2026-03-02", status="pending",
+        location="145 Main St", date_iso=_future_date(120), status="pending",
     )
     db.add(booking)
     db.commit()
@@ -476,7 +486,7 @@ def test_unauthenticated_booking_rejected():
             "time_start": "10:00",
             "time_end": "11:00",
             "location": "Somewhere",
-            "date_iso": "2026-05-01",
+            "date_iso": _future_date(180),
         },
     )
     assert response.status_code in (401, 403)
@@ -503,7 +513,7 @@ def test_create_booking_snapshots_vendors_payment_method(seeded_db):
             "time_start": "13:00",
             "time_end": "15:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-01",
+            "date_iso": _future_date(180),
             "venue_latitude": 34.0,
             "venue_longitude": -118.0,
         },
@@ -541,7 +551,7 @@ def test_create_booking_snapshots_manual_payment_method(seeded_db):
             "time_start": "13:00",
             "time_end": "15:00",
             "location": "123 Test St",
-            "date_iso": "2026-05-01",
+            "date_iso": _future_date(180),
             "venue_latitude": 34.0,
             "venue_longitude": -118.0,
         },
