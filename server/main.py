@@ -76,7 +76,13 @@ def _validate_password(v: str) -> str:
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    # No min_length here: password_strength below enforces the same 8-char
+    # floor itself, with a message meant for the person typing it. A Field
+    # constraint runs before a validator does, so pairing them left Pydantic's
+    # own "String should have at least 8 characters" pre-empting the friendlier
+    # one for the exact case it was written for.
+    password: str
+
     username: str = Field(..., min_length=3, max_length=30)
     phone: Optional[str] = None
     f_name: str = Field(..., min_length=1, max_length=50)
@@ -163,7 +169,8 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=8)
+    # See RegisterRequest.password — no min_length here for the same reason.
+    new_password: str
 
     @field_validator("new_password")
     @classmethod
