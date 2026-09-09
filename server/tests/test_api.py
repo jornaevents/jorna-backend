@@ -115,6 +115,32 @@ def test_register_user():
     assert data["email"] == "test@example.com"
 
 
+def test_register_short_password_gets_a_readable_message():
+    """A too-short password used to fail on the Field(min_length=8) constraint
+    first, surfacing Pydantic's own "String should have at least 8
+    characters" — a schema error, not a sentence written for whoever's
+    filling out the form. password_strength's own length check (with
+    min_length dropped from the field) is what should answer now."""
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "shortpw@example.com",
+            "password": "short1A",
+            "username": "shortpwuser",
+            "f_name": "Test",
+            "l_name": "User",
+            "age": 25,
+            "location": "10001",
+            "gender": "Test Gender",
+            "language": "English",
+        },
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    msg = detail[0]["msg"] if isinstance(detail, list) else detail
+    assert msg == "Value error, Password must be at least 8 characters"
+
+
 def test_register_duplicate_user():
     response = client.post(
         "/auth/register",
