@@ -1,9 +1,11 @@
 """Tests for the price negotiation system."""
 
 import uuid
-import pytest
 from datetime import datetime, timezone
-from app.db.models import Booking, User, Vendor, Service
+
+import pytest
+
+from app.db.models import Booking, Bundle, Service, User, Vendor
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
@@ -379,3 +381,70 @@ def test_vendor_can_approve_after_negotiation_resolved(seeded_db):
 
     db.refresh(booking)
     assert booking.status == "approved"
+
+
+# ── negotiation_awaiting_role, surfaced on both the client's bundle view and
+# the vendor's booking list, so a "needs you" task list can point at exactly
+# the party who can act — see negotiation_role_from in booking_service.
+
+def test_negotiation_awaiting_role_flips_with_each_offer(seeded_db):
+    client_user = seeded_db["client_user"]
+    vendor_user = seeded_db["vendor_user"]
+    booking = seeded_db["booking"]
+    db = seeded_db["db"]
+    now = datetime.now(timezone.utc)
+
+    bundle = Bundle(
+        user_id=client_user.user_id, name="Negotiation Bundle",
+        status="active", created_at=now, updated_at=now,
+    )
+    db.add(bundle)
+    db.flush()
+    booking.bundle_id = bundle.bundle_id
+    db.commit()
+
+    def awaiting_role_via_bundle():
+        resp = client.get(f"/bundles/{bundle.bundle_id}", headers=make_auth_headers(client_user))
+        assert resp.status_code == 200
+        return resp.json()["bookings"][0]["negotiation_awaiting_role"]
+
+    def awaiting_role_via_vendor_list():
+        resp = client.get(
+            f"/bookings/vendor/{seeded_db['vendor'].vendor_id}",
+            headers=make_auth_headers(vendor_user),
+        )
+        assert resp.status_code == 200
+        row = next(b for b in resp.json()["items"] if b["booking_id"] == booking.booking_id)
+        return row["negotiation_awaiting_role"]
+
+    # No negotiation yet.
+    assert awaiting_role_via_bundle() is None
+    assert awaiting_role_via_vendor_list() is None
+
+    # Client opens with an offer — the vendor now owes the next move, on
+    # both the page the client sees and the page the vendor sees.
+    start = client.post("/negotiations", json={
+        "booking_id": booking.booking_id, "amount_cents": 80000,
+    }, headers=make_auth_headers(client_user))
+    assert start.status_code == 201
+    assert awaiting_role_via_bundle() == "vendor"
+    assert awaiting_role_via_vendor_list() == "vendor"
+
+    # Vendor counters — the ball is back with the client.
+    counter = client.post(
+        f"/negotiations/{start.json()['negotiation_id']}/offer",
+        json={"amount_cents": 90000},
+        headers=make_auth_headers(vendor_user),
+    )
+    assert counter.status_code == 200
+    assert awaiting_role_via_bundle() == "client"
+    assert awaiting_role_via_vendor_list() == "client"
+
+    # Accepted — nobody owes a move anymore.
+    accept = client.post(
+        f"/negotiations/{start.json()['negotiation_id']}/accept", json={},
+        headers=make_auth_headers(client_user),
+    )
+    assert accept.status_code == 200
+    assert awaiting_role_via_bundle() is None
+    assert awaiting_role_via_vendor_list() is None
