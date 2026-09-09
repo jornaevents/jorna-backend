@@ -720,6 +720,14 @@ def create_booking(
     if not service:
         raise BookingError(404, "Service not found")
 
+    # Same guard as update_booking — see its comment. A booking created
+    # straight from a service page (book/page.tsx) supplies date_iso up
+    # front, so this is that flow's equivalent choke point.
+    from app.services.plan_readiness import is_in_the_past
+
+    if is_in_the_past(date_iso):
+        raise BookingError(400, "That date has already passed — check the year.")
+
     now = datetime.now(timezone.utc)
 
     if bundle_id:
@@ -1183,9 +1191,18 @@ def update_booking(
     # being read, which is exactly when a silent edit does the most damage; and
     # the same check forbade filling a gap on an approved one, which is the only
     # way such a booking ever becomes payable.
-    from app.services.plan_readiness import refuse_locked_changes
+    from app.services.plan_readiness import is_in_the_past, refuse_locked_changes
 
     refuse_locked_changes(booking, update_data, db)
+
+    # Same rule the send gate refuses on (plan_readiness.booking_gaps), just
+    # enforced where a bad date can actually be typed rather than only where
+    # it's finally sent. A mistyped year (e.g. a native date input's segment
+    # sticking on "0026") used to save silently — nothing rejected it until
+    # Send, and a draft never reaches Send on its own, so it just sat there
+    # while the builder's own vendor search quietly failed against it.
+    if "date_iso" in update_data and is_in_the_past(update_data["date_iso"]):
+        raise BookingError(400, "That date has already passed — check the year.")
 
     allowed_fields = {"date_iso", "date_end", "guest_count", "performer_count", "time_start", "time_end", "location", "venue_latitude", "venue_longitude"}
     quantity_fields = {"date_iso", "date_end", "guest_count", "performer_count", "time_start", "time_end"}
