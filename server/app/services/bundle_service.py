@@ -62,6 +62,24 @@ def _latest_change_requests(bookings: list[Booking], db: Session):
     return {cr.booking_id: cr for cr in rows}
 
 
+def _open_negotiations(bookings: list[Booking], db: Session):
+    """The open Negotiation per booking (only those in negotiation_ongoing
+    status can have one), in one query — same batching reason as
+    _latest_change_requests.
+    """
+    from app.db.models import Negotiation
+
+    ids = [b.booking_id for b in bookings if b.booking_id and b.status == "negotiation_ongoing"]
+    if not ids:
+        return {}
+    rows = (
+        db.query(Negotiation)
+        .filter(Negotiation.booking_id.in_(ids), Negotiation.status == "open")
+        .all()
+    )
+    return {neg.booking_id: neg for neg in rows}
+
+
 def _change_request_summary(cr) -> dict | None:
     """One date change, as the client's plan reads it.
 
@@ -120,13 +138,18 @@ def _booking_summary(
     vendor: Vendor | None,
     vendor_user: User | None,
     change_request=None,
+    negotiation=None,
 ) -> dict:
     """Build a booking's summary dict from already-resolved related rows.
 
     Pure (no DB access) so callers can batch-load the Service/Vendor/User once
     via ``_resolve_booking_refs`` instead of issuing three queries per booking.
     """
-    from app.services.booking_service import _zone_name, resolve_total_cents
+    from app.services.booking_service import (
+        _zone_name,
+        negotiation_role_from,
+        resolve_total_cents,
+    )
     # Resolved total: stored amount, else recomputed rate x quantity, else the
     # flat price for event-priced services. None => rate-priced with an unknown
     # quantity, so show the rate + unit, not a total masquerading as one.
@@ -210,6 +233,9 @@ def _booking_summary(
         # client's plan reads it to draw the per-vendor board; a booking with
         # none carries null and nothing renders.
         "change_request": _change_request_summary(change_request),
+        # Which side owes the next move on an open price negotiation — see
+        # negotiation_role_from. None when there's no live negotiation.
+        "negotiation_awaiting_role": negotiation_role_from(booking, negotiation),
     }
 
 
@@ -253,14 +279,15 @@ def _bundle_dict(
     *,
     refs: tuple[dict[str, Service], dict[str, Vendor], dict[str, User]] | None = None,
     change_requests: dict | None = None,
+    negotiations: dict | None = None,
     event=_UNSET,
 ) -> dict:
     """Serialize a bundle with its bookings.
 
-    ``refs`` (service/vendor/user maps), ``change_requests`` and ``event`` can
-    be supplied pre-resolved by a batch caller (``list_bundles``) to avoid
-    per-bundle queries; when omitted they're resolved here so single-bundle
-    callers stay a one-liner.
+    ``refs`` (service/vendor/user maps), ``change_requests``, ``negotiations``
+    and ``event`` can be supplied pre-resolved by a batch caller
+    (``list_bundles``) to avoid per-bundle queries; when omitted they're
+    resolved here so single-bundle callers stay a one-liner.
     """
     if refs is None:
         refs = _resolve_booking_refs(bookings, db)
@@ -293,6 +320,8 @@ def _bundle_dict(
     # already asked once for every bundle on the page.
     if change_requests is None:
         change_requests = _latest_change_requests(bookings, db)
+    if negotiations is None:
+        negotiations = _open_negotiations(bookings, db)
 
     booking_summaries = []
     for b in bookings:
@@ -301,6 +330,7 @@ def _bundle_dict(
         summary = _booking_summary(
             b, service_map.get(b.service_id), vendor, vendor_user,
             change_request=change_requests.get(b.booking_id),
+            negotiation=negotiations.get(b.booking_id),
         )
         # Whether the client may nudge this vendor, from the same rule the
         # endpoint enforces — see resend_state_from.
@@ -595,6 +625,7 @@ def list_bundles(
     # Resolve every booking's Service/Vendor/User once, and every linked event.
     refs = _resolve_booking_refs(all_bookings, db)
     change_requests = _latest_change_requests(all_bookings, db)
+    negotiations = _open_negotiations(all_bookings, db)
     event_ids = {b.event_id for b in bundles if b.event_id}
     event_map = (
         {e.event_id: e for e in db.query(Event).filter(Event.event_id.in_(event_ids)).all()}
@@ -608,6 +639,7 @@ def list_bundles(
             db,
             refs=refs,
             change_requests=change_requests,
+            negotiations=negotiations,
             event=event_map.get(b.event_id),
         )
         for b in bundles

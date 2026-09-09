@@ -280,6 +280,11 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # A date change the client has proposed and this vendor owes an answer
         # on. Null when there is none, which is the ordinary case.
         "change_request": _open_change_request(booking, db),
+        # Which side owes the next move on an open price negotiation — lets a
+        # client/vendor task list surface "review this offer" only for the
+        # party who can actually act on it, instead of for whoever last sent
+        # the number that's still sitting there unanswered.
+        "negotiation_awaiting_role": _negotiation_awaiting_role(booking, db),
         "status": booking.status,
         "payment_status": booking.payment_status,
         # "stripe" (protected) or "manual" (paid directly, Venmo/Zelle) —
@@ -1313,6 +1318,33 @@ def _open_change_request(booking: Booking, db: Session) -> dict | None:
         "repriced_amount_cents": cr.repriced_amount_cents,
         "created_at": cr.created_at.isoformat() if cr.created_at else None,
     }
+
+
+def negotiation_role_from(booking: Booking, neg) -> str | None:
+    """Pure half of _negotiation_awaiting_role — given an already-fetched (or
+    absent) open Negotiation row, which role owes the next move.
+
+    Whoever is `proposed_by` made the last move, so the other role is the one
+    still holding the ball. Split out so a batch caller (bundle_service, which
+    must not pay a query per booking) can resolve every booking's negotiation
+    in one query and reuse this comparison, rather than reimplementing it.
+    """
+    if not neg or neg.status != "open":
+        return None
+    return "vendor" if neg.proposed_by == booking.user_id else "client"
+
+
+def _negotiation_awaiting_role(booking: Booking, db: Session) -> str | None:
+    """Which side of this booking owes the next move on price — "client" or
+    "vendor" — or None when there's no live negotiation. See
+    negotiation_role_from for the comparison itself; this just fetches.
+    """
+    if booking.status != "negotiation_ongoing":
+        return None
+    from app.db.models import Negotiation
+
+    neg = db.query(Negotiation).filter(Negotiation.booking_id == booking.booking_id).first()
+    return negotiation_role_from(booking, neg)
 
 
 def _zone_name(booking: Booking) -> str | None:
