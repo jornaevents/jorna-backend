@@ -1,7 +1,7 @@
 """Tests for the event bundle system."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import pytest
 from app.db.models import (
     Booking, Bundle, User, Vendor, Service, Event,
@@ -726,6 +726,30 @@ def test_send_a_bundle_that_was_never_a_comparison(seeded_db):
     r = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
     assert r.status_code == 200, r.text
     assert r.json()["bundle_id"] == bundle.bundle_id
+
+
+def test_sending_a_past_dated_booking_is_refused(seeded_db):
+    """A booking whose date has already passed isn't fit to send — same rule
+    as a missing date, just the other direction of "not really an answer".
+    This is the server-side half of the rule the web enforces with a greyed-
+    out button; a direct call (or a mistyped year the web's own picker let
+    through) used to sail past it here."""
+    db, user, vendor, service = (
+        seeded_db["db"], seeded_db["user"], seeded_db["vendor"], seeded_db["service"],
+    )
+    stale = Booking(
+        user_id=user.user_id, vendor_id=vendor.vendor_id, service_id=service.service_id,
+        time_start="18:00", time_end="23:00", location="12 Maple Ave, Evanston, IL 60201",
+        date_iso=(date.today() - timedelta(days=1)).isoformat(), status="pending",
+    )
+    db.add(stale)
+    db.commit()
+    db.refresh(stale)
+    bundle = _bundle_with(db, user, [stale])
+
+    r = client.post(f"/bundles/{bundle.bundle_id}/select", headers=make_auth_headers(user))
+    assert r.status_code == 400
+    assert "hasn't already passed" in r.json()["detail"]
 
 
 def test_sending_twice_is_allowed(seeded_db):

@@ -14,6 +14,7 @@ The backend already behaved this way; nothing tested it. The booking form now
 offers it as a button, so the behaviour is load-bearing and pinned here.
 """
 import uuid
+from datetime import date, timedelta
 
 from app.db.models import Booking, Bundle, Service, User, Vendor
 from app.services.booking_service import BookingError, create_booking
@@ -189,7 +190,11 @@ def test_a_draft_can_be_completed_afterwards():
             caller_user_id=seeded["user_id"],
             booking_id=booking.booking_id,
             update_data={
-                "date_iso": "2026-08-15",
+                # Relative to today rather than a fixed date — this test only
+                # cares that filling in every gap clears it, not what the date
+                # actually is, and a hardcoded one goes stale as soon as it's
+                # in the past (which is exactly the gap this fix now catches).
+                "date_iso": (date.today() + timedelta(days=180)).isoformat(),
                 "location": "12 Maple Ave, Evanston, IL 60201",
                 "guest_count": 220,
             },

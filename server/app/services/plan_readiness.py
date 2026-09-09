@@ -20,6 +20,7 @@ reached a vendor short of a headcount would be unpayable for ever.
 """
 
 import re
+from datetime import date
 from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
@@ -123,6 +124,25 @@ def is_unset(value: Optional[str]) -> bool:
     return not text or text.upper() == "TBD"
 
 
+def is_in_the_past(date_iso: Optional[str]) -> bool:
+    """Whether this date has already happened, going out.
+
+    A date that's merely set isn't the same question as a date that's still
+    ahead of us — nothing here checked the second one, so a plan built on a
+    mistyped year (or one nobody noticed had slipped by) sent a vendor a real
+    request to hold a day that had already passed. Same-day still counts:
+    only strictly before today is a gap, not today itself.
+    """
+    if is_unset(date_iso):
+        return False
+    try:
+        return date.fromisoformat(date_iso) < date.today()
+    except ValueError:
+        # Malformed rather than merely blank — not this function's job to
+        # flag, and the cautious direction is not to block on it.
+        return False
+
+
 def booking_gaps(
     booking: Booking,
     service: Optional[Service],
@@ -146,6 +166,8 @@ def booking_gaps(
 
     if is_unset(booking.date_iso):
         gaps.append("a date")
+    elif is_in_the_past(booking.date_iso):
+        gaps.append("a date that hasn't already passed")
 
     # The booking's own location, or the event's — a booking made from an event
     # inherits it, and a venue brings its own.
