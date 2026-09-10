@@ -20,6 +20,7 @@ from app.services.service_service import (
     add_service_image,
     remove_service_image,
     remove_service_video,
+    media_url,
 )
 from app.services.storage_service import (
     StorageError,
@@ -244,9 +245,14 @@ def _require_owning_vendor(service: ServiceModel, user_id: str, db: Session) -> 
 
 
 def _count_media(service: ServiceModel, media_type: str) -> int:
+    # An entry with no real URL behind it — a failed upload, a delete that
+    # didn't fully clean up, or (historically) an Instagram-scraped bare
+    # string the frontend can't render, see media_url's docstring — isn't a
+    # real photo or video and shouldn't eat into the cap it can't be seen
+    # occupying. Mirrors the frontend's own usableMedia() filter.
     return sum(
         1 for m in (service.media or [])
-        if (m.get("type") if isinstance(m, dict) else "image") == media_type
+        if media_url(m) and (m.get("type") if isinstance(m, dict) else "image") == media_type
     )
 
 

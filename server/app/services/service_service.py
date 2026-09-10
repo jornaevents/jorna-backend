@@ -209,13 +209,17 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
     return _service_dict(service)
 
 
-def _media_url(entry) -> Optional[str]:
+def media_url(entry) -> Optional[str]:
     """A media entry's URL, whichever shape it's in.
 
     Rows written before typed media existed still hold bare strings; a
     migration backfills them to {"url", "type", "thumbnail_url"} on deploy,
     but reading defensively here means a row that somehow slips through
-    still matches by URL instead of silently never being found.
+    still matches by URL instead of silently never being found. Public (not
+    `_media_url`) because the Instagram-enrichment scraper (admin.py) needs
+    the same defensive read when deduping against a service's existing media —
+    it's what wrote un-typed rows *after* the migration ran, in the first
+    place (see 0056_rebackfill_service_media.py).
     """
     if isinstance(entry, dict):
         return entry.get("url")
@@ -263,7 +267,7 @@ def _remove_service_media(*, user_id: str, service_id: str, url: str, db: Sessio
         raise ServiceError(404, "Service not found")
     _owning_vendor(service, user_id, db)
     media = list(service.media or [])
-    match = next((m for m in media if _media_url(m) == url), None)
+    match = next((m for m in media if media_url(m) == url), None)
     if match is None:
         raise ServiceError(404, "Media item not found on this service")
     media.remove(match)
