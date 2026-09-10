@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import User, Vendor, Service
 from app.dependencies import get_current_user, get_current_admin
+from app.services.service_service import media_url
 from app.limiter import limiter
 from app.models.schemas import (
     CATEGORY_LABELS,
@@ -390,7 +391,14 @@ def instagram_enrich(
         service = db.query(Service).filter(Service.vendor_id == vendor_id).first()
         if service:
             existing = list(service.media or [])
-            new_images = [img for img in body.images if img not in existing]
+            # Typed the same as every other write path — see the identical
+            # fix (and its rationale) in admin.py's run_scraper.
+            existing_urls = {media_url(m) for m in existing}
+            new_images = [
+                {"url": img, "type": "image", "thumbnail_url": None}
+                for img in body.images
+                if img not in existing_urls
+            ]
             service.media = (existing + new_images)[:9]
             db.commit()
 

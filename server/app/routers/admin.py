@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import User, Vendor, Service
 from app.dependencies import get_current_admin
+from app.services.service_service import media_url
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +295,19 @@ def run_scraper(
             service = db.query(Service).filter(Service.vendor_id == vendor.vendor_id).first()
             if service and images:
                 existing = list(service.media or [])
-                new_images = [img for img in images if img not in existing]
+                # Typed the same as every other write path (see
+                # service_service.add_service_image) — this used to append
+                # bare URL strings, which the frontend's MediaItem-typed
+                # renderer silently can't display (no .url on a string) while
+                # the backend's image-count cap still counted them, so a
+                # vendor could be told their service "already has 9 images"
+                # with only their own 2 actually visible anywhere.
+                existing_urls = {media_url(m) for m in existing}
+                new_images = [
+                    {"url": img, "type": "image", "thumbnail_url": None}
+                    for img in images
+                    if img not in existing_urls
+                ]
                 service.media = (existing + new_images)[:9]
                 db.commit()
 
