@@ -14,7 +14,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.20
 pyjwt==2.12.1
 sentry-sdk==2.64.0
-slowapi==0.1.9
+slowapi==0.1.10
 sqlalchemy==2.0.48
 stripe==15.0.1
 # The IANA timezone database, for zoneinfo. Not optional: zoneinfo reads the
