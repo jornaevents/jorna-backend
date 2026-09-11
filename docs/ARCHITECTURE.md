@@ -39,7 +39,27 @@ net under that channel (every 4 hours).
 
 ## Payments & escrow (Stripe Connect)
 
-All in `app/services/stripe_service.py`. Shape of the flow:
+**Three independent status fields, not one.** Easy to conflate since they all
+answer some version of "how far along is this":
+
+- `Booking.status` (`BookingStatus` enum, `app/models/schemas.py`) — the
+  *request*: `pending` → (`negotiation_ongoing` ⇄ `pending`) → `approved` →
+  `payment_confirmed`, or `rejected` at various points. No separate
+  `cancelled` value — a vendor's decline and a vendor's post-approval
+  withdrawal both land on `rejected`.
+- `Booking.payment_status` (`PaymentStatus` enum, same file) — the *money*,
+  tracked separately: `unpaid` → `processing` → `paid` → `released`, or
+  `refunded`/`disputed`/`cancelled` along the way, on the protected Stripe
+  track; `unpaid` → `marked_paid` → `confirmed_paid` on the manual
+  self-reported track (`Booking.payment_method == "manual"`). A booking is
+  routinely `payment_confirmed` + `paid` at the same time — that's normal,
+  not a conflict; a UI showing booking state needs two pills, not one.
+- `Bundle.status` (plain string, `app/db/models.py`) — the *plan* as a
+  whole (`draft`/`active`/`completed`/`cancelled`), independent of both of
+  the above.
+
+Booking-level fields are what the rest of this section is about. Shape of
+the flow:
 
 1. A vendor completes Stripe Connect onboarding (`create_vendor_onboarding_url`
    → `get_vendor_stripe_status` polls completion) before they can be paid.
