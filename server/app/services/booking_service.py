@@ -287,6 +287,14 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "negotiation_awaiting_role": _negotiation_awaiting_role(booking, db),
         "status": booking.status,
         "payment_status": booking.payment_status,
+        # The single source of truth for "can anything further happen to this
+        # booking" — was being re-derived independently on the frontend
+        # (planning.ts's isDeadBooking) from a hand-mirrored copy of these
+        # same two constants. Compute it once, here, instead.
+        "is_dead": (
+            booking.status in _DEAD_BOOKING_STATUSES
+            or (booking.payment_status or PaymentStatus.UNPAID.value) in _DEAD_VENUE_PAYMENT_STATUSES
+        ),
         # "stripe" (protected) or "manual" (paid directly, Venmo/Zelle) —
         # snapshotted at send time. Null predates this feature; treated as
         # "stripe" everywhere it's read.
