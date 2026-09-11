@@ -16,7 +16,7 @@ pyjwt==2.12.1
 sentry-sdk==2.64.0
 slowapi==0.1.9
 sqlalchemy==2.0.48
-stripe==15.0.1
+stripe==15.6.1
 # The IANA timezone database, for zoneinfo. Not optional: zoneinfo reads the
 # system's copy and falls back to this, and a container without one resolves
 # every zone to nothing — which would silently switch off every reminder that
