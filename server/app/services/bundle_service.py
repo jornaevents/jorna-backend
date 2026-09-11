@@ -158,6 +158,8 @@ def _booking_summary(
     return {
         "booking_id": booking.booking_id,
         "status": booking.status,
+        # See the identical field/comment on booking_service._booking_dict.
+        "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
         "date_iso": booking.date_iso,
         # The quantity a rate-priced service multiplies by. Exposed so a client
