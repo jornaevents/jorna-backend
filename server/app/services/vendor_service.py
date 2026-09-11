@@ -125,6 +125,13 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         # venmo_handle/zelle_contact stay private until an actual booking
         # exists (see bundle_service._booking_summary).
         "payment_method": v.payment_method,
+        # Only meaningful when payment_method is "stripe": a client can still
+        # send this vendor a request while it's False, but checkout will
+        # refuse the charge until Stripe Connect onboarding finishes (see
+        # stripe_service's stripe_onboarding_complete checks) — surfaced here
+        # so that failure doesn't land only at the payment step, after a
+        # client has already gotten the vendor to approve a request.
+        "stripe_ready": v.stripe_onboarding_complete,
     }
 
 
@@ -290,6 +297,7 @@ def list_vendors(
             "pfp_url": u.pfp_url,
             "tags": [t.name for t in v.tags],
             "payment_method": v.payment_method,
+            "stripe_ready": v.stripe_onboarding_complete,
         }
         for v, u in rows
     ]
@@ -449,6 +457,7 @@ def search_vendors(
                 "open_to_long_distance": vendor.open_to_long_distance,
                 "tags": [t.name for t in vendor.tags],
                 "payment_method": vendor.payment_method,
+                "stripe_ready": vendor.stripe_onboarding_complete,
             }
         )
 

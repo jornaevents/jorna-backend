@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Bundle, Event, Service, User, Vendor
+from app.models.schemas import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +33,18 @@ class BundleError(Exception):
 # cascade checked none at all, so a plan holding escrow could be deleted whole
 # when the same booking could not be removed singly.
 MONEY_MOVED_STATUSES = frozenset(
-    {"processing", "paid", "released", "refunded", "disputed"}
+    {
+        PaymentStatus.PROCESSING.value,
+        PaymentStatus.PAID.value,
+        PaymentStatus.RELEASED.value,
+        PaymentStatus.REFUNDED.value,
+        PaymentStatus.DISPUTED.value,
+    }
 )
 
 
 def _money_has_moved(booking: Booking) -> bool:
-    return (booking.payment_status or "unpaid") in MONEY_MOVED_STATUSES
+    return (booking.payment_status or PaymentStatus.UNPAID.value) in MONEY_MOVED_STATUSES
 
 
 def _latest_change_requests(bookings: list[Booking], db: Session):
@@ -146,6 +153,8 @@ def _booking_summary(
     via ``_resolve_booking_refs`` instead of issuing three queries per booking.
     """
     from app.services.booking_service import (
+        _DEAD_BOOKING_STATUSES,
+        _DEAD_VENUE_PAYMENT_STATUSES,
         _zone_name,
         negotiation_role_from,
         resolve_total_cents,
@@ -161,6 +170,14 @@ def _booking_summary(
         # See the identical field/comment on booking_service._booking_dict.
         "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
+        # The single source of truth for "can anything further happen to
+        # this booking" — see the identical field/comment on
+        # booking_service._booking_dict. jorna-website's planning.ts used to
+        # re-derive this from a hand-mirrored copy of the same two constants.
+        "is_dead": (
+            booking.status in _DEAD_BOOKING_STATUSES
+            or (booking.payment_status or PaymentStatus.UNPAID.value) in _DEAD_VENUE_PAYMENT_STATUSES
+        ),
         "date_iso": booking.date_iso,
         # The quantity a rate-priced service multiplies by. Exposed so a client
         # swapping one service for another can carry the quantity across —
@@ -211,7 +228,7 @@ def _booking_summary(
         # here rather than reimplemented in JS. Only meaningful while there's
         # something to cancel.
         "refund_preview": (
-            _refund_preview(booking) if booking.payment_status == "paid" else None
+            _refund_preview(booking) if booking.payment_status == PaymentStatus.PAID.value else None
         ),
         "customer_confirmed_at": (
             booking.customer_confirmed_at.isoformat() if booking.customer_confirmed_at else None

@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Bundle, Event, User, Vendor, Service
-from app.models.schemas import BookingStatus, RejectionReason
+from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.utils.location import calculate_distance_miles
 from app.utils.notifications import notify_booking_status_change, notify_check_in
 
@@ -291,6 +291,14 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # cancellation (see cancelled_at instead). See RejectionReason.
         "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
+        # The single source of truth for "can anything further happen to this
+        # booking" — was being re-derived independently on the frontend
+        # (planning.ts's isDeadBooking) from a hand-mirrored copy of these
+        # same two constants. Compute it once, here, instead.
+        "is_dead": (
+            booking.status in _DEAD_BOOKING_STATUSES
+            or (booking.payment_status or PaymentStatus.UNPAID.value) in _DEAD_VENUE_PAYMENT_STATUSES
+        ),
         # "stripe" (protected) or "manual" (paid directly, Venmo/Zelle) —
         # snapshotted at send time. Null predates this feature; treated as
         # "stripe" everywhere it's read.
@@ -324,7 +332,7 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
 
 # A venue booking stops anchoring the event once it's in one of these states.
 _DEAD_BOOKING_STATUSES = ("rejected", "cancelled")
-_DEAD_VENUE_PAYMENT_STATUSES = ("refunded",)
+_DEAD_VENUE_PAYMENT_STATUSES = (PaymentStatus.REFUNDED.value,)
 
 
 def _live_venue_booking(
@@ -364,7 +372,7 @@ def _live_venue_booking(
             and s.venue_latitude is not None
             and s.venue_longitude is not None
             and b.status not in _DEAD_BOOKING_STATUSES
-            and (b.payment_status or "unpaid") not in _DEAD_VENUE_PAYMENT_STATUSES
+            and (b.payment_status or PaymentStatus.UNPAID.value) not in _DEAD_VENUE_PAYMENT_STATUSES
         ):
             return b, s
     return None
@@ -973,7 +981,7 @@ def update_booking_status(
         if cancelling:
             from app.services.bundle_service import _money_has_moved
 
-            if booking.payment_status == "paid":
+            if booking.payment_status == PaymentStatus.PAID.value:
                 _refund_client_on_cancel = True
             elif _money_has_moved(booking):
                 raise BookingError(
@@ -1104,7 +1112,7 @@ def update_booking_status(
                 payment_intent=booking.payment_intent_id,
                 reason="requested_by_customer",
             )
-            booking.payment_status = "refunded"
+            booking.payment_status = PaymentStatus.REFUNDED.value
             db.commit()
             db.refresh(booking)
         except Exception as exc:  # noqa: BLE001 — including stripe.StripeError
@@ -1520,7 +1528,7 @@ def check_in(
             # Both parties in, and money to move. The payment check moved here
             # from the line above: it belongs to releasing funds, not to whether
             # somebody turned up.
-            if booking.customer_confirmed_at and booking.payment_status == "paid":
+            if booking.customer_confirmed_at and booking.payment_status == PaymentStatus.PAID.value:
                 # Best-effort: a Stripe failure must not fail the check-in the
                 # vendor just made.
                 try:
