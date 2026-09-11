@@ -1402,9 +1402,10 @@ def refund_after_failed_reschedule(
     # Dead as well as refunded: the vendor can't make the date, so this booking
     # isn't happening. Leaving it "approved" would keep it in the plan's live
     # section and in every count derived from one.
-    from app.models.schemas import BookingStatus
+    from app.models.schemas import BookingStatus, RejectionReason
 
     booking.status = BookingStatus.REJECTED.value
+    booking.rejected_reason = RejectionReason.RESCHEDULE_FAILED.value
     try:
         from app.services.booking_service import sync_event_venue
         sync_event_venue(booking.bundle_id, db)

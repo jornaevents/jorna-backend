@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Bundle, Event, User, Vendor, Service
-from app.models.schemas import BookingStatus, PaymentStatus
+from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.utils.location import calculate_distance_miles
 from app.utils.notifications import notify_booking_status_change, notify_check_in
 
@@ -286,6 +286,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # the number that's still sitting there unanswered.
         "negotiation_awaiting_role": _negotiation_awaiting_role(booking, db),
         "status": booking.status,
+        # Which of the three real events "rejected" covers — null on a row
+        # written before this field existed, or on a client-initiated
+        # cancellation (see cancelled_at instead). See RejectionReason.
+        "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
         # The single source of truth for "can anything further happen to this
         # booking" — was being re-derived independently on the frontend
@@ -1067,6 +1071,14 @@ def update_booking_status(
     # A rejected venue no longer anchors the event — refresh so its cached coords
     # clear (check-in re-derives regardless, but keep the denormalized copies honest).
     if status_str == BookingStatus.REJECTED.value:
+        # `cancelling` (above) already distinguishes a vendor backing out of
+        # an approved booking from a plain decline — the only two ways this
+        # function itself produces REJECTED.
+        booking.rejected_reason = (
+            RejectionReason.VENDOR_WITHDREW.value
+            if cancelling
+            else RejectionReason.VENDOR_DECLINED.value
+        )
         # Nothing is waiting on a booking that isn't happening. A live date
         # change would otherwise sit on the client's board forever, waiting on a
         # vendor who has gone — and offer them a refund on a booking that was

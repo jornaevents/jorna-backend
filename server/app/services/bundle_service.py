@@ -167,6 +167,8 @@ def _booking_summary(
     return {
         "booking_id": booking.booking_id,
         "status": booking.status,
+        # See the identical field/comment on booking_service._booking_dict.
+        "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
         # The single source of truth for "can anything further happen to
         # this booking" — see the identical field/comment on

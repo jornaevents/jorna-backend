@@ -9,6 +9,19 @@ class BookingStatus(str, Enum):
     PAYMENT_CONFIRMED = "payment_confirmed"
 
 
+class RejectionReason(str, Enum):
+    """Why a booking's status became REJECTED — that one status value covers
+    three different real events, and nothing recorded which. A client-
+    initiated cancellation isn't a member here: it already has its own
+    marker (`Booking.cancelled_at`), set by the same code path that would
+    otherwise need to write CLIENT_CANCELLED here too.
+    """
+
+    VENDOR_DECLINED = "vendor_declined"
+    VENDOR_WITHDREW = "vendor_withdrew"
+    RESCHEDULE_FAILED = "reschedule_failed"
+
+
 class PaymentStatus(str, Enum):
     """Where a booking's money is — independent of `BookingStatus`, which
     tracks the request itself (see docs/BOOKING_FLOW.md: "any UI showing

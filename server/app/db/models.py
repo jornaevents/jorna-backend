@@ -317,6 +317,15 @@ class Booking(Base):
     refund_cents = Column(Integer, nullable=True)
     vendor_cancellation_cents = Column(Integer, nullable=True)
 
+    # Why `status` became "rejected" — that one value covers a vendor
+    # declining outright, a vendor withdrawing after already approving, and a
+    # failed reschedule's refund, with nothing before this to tell them apart
+    # (a client-initiated cancellation is already distinguishable via
+    # cancelled_at above). Nullable, and left null on every row written
+    # before this column existed rather than guessed at after the fact — see
+    # RejectionReason in app/models/schemas.py.
+    rejected_reason = Column(String(30), nullable=True)
+
     # Snapshot of the vendor's payment_method at the moment this booking was
     # created, so a vendor changing tracks later never rewrites the terms of
     # a booking already in flight. Null for any booking created before this
