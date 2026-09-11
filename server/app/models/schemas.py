@@ -9,6 +9,37 @@ class BookingStatus(str, Enum):
     PAYMENT_CONFIRMED = "payment_confirmed"
 
 
+class PaymentStatus(str, Enum):
+    """Where a booking's money is — independent of `BookingStatus`, which
+    tracks the request itself (see docs/BOOKING_FLOW.md: "any UI showing
+    booking state needs two pills, not one").
+
+    Was a bare `Column(String(50))` with every write and comparison site
+    typing the literal by hand. Two unrelated tracks were sharing that one
+    column: the protected/Stripe track (`unpaid` -> `processing` -> `paid`
+    -> `released`, or `refunded`/`disputed`/`cancelled` along the way) and
+    the manual/self-reported track (`unpaid` -> `marked_paid` ->
+    `confirmed_paid`, used whenever `Booking.payment_method == "manual"` —
+    Jorna never touches this money, both values are just one side attesting
+    to the other). `paid` and `marked_paid` are not points on the same
+    trust spectrum even though they're both "the client says they paid" —
+    `paid` is Stripe-verified escrow, `marked_paid` is unverifiable. This
+    enum does not yet separate the two tracks into different fields; it
+    only makes the existing 9 values a closed, typed set instead of an
+    open string column.
+    """
+
+    UNPAID = "unpaid"
+    PROCESSING = "processing"
+    PAID = "paid"
+    RELEASED = "released"
+    REFUNDED = "refunded"
+    DISPUTED = "disputed"
+    CANCELLED = "cancelled"
+    MARKED_PAID = "marked_paid"
+    CONFIRMED_PAID = "confirmed_paid"
+
+
 class PriceUnit(str, Enum):
     """What a service's rate multiplies by.
 
