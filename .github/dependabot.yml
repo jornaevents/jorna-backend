@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # server/ — FastAPI backend dependencies
+  - package-ecosystem: "pip"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  # ig_scraper/ — standalone Instagram vendor-data scraper (unrelated to the
+  # FastAPI app's runtime, but still a real dependency surface)
+  - package-ecosystem: "pip"
+    directory: "/ig_scraper"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
