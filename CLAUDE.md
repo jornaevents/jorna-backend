@@ -132,6 +132,24 @@ into `main`: `Lint + test` (ruff + pytest, sqlite-backed) and
 Postgres 16 container). Railway waits for both to pass before deploying —
 see "Diagnosing a failed Railway deploy" above.
 
+## Issue & work tracking
+
+Work across all three repos is tracked in one place: the org's GitHub
+Project, ["Jorna Dev Board"](https://github.com/orgs/jornaevents/projects/1)
+(Status: Backlog → Todo → In Progress → In Review → Done, linked to all
+three repos). Open issues with `.github/ISSUE_TEMPLATE/bug_report.md` or
+`feature_request.md` — both have a "cross-repo impact" section, since a
+backend change here usually needs a matching client-side issue/PR in
+`jorna-ios` and/or `jorna-website`.
+
+This repo is **not** on the board's native auto-add workflow — GitHub Free
+caps that at one source repo per project, and `jorna-website` has it
+instead. Add an issue to the board by hand: `gh project item-add 1 --owner
+jornaevents --url <issue-url>`, or via the issue's own "Projects" sidebar
+field. When doing real dev work here, keep the board current as you go
+(create/find the issue, add it, move its status) rather than leaving that
+to whoever opened the issue.
+
 ## Keeping this doc layer current
 
 - Keep this file short (index + rules, not a repo dump). Longer explanation
