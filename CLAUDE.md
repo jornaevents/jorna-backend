@@ -48,16 +48,19 @@ descriptions of a contract they don't own.
 
 - **`main` auto-deploys to Railway on every push, and the deploy runs Alembic
   migrations against production Postgres first** (`railway.toml`'s
-  `preDeployCommand = "alembic upgrade head"`, `server/alembic/`). There is no
-  staging environment and no manual approval gate. Branch for all changes;
-  merge to `main` only when the user says to deploy, and be especially
-  careful with any migration — a bad one runs against production data with no
-  in-between check.
-- **There are two alembic setups in this repo and only one is real.** The
-  root `alembic.ini` + `migrations/` directory is a stale leftover (4 old
-  migrations, last touched early in the project) — **don't use it**. The live
-  one is `server/alembic.ini` + `server/alembic/` (45 migrations, this is
-  what Railway runs). Always `cd server` before any `alembic` command.
+  `preDeployCommand`, `server/alembic/`). There is no staging environment and
+  no manual approval gate. Branch for all changes; merge to `main` only when
+  the user says to deploy, and be especially careful with any migration — a
+  bad one runs against production data with no in-between check.
+- **Before `alembic upgrade head` runs, `preDeployCommand` first runs
+  `python -m scripts.check_migration_state`** (`server/scripts/`), which
+  refuses to proceed (nonzero exit, deploy stops) if the DB's current
+  `alembic_version` isn't a revision this repo's migration chain actually
+  knows about — see "Diagnosing a failed Railway deploy" below for why this
+  exists.
+- `server/alembic.ini` + `server/alembic/` is the live migration setup
+  (this is what Railway runs) — always `cd server` before any `alembic`
+  command.
 - **`src/`, `index.html`, `vite.config.ts`, and `package.json` at the repo
   root are a stale Figma-Make-generated Vite prototype** ("Event Planning
   Marketplace"), not the production web app. The real, deployed web frontend
@@ -86,13 +89,19 @@ an unused/empty leftover and easy to check by mistake.
 Railway's `checkSuites` deploy-trigger flag is **on**: a push to `main` now
 waits for the `Backend CI` GitHub check suite (`Lint + test` +
 `Migration chain (Postgres)`, `.github/workflows/ci.yml`) to go green before
-Railway even attempts `alembic upgrade head` against production. The
-migration-chain CI job catches a broken `down_revision` link, a duplicate
-head, or bad migration SQL — it does **not** catch a migration that was run
-directly against prod without ever being committed (that's what caused the
-2026-08-30 incident: `alembic_version` was stamped to a revision, `0045_
-vendor_specializations`, that existed nowhere in git — fix was restamping to
-the real current head).
+Railway even attempts to deploy. The migration-chain CI job catches a broken
+`down_revision` link, a duplicate head, or bad migration SQL — it does
+**not** catch a migration that was run directly against prod without ever
+being committed (that's what caused the 2026-08-30 incident:
+`alembic_version` was stamped to a revision, `0045_vendor_specializations`,
+that existed nowhere in git — fix was restamping to the real current head).
+
+That specific gap is now covered at deploy time instead:
+`server/scripts/check_migration_state.py` runs immediately before
+`alembic upgrade head` and refuses to deploy if `alembic_version` isn't a
+revision this repo's migration chain actually knows about, so a repeat of
+the 2026-08-30 scenario fails loudly in the Railway deploy log instead of
+upgrading blind from a git-invisible starting point.
 
 ```bash
 railway login                                  # first time in a fresh session; opens a browser
