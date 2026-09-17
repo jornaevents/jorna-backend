@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from app.config import ESCROW_ENABLED
 from app.db.models import Vendor, Service, User, Tag, VendorAvailability, vendor_tags
 from app.utils.location import calculate_distance_miles
 
@@ -217,6 +218,23 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
 
     if "zelle_contact" in update_data:
         update_data["zelle_contact"] = (update_data["zelle_contact"] or "").strip() or None
+
+    # Escrow disabled → manual is the only payment track, and it needs
+    # somewhere for a client to actually send money. Only enforced when this
+    # update actually touches a payment field — an unrelated save (e.g. bio
+    # during an earlier onboarding step, before payment info is ever set)
+    # must not be blocked by a requirement it isn't trying to satisfy yet.
+    # Checked against the resulting state, not just this request's fields, so
+    # e.g. clearing venmo_handle with no zelle_contact on file still errors.
+    # See docs/DECISIONS.md #12.
+    touches_payment_fields = bool({"payment_method", "venmo_handle", "zelle_contact"} & update_data.keys())
+    if not ESCROW_ENABLED and touches_payment_fields:
+        if update_data.get("payment_method", "manual") != "manual":
+            raise VendorError(400, "payment_method must be 'manual' — Stripe escrow is currently disabled")
+        resulting_venmo = update_data.get("venmo_handle", vendor.venmo_handle)
+        resulting_zelle = update_data.get("zelle_contact", vendor.zelle_contact)
+        if not resulting_venmo and not resulting_zelle:
+            raise VendorError(400, "Add a Venmo handle or Zelle contact so clients can pay you")
 
     for field, value in update_data.items():
         if field in ["bio", "category", "subcategory", "specializations", "travel_radius_miles",

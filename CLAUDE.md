@@ -3,11 +3,14 @@
 Desiconnect (product name **Jorna**) is a **marketplace for planning South
 Asian events** — weddings and large celebrations. Clients assemble a team of
 vendors (venue, catering, DJ, dhol, mehndi, photography, …); vendors list
-services and get booked. Payments run through **Stripe Connect escrow**: a
-client's money is held until the event happens and both sides confirm, then
-it's released (or auto-released after a deadline — see `docs/DECISIONS.md`).
-A chatbot ("bundle builder") can assemble a full vendor bundle for a client
-conversationally.
+services and get booked. Payments can run through **Stripe Connect escrow** —
+a client's money held until the event happens and both sides confirm, then
+released (or auto-released after a deadline — see `docs/DECISIONS.md`) — but
+that whole track is currently **disabled for the MVP** behind the
+`ESCROW_ENABLED` flag (`app/config.py`, see `docs/DECISIONS.md` #12): vendors
+are paid off-platform via a Venmo handle/Zelle contact on their profile
+instead. A chatbot ("bundle builder") can assemble a full vendor bundle for a
+client conversationally.
 
 This repo (`knag9753/Desiconnect`) is the **FastAPI + SQLAlchemy** backend,
 deployed on **Railway** against **Postgres**. It is the schema/business-logic
