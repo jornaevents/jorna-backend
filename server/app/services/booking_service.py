@@ -326,6 +326,25 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "vendor_open_to_location_negotiation": vendor.open_to_location_negotiation if vendor else False,
         "client_open_to_price_negotiation": client.open_to_price_negotiation if client else False,
         "client_flexible_on_location": client.flexible_on_location if client else False,
+        # Guest/contract booking fields (docs/DECISIONS.md #13) — present on
+        # every booking so a vendor's general list/pipeline view can derive
+        # stage without a separate per-booking fetch. All null on an
+        # ordinary authenticated booking.
+        "is_guest_booking": booking.user_id is None,
+        "guest_name": booking.guest_name,
+        "guest_email": booking.guest_email,
+        "guest_phone": booking.guest_phone,
+        "contract_token": booking.contract_token,
+        "deposit_percent": booking.deposit_percent,
+        "deposit_amount_cents": booking.deposit_amount_cents,
+        "cancellation_window_hours": booking.cancellation_window_hours,
+        "overtime_rate_cents": booking.overtime_rate_cents,
+        "addon_rate_cents": booking.addon_rate_cents,
+        "contract_terms": booking.contract_terms,
+        "signer_name": booking.signer_name,
+        "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat() if booking.deposit_marked_paid_at else None,
+        "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat() if booking.deposit_confirmed_received_at else None,
     }
 
 

@@ -174,6 +174,22 @@ def test_bad_token_returns_404_not_500():
     assert resp.status_code == 404, resp.text
 
 
+def test_guest_booking_shows_contract_fields_in_the_vendors_general_list():
+    """The vendor's ordinary bookings list (GET /bookings/vendor, what the
+    dashboard/pipeline/my-bookings all fetch) must expose the guest/contract
+    fields too -- a pipeline view can't derive a stage without them."""
+    v = _setup_vendor()
+    contract = _create_contract(v)
+
+    listed = client.get(f"/bookings/vendor/{v['vendor_id']}", headers=v["headers"])
+    assert listed.status_code == 200, listed.text
+    row = next(b for b in listed.json()["items"] if b["booking_id"] == contract["booking_id"])
+    assert row["is_guest_booking"] is True
+    assert row["deposit_percent"] == 50
+    assert row["signed_at"] is None
+    assert row["contract_token"] == contract["contract_token"]
+
+
 def test_vendor_cannot_read_own_authenticated_booking_via_guest_endpoint():
     """A real-account booking (user_id set) must never be reachable through
     the token-based public router, even if someone guessed/leaked its id."""
