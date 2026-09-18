@@ -172,6 +172,18 @@ class Vendor(Base):
     # Auto-populated by the scraper — kept separate from user-inputted tags
     instagram_tags = Column(JSON, nullable=True)
 
+    # Contract defaults — pure seed values read once by the frontend
+    # Contracts builder when a vendor starts a new booking/contract; nothing
+    # here is consumed by backend logic beyond being returned on GET
+    # /vendors/me. Same shape/purpose as Booking.contract_terms above.
+    default_deposit_percent = Column(Integer, nullable=True)
+    default_cancellation_window_hours = Column(Integer, nullable=True)
+    default_overtime_rate_cents = Column(Integer, nullable=True)
+    default_addon_rate_cents = Column(Integer, nullable=True)
+    default_contract_terms = Column(JSON, nullable=True)
+    # "required" | "optional" | "not_applicable"
+    default_guest_count_mode = Column(String(20), nullable=True)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
@@ -233,7 +245,9 @@ class Booking(Base):
     __tablename__ = "bookings"
 
     booking_id = Column(String(36), primary_key=True, default=uuid_str)
-    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # Nullable: a guest/contract booking (see guest_name/contract_token
+    # below) has no client account at all.
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True, index=True)
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
     service_id = Column(String(36), ForeignKey("services.service_id"), nullable=False, index=True)
     time_start = Column(String(50), nullable=False)
@@ -268,7 +282,7 @@ class Booking(Base):
     # misconfigured payment_intent.succeeded webhook). See sync_booking_payment.
     checkout_session_id = Column(String(255), nullable=True)
     # unpaid | processing | paid | released | refunded | cancelled | disputed
-    #   | marked_paid | confirmed_paid
+    #   | marked_paid | confirmed_paid | deposit_marked_paid | deposit_confirmed_paid
     # 'cancelled' is distinct from 'refunded': it's a post-grace client
     # cancellation split between the platform and the vendor, not a 100%
     # refund — see cancelled_at / refund_cents / vendor_cancellation_cents.
@@ -277,7 +291,9 @@ class Booking(Base):
     # distinct from 'paid', which specifically means Stripe processed a
     # charge and Jorna is holding funds. Reusing 'paid' for a self-report
     # would wrongly enable the held-funds release UI for money Jorna never
-    # touched.
+    # touched. deposit_marked_paid/deposit_confirmed_paid are that same
+    # self-report idea applied to just the deposit — see
+    # deposit_marked_paid_at/deposit_confirmed_received_at below.
     payment_status = Column(String(50), nullable=False, default="unpaid")
     amount_cents = Column(Integer, nullable=True)       # total charged to customer
     platform_fee_cents = Column(Integer, nullable=True) # Desiconnect's cut
@@ -339,6 +355,76 @@ class Booking(Base):
     # just what each side told the app happened, timestamped for the record.
     manual_payment_marked_at = Column(DateTime, nullable=True)
     manual_payment_confirmed_at = Column(DateTime, nullable=True)
+
+    # user_id is nullable to support a guest/contract booking: a vendor
+    # authors the whole thing (event, price, terms) for a client who has
+    # never signed up for Jorna, and that client fills in their own contact
+    # info and e-signs via a public link with no login at all. These three
+    # are that client's own words, not a User row's — see guest_name/email/
+    # phone below and contract_token for the link's credential. See
+    # docs/DECISIONS.md's guest-booking entry for what a guest booking can't
+    # do (messaging, negotiation, change requests, GPS check-in) and why.
+    guest_name = Column(String(255), nullable=True)
+    guest_email = Column(String(255), nullable=True)
+    guest_phone = Column(String(50), nullable=True)
+    # The public link's whole credential, same pattern as Guest.token
+    # (guest_service._token()) — unguessable, not derived from booking_id,
+    # only ever set on a guest/contract booking.
+    contract_token = Column(String(64), unique=True, index=True, nullable=True)
+
+    # Contract terms, snapshotted at creation from the vendor's own defaults
+    # (Vendor.default_* below) or overridden per booking — never recomputed
+    # later, same "snapshot the deal" discipline as payment_method above.
+    # Typed columns for anything ever compared/computed against; free-form
+    # prose terms (equipment/power, travel, custom clauses) live in
+    # contract_terms instead rather than one column per clause.
+    deposit_percent = Column(Integer, nullable=True)
+    deposit_amount_cents = Column(Integer, nullable=True)
+    cancellation_window_hours = Column(Integer, nullable=True)
+    overtime_rate_cents = Column(Integer, nullable=True)
+    addon_rate_cents = Column(Integer, nullable=True)
+    contract_terms = Column(JSON, nullable=True)
+
+    # Presence of signed_at *is* "signed" — no separate boolean, same
+    # pattern as manual_payment_marked_at above. Once set, the contract is
+    # immutable (see contract_service's guard).
+    signer_name = Column(String(255), nullable=True)
+    signed_at = Column(DateTime, nullable=True)
+
+    # A second self-attestation pair, alongside manual_payment_marked_at/
+    # manual_payment_confirmed_at above — that existing pair keeps meaning
+    # "the full/remaining balance"; these two mean "the deposit
+    # specifically." A booking with deposit_percent unset skips this pair
+    # entirely and behaves exactly as before this column existed.
+    deposit_marked_paid_at = Column(DateTime, nullable=True)
+    deposit_confirmed_received_at = Column(DateTime, nullable=True)
+
+
+class Lead(Base):
+    """An informal, off-platform prospect a vendor wants to track before it
+    becomes a real Booking — no client account, no committed date/price yet.
+    A Booking requires a service_id/date/time/location; a lead usually has
+    none of that ("might be October, no venue yet"), so it isn't shoehorned
+    into Booking with everything nullable. Converting a lead creates a real
+    Booking and sets converted_booking_id — the lead row is kept afterward
+    as CRM history of how that client was won, not deleted.
+    """
+    __tablename__ = "leads"
+
+    lead_id = Column(String(36), primary_key=True, default=uuid_str)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    phone = Column(String(50), nullable=True)
+    email = Column(String(255), nullable=True)
+    # Free-text, not date_iso's strict format — a lead often doesn't have a
+    # real date yet ("fall 2026", "TBD").
+    event_date_iso = Column(String(50), nullable=True)
+    note = Column(Text, nullable=True)
+    # new | contacted | quoted | won | lost — vendor-set, purely descriptive
+    status = Column(String(20), nullable=False, default="new")
+    converted_booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class Bundle(Base):

@@ -97,6 +97,27 @@ then — instead of refunds simply stopping — the client's payment splits
 between the platform and the vendor on a ramp from 99%/1% right after grace
 to 1%/99% by the day before the event.
 
+The ramp exists because a flat cutoff treats "cancelled an hour after the
+window closed" the same as "cancelled the day before the wedding," and the
+vendor's position in those two cases isn't remotely the same — the closer to
+the event, the less realistic it is they can fill the date with other work,
+so the policy shifts to protecting them rather than the platform's take as
+the date approaches. The platform keeps the larger share early (when a
+cancellation is still relatively low-cost for the vendor to absorb) and the
+smaller share late (when it isn't).
+
+Vendor-initiated cancellation of an already-accepted, paid booking is a
+separate, deliberately asymmetric rule: always a full refund to the client,
+at any point, no ramp — a vendor backing out of a commitment forfeits their
+share entirely, unlike a client changing their mind.
+
+The existing flat 90/10 reschedule-decline refund
+(`RESCHEDULE_CANCELLATION_PCT`, `refund_after_failed_reschedule`) is
+deliberately untouched by this — that's "the vendor can't meet a new date
+the client asked for," not a cancellation, and doesn't reuse the ramp.
+
+---
+
 ## 12. Escrow disabled for the MVP via an `ESCROW_ENABLED` flag, not deleted
 
 For the leaner MVP, every vendor gets paid off-platform (Venmo/Zelle) — no
@@ -133,21 +154,54 @@ Stripe columns on `Booking`, and the Stripe-only tests are left in place,
 untested-in-CI-by-default but otherwise unchanged — flipping `ESCROW_ENABLED`
 back to `true` is the entire rollback, no code or schema revert needed.
 
-The ramp exists because a flat cutoff treats "cancelled an hour after the
-window closed" the same as "cancelled the day before the wedding," and the
-vendor's position in those two cases isn't remotely the same — the closer to
-the event, the less realistic it is they can fill the date with other work,
-so the policy shifts to protecting them rather than the platform's take as
-the date approaches. The platform keeps the larger share early (when a
-cancellation is still relatively low-cost for the vendor to absorb) and the
-smaller share late (when it isn't).
+---
 
-Vendor-initiated cancellation of an already-accepted, paid booking is a
-separate, deliberately asymmetric rule: always a full refund to the client,
-at any point, no ramp — a vendor backing out of a commitment forfeits their
-share entirely, unlike a client changing their mind.
+## 13. Guest/contract bookings: no account, ever — a deliberate lower-trust agreement
 
-The existing flat 90/10 reschedule-decline refund
-(`RESCHEDULE_CANCELLATION_PCT`, `refund_after_failed_reschedule`) is
-deliberately untouched by this — that's "the vendor can't meet a new date
-the client asked for," not a cancellation, and doesn't reuse the ramp.
+For the vendor-authored "Contracts" flow (a vendor creates the whole booking
+— event, price, terms — for a client who has never used Jorna), the client
+fills in their own details and e-signs via a public link with **no login,
+no account, ever** — matching a design mockup the product decision was based
+on. This is a deliberate tradeoff, not an oversight:
+
+- `Booking.user_id` is nullable; a guest booking has `guest_name`/
+  `guest_email`/`guest_phone` instead of a joinable `User`, and a
+  `contract_token` (same pattern as `Guest.token` in the RSVP system —
+  `secrets.token_urlsafe(24)`, unguessable, not derived from `booking_id`)
+  as the public link's entire credential.
+- **The token is the entire security boundary.** Anyone who obtains the
+  link — forwarded, screenshotted, leaked in a group chat — can read it and,
+  more importantly, **sign** it and self-attest payment, with no identity
+  verification of any kind. There is no OTP/magic-link infrastructure
+  anywhere in this codebase to add cheaply. The accepted mitigation is: a
+  long random token, aggressive rate limits on the sign/attestation
+  endpoints specifically, and the vendor's own off-platform follow-up
+  (phone/text) as the real verification step — consistent with "you'll pay/
+  coordinate directly," not an in-app guarantee.
+- A guest booking supports **no messaging, negotiation, change requests, or
+  client-side GPS check-in** — all of those assume two authenticated `User`
+  rows. `message_service.send_message`, `conversation_service.open_booking_
+  thread`, and `negotiation_service.start_negotiation` all refuse a
+  `user_id IS NULL` booking explicitly (400, not a crash) — a vendor calling
+  one of these on their own guest booking used to be let through by a
+  `caller_user_id in (booking.user_id, vendor_user.user_id)`-style check
+  that treats `None` as a valid match, then failed trying to create a
+  message/conversation-member row with a null user id. Change requests need
+  no such guard — they're keyed on `Bundle.user_id`, and a guest booking has
+  no bundle at all, so `propose()` is already unreachable. Reviews, the
+  client side of GPS check-in, and the client-authenticated manual-payment
+  self-attestation (`mark_booking_paid`) all already fail closed for a null
+  `user_id` for a subtler reason: every one of them compares
+  `booking.user_id != caller_user_id` or `== caller_user_id`, and no real
+  caller id ever equals `None` — confirmed with tests
+  (`tests/test_guest_booking_guards.py`), not just reasoned about.
+- **No account-claim / magic-link flow is in scope.** Once signed, a guest
+  has no way to log back in and see or manage the booking again — all
+  further coordination happens outside the app. This was an explicit,
+  accepted product tradeoff, not a gap to quietly fill in later without
+  re-raising it.
+- Deposit self-attestation (`deposit_marked_paid_at`/
+  `deposit_confirmed_received_at`) is a second pair alongside the existing
+  `manual_payment_marked_at`/`manual_payment_confirmed_at`, which keep
+  meaning "the full/remaining balance" — see `Booking.deposit_percent` and
+  friends. A booking with no deposit configured never touches the new pair.

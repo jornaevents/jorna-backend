@@ -425,6 +425,8 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise ConversationError(404, "Booking not found")
+    if booking.user_id is None:
+        raise ConversationError(400, "Messaging isn't available for a guest booking")
     vendor_user = _vendor_user(booking.vendor_id, db)
 
     if caller_user_id not in (booking.user_id, vendor_user.user_id):

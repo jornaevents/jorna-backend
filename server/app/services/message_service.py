@@ -56,6 +56,8 @@ def send_message(
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise MessageError(404, "Booking not found")
+    if booking.user_id is None:
+        raise MessageError(400, "Messaging isn't available for a guest booking")
 
     receiver_id = _assert_is_party(booking, caller_user_id, db)
 
