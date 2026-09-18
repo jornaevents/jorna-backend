@@ -1312,6 +1312,82 @@ def confirm_payment_received(*, booking_id: str, caller_user_id: str, db: Sessio
     return {"message": "Confirmed.", "payment_status": booking.payment_status}
 
 
+def mark_deposit_paid(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The client attesting they've sent the deposit. The authenticated
+    sibling of guest_booking_service's public version, for a real-account
+    booking that has a deposit configured — mirrors mark_booking_paid
+    exactly, one step earlier (deposit, not the full/remaining balance).
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+    if booking.payment_method != "manual":
+        raise StripeError(400, "This booking is on the protected track — payment happens automatically")
+    if booking.deposit_percent is None:
+        raise StripeError(400, "This booking has no deposit configured")
+    if booking.deposit_marked_paid_at is not None:
+        raise StripeError(400, "Deposit already marked as paid")
+
+    booking.deposit_marked_paid_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(booking)
+
+    try:
+        from app.services.conversation_service import post_system_message
+
+        post_system_message(
+            booking_id=booking_id, sender_user_id=caller_user_id,
+            content="The client marked the deposit as paid.",
+            meta={"kind": "deposit_marked_paid"}, db=db,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mark_deposit_paid: couldn't post system message for %s: %s", booking_id, exc)
+
+    return {"message": "Deposit marked as paid.", "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat()}
+
+
+def confirm_deposit_received(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The vendor attesting they received the deposit. Works for a guest
+    booking too, unlike mark_deposit_paid above -- this only checks the
+    vendor's identity, never booking.user_id, so a guest booking (which has
+    no authenticated client to call mark_deposit_paid at all -- see
+    guest_booking_service's public sibling instead) still lets its vendor
+    confirm normally."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    if not vendor or vendor.user_id != caller_user_id:
+        raise StripeError(403, "You are not the vendor for this booking")
+    if booking.deposit_percent is None:
+        raise StripeError(400, "This booking has no deposit configured")
+    if booking.deposit_marked_paid_at is None:
+        raise StripeError(400, "Nothing to confirm yet — the deposit hasn't been marked as paid")
+    if booking.deposit_confirmed_received_at is not None:
+        raise StripeError(400, "Deposit already confirmed")
+
+    booking.deposit_confirmed_received_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(booking)
+
+    if booking.user_id is not None:
+        try:
+            from app.services.conversation_service import post_system_message
+
+            post_system_message(
+                booking_id=booking_id, sender_user_id=caller_user_id,
+                content="The vendor confirmed they received the deposit.",
+                meta={"kind": "deposit_confirmed"}, db=db,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("confirm_deposit_received: couldn't post system message for %s: %s", booking_id, exc)
+
+    return {"message": "Deposit confirmed.", "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat()}
+
+
 # ── Refund after a reschedule falls through ───────────────────────────
 
 # What a vendor keeps when they can't meet a date the client proposed.

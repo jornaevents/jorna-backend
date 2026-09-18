@@ -104,6 +104,41 @@ the flow:
 `StripeWebhookEvent` (in `db/models.py`) records processed webhook event IDs
 for idempotency — Stripe can and does redeliver.
 
+## Contracts — vendor-authored, no-login guest bookings
+
+For the MVP, a vendor can author a whole booking themselves ("Contracts")
+for a client who's never used Jorna and never logs in — see
+`docs/DECISIONS.md` #13 for the full rationale and accepted risk tradeoffs.
+
+- `routers/contracts.py` + `services/contract_service.py` (vendor-
+  authenticated): `POST /contracts` creates a `Booking` with `user_id=None`,
+  `status=APPROVED`, and a fresh `contract_token`; `GET`/`PATCH
+  /contracts/{booking_id}` view/edit it (PATCH 400s once `signed_at` is
+  set — a signed agreement is immutable). `GET /vendors/me/clients` groups
+  the vendor's own bookings by `user_id` when present, else by
+  `(guest_name, guest_phone)`. `Lead` CRUD (`/leads`) is a separate,
+  minimal table for informal off-platform prospects that aren't a
+  committed booking yet; `POST /leads/{id}/convert` turns one into a real
+  contract.
+- `routers/guest_bookings.py` + `services/guest_booking_service.py`
+  (fully public, no `Depends(get_current_user)` anywhere): the client's
+  side, reached only by `contract_token` — read, fill in contact/venue
+  details, e-sign (`POST /guest-bookings/{token}/sign`, which also emails a
+  copy of the agreement via `email_service.send_email`), and self-report
+  paying the deposit/balance. Rate-limited more aggressively than most of
+  this app (`slowapi`, same `limiter` instance as everywhere else) since
+  there's no account behind any of these calls to throttle by identity.
+- Deposit self-attestation (`deposit_marked_paid_at`/
+  `deposit_confirmed_received_at`, `stripe_service.mark_deposit_paid`/
+  `confirm_deposit_received`) is a second pair alongside the pre-existing
+  full-balance one (`manual_payment_marked_at`/`confirmed_at`) — a booking
+  with no `deposit_percent` set never touches it.
+- A guest booking (`Booking.user_id IS NULL`) does not support messaging,
+  negotiation, change requests, or client-side GPS check-in — all of those
+  assume two authenticated `User` rows. See `docs/DECISIONS.md` #13 for
+  exactly which existing code paths needed an explicit guard for this
+  versus already failing closed on their own.
+
 ## Observability (Sentry)
 
 `app/observability.py`, initialized as the very first thing in `main.py`
