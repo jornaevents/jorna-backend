@@ -23,9 +23,10 @@ the new guest-booking/contracts/clients/leads endpoints.
 ## Current Status
 
 Branch `feature/vendor-contracts-data-model`, **not pushed, no PR yet**.
-Sections 1 (data model) and 4 (guard audit) are done and committed
-(commit `26e71d1`). Section 3 (the actual endpoints — `contracts.py`,
-`guest_bookings.py` routers) is **not started**.
+Sections 1 (data model), 4 (guard audit), and 3 (the actual endpoints) are
+all done and committed (`26e71d1`, `6aa13f7`). This repo's entire slice of
+the plan is done — remaining work is all in the frontend repo
+(`jorna-vendor`) now: see that repo's own `current-task.md`.
 
 ## What Was Done
 
@@ -66,20 +67,23 @@ Sections 1 (data model) and 4 (guard audit) are done and committed
 
 ## Remaining Work (this repo)
 
-Section 3 of the plan — new `server/app/routers/contracts.py` +
-`server/app/services/contract_service.py` (vendor-authenticated: create/
-edit a contract, `GET /vendors/me/clients`, `Lead` CRUD, vendor-side
-deposit mark/confirm) and a new `server/app/routers/guest_bookings.py`
-(fully public/unauthenticated: read-by-token, fill-in-details, sign,
-guest-side deposit/payment mark, all rate-limited via the existing
-`slowapi` `limiter`). This is the plan's own flagged **highest-uncertainty
-step** — reread Section 3's abuse-surface discussion and
-`docs/DECISIONS.md` #13 before building it, not just before shipping it.
+None for the plan as currently scoped. Possible later follow-ups, not
+blocking: (a) push this branch and open a PR once the frontend catches up
+enough to demo end-to-end — check with the user first, same as the
+`ESCROW_ENABLED` work's pattern; (b) the plan's Section 3 table originally
+called for a vendor-side "confirm-deposit-received" restricted to
+non-guest bookings — on closer reading during implementation this was
+loosened, correctly: `confirm_deposit_received` only ever checks the
+vendor's identity, never `booking.user_id`, so it already works for guest
+and real-account bookings alike with no separate guest-only path needed;
+documented in the commit message and `docs/ARCHITECTURE.md`, not a gap.
 
-Once this repo's endpoints exist, the frontend work resumes in
-`jorna-vendor` (see that repo's own `current-task.md`) — Contracts builder
-UI, the public signing page, deposit-attestation UI, then the pipeline/
-Clients/Leads read-only views last.
+Frontend work resumes in `jorna-vendor` (see that repo's own
+`current-task.md`) — Contracts builder UI, the public signing page,
+deposit-attestation UI, then the pipeline/Clients/Leads read-only views
+last. It talks to this repo's new endpoints
+(`POST /contracts`, `GET/PATCH /contracts/{id}`, `GET /vendors/me/clients`,
+`/leads*`, `/guest-bookings/{token}*`, `/payments/bookings/{id}/{mark,confirm}-deposit-*`).
 
 ## Notes for the Next Agent
 
