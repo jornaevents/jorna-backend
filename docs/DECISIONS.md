@@ -97,6 +97,42 @@ then — instead of refunds simply stopping — the client's payment splits
 between the platform and the vendor on a ramp from 99%/1% right after grace
 to 1%/99% by the day before the event.
 
+## 12. Escrow disabled for the MVP via an `ESCROW_ENABLED` flag, not deleted
+
+For the leaner MVP, every vendor gets paid off-platform (Venmo/Zelle) — no
+Stripe checkout, no held funds, no payout step. Rather than rip Stripe out,
+`app.config.ESCROW_ENABLED` (defaults `true`) is a single switch, checked in
+four places:
+
+- `main.py`'s boot-time check no longer requires `STRIPE_SECRET_KEY`/
+  `STRIPE_WEBHOOK_SECRET`, and skips scheduling the daily escrow-release
+  sweep, when the flag is off.
+- `booking_service.create_booking` forces every new booking's
+  `payment_method` to `"manual"` regardless of what's stored on the vendor
+  row — this is the actual kill switch, and it doesn't depend on vendor rows
+  being migrated first (see below).
+- `vendor_service.update_vendor` rejects setting `payment_method` back to
+  `"stripe"` and requires at least a Venmo handle or Zelle contact, but only
+  when the update actually touches a payment field — an unrelated save (e.g.
+  bio during onboarding, before payment info is ever set) isn't blocked by a
+  requirement it isn't trying to satisfy yet.
+- `routers/payments.py`'s `_require_escrow` dependency 403s the endpoints
+  with no manual-track equivalent: Connect onboarding/status, PaymentIntent/
+  Checkout creation, payment sync, event-confirm (fund release), reschedule
+  refund, disputes, and saved-card setup/sync/forget. Endpoints that already
+  serve both tracks — `cancel`, `cancellation-preview`, `earnings`,
+  `mark-paid`, `confirm-received` — are untouched; they already have correct
+  manual-track branches (see `docs/DECISIONS.md` #7/#11 for the Stripe-track
+  policy they still carry when the flag is back on).
+
+Existing vendor rows with `payment_method="stripe"` are deliberately **not**
+backfilled — the booking-time override above makes that unnecessary, and a
+bulk UPDATE against production with no staging DB to test it on isn't worth
+the risk for a value that's now unreachable anyway. `stripe_service.py`, the
+Stripe columns on `Booking`, and the Stripe-only tests are left in place,
+untested-in-CI-by-default but otherwise unchanged — flipping `ESCROW_ENABLED`
+back to `true` is the entire rollback, no code or schema revert needed.
+
 The ramp exists because a flat cutoff treats "cancelled an hour after the
 window closed" the same as "cancelled the day before the wedding," and the
 vendor's position in those two cases isn't remotely the same — the closer to

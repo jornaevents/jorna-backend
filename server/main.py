@@ -31,7 +31,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
+from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, ESCROW_ENABLED, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
@@ -335,16 +335,17 @@ async def lifespan(app: FastAPI):
             "SECRET_KEY environment variable is not set. "
             "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
         )
-    if not STRIPE_SECRET_KEY:
-        raise RuntimeError(
-            "STRIPE_SECRET_KEY environment variable is not set. "
-            "Add your Stripe test key (sk_test_...) to the .env file."
-        )
-    if not STRIPE_WEBHOOK_SECRET:
-        raise RuntimeError(
-            "STRIPE_WEBHOOK_SECRET environment variable is not set. "
-            "Add your Stripe webhook signing secret (whsec_...) to the .env file."
-        )
+    if ESCROW_ENABLED:
+        if not STRIPE_SECRET_KEY:
+            raise RuntimeError(
+                "STRIPE_SECRET_KEY environment variable is not set. "
+                "Add your Stripe test key (sk_test_...) to the .env file."
+            )
+        if not STRIPE_WEBHOOK_SECRET:
+            raise RuntimeError(
+                "STRIPE_WEBHOOK_SECRET environment variable is not set. "
+                "Add your Stripe webhook signing secret (whsec_...) to the .env file."
+            )
 
     if not os.getenv("OPENROUTER_API_KEY"):
         logger.warning(
@@ -386,12 +387,13 @@ async def lifespan(app: FastAPI):
     # Start the background sweeps.
     background = [
         asyncio.create_task(_periodic_token_cleanup()),
-        asyncio.create_task(_periodic_escrow_release()),
         asyncio.create_task(_periodic_checkin_reminders()),
         asyncio.create_task(_periodic_message_digests()),
         asyncio.create_task(_periodic_calendar_channel_renewal()),
         asyncio.create_task(_periodic_calendar_busy_resync()),
     ]
+    if ESCROW_ENABLED:
+        background.append(asyncio.create_task(_periodic_escrow_release()))
 
     yield
 

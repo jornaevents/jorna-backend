@@ -37,7 +37,20 @@ net under that channel (every 4 hours).
   then review the generated file before committing — autogenerate misses
   some changes (data migrations, some constraint changes).
 
-## Payments & escrow (Stripe Connect)
+## Payments & escrow (Stripe Connect) — currently disabled for the MVP
+
+`app.config.ESCROW_ENABLED` (default `true`) gates the whole flow described
+below. For the current MVP it's set `false` in the deploy environment: every
+new booking is forced onto the manual Venmo/Zelle track
+(`booking_service.create_booking`), a vendor can't select Stripe or leave
+both contact fields empty (`vendor_service.update_vendor`), and the
+Stripe-only endpoints below 403 instead of reaching Stripe
+(`routers/payments.py`'s `_require_escrow`). Nothing here was deleted — see
+`docs/DECISIONS.md` #12 for exactly what's gated vs. left always-on
+(`cancel_booking`, `cancellation-preview`, `earnings`, `mark-paid`,
+`confirm-received` already serve the manual track directly and aren't
+touched by the flag). The rest of this section describes the flow as it
+exists in code, live again if `ESCROW_ENABLED` is flipped back on.
 
 **Three independent status fields, not one.** Easy to conflate since they all
 answer some version of "how far along is this":

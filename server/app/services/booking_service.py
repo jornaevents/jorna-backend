@@ -8,6 +8,7 @@ from sqlalchemy import case, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import ESCROW_ENABLED
 from app.db.models import Booking, Bundle, Event, User, Vendor, Service
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.utils.location import calculate_distance_miles
@@ -818,8 +819,12 @@ def create_booking(
 
     # Snapshot the vendor's payment track now, not read live later — a vendor
     # switching tracks after this booking exists shouldn't change the deal
-    # a client already agreed to.
+    # a client already agreed to. With escrow disabled, force manual
+    # regardless of what's stored on the vendor row (see docs/DECISIONS.md
+    # #12) — this is what actually keeps new bookings off Stripe, independent
+    # of whether every vendor row has been updated yet.
     vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    booking_payment_method = "manual" if not ESCROW_ENABLED else (vendor.payment_method if vendor else None)
 
     booking = Booking(
         booking_id=str(uuid.uuid4()),
@@ -838,7 +843,7 @@ def create_booking(
         venue_longitude=venue_longitude,
         status=BookingStatus.PENDING.value,
         bundle_id=bundle_id,
-        payment_method=vendor.payment_method if vendor else None,
+        payment_method=booking_payment_method,
     )
     # Estimate the total = rate x quantity from everything the booking carries.
     # When the quantity is still unknown (e.g. a per-person service with no guest
@@ -1135,7 +1140,7 @@ def update_booking_status(
     # vendor directly via mark_booking_paid/confirm_payment_received instead.
     # payment_method is None for anything created before that track existed,
     # which is always Stripe.
-    if status_str == BookingStatus.APPROVED.value and booking.payment_method != "manual":
+    if ESCROW_ENABLED and status_str == BookingStatus.APPROVED.value and booking.payment_method != "manual":
         try:
             from app.services.stripe_service import CardChargeUnavailable, charge_saved_card
 
