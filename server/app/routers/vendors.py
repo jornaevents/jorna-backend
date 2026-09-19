@@ -107,6 +107,12 @@ class UpdateVendorRequest(BaseModel):
     payment_method: Optional[str] = None
     venmo_handle: Optional[str] = None
     zelle_contact: Optional[str] = None
+    default_deposit_percent: Optional[int] = None
+    default_cancellation_window_hours: Optional[int] = None
+    default_overtime_rate_cents: Optional[int] = None
+    default_addon_rate_cents: Optional[int] = None
+    default_contract_terms: Optional[dict] = None
+    default_guest_count_mode: Optional[str] = None
 
     @field_validator("specializations")
     @classmethod

@@ -26,7 +26,35 @@ Branch `feature/vendor-contracts-data-model`, **not pushed, no PR yet**.
 Sections 1 (data model), 4 (guard audit), and 3 (the actual endpoints) are
 all done and committed (`26e71d1`, `6aa13f7`). This repo's entire slice of
 the plan is done — remaining work is all in the frontend repo
-(`jorna-vendor`) now: see that repo's own `current-task.md`.
+(`jorna-vendor`) now: see that repo's own `current-task.md`. **Not yet
+committed**: a bug fix (below) found while manually testing the frontend's
+new Contract-defaults settings UI — `Vendor.default_*` fields round-trip
+through `PATCH`/`GET /vendors/me` now; staged as an uncommitted change on
+this same branch, waiting on user go-ahead to commit.
+
+## Bug found + fixed this session: `Vendor.default_*` never round-tripped
+
+Manually testing `jorna-vendor`'s new "Contract defaults" settings section
+(saves via `PATCH /vendors/me`, reads via `GET /vendors/me`) showed the UI
+reporting "Saved" but the values never coming back on reload. Root cause was
+a triple gap, all three layers missing the six `default_*` fields
+independently:
+1. `UpdateVendorRequest` (`app/routers/vendors.py`) didn't declare them, so
+   Pydantic silently dropped them from the request body before any service
+   code ran.
+2. `update_vendor`'s (`app/services/vendor_service.py`) field-write
+   allowlist didn't include them either — belt-and-suspenders gap.
+3. `get_vendor`/`get_my_vendor`'s hand-built response dicts
+   (`app/services/vendor_service.py`) didn't return them, so even a correct
+   write would never have been visible.
+Fixed all three (response fields added only to `get_my_vendor`, not the
+public `get_vendor`, since these are private seed values for the vendor's
+own Contracts builder — not client-facing). Added
+`tests/test_vendor_contract_defaults.py` (2 new tests: round-trip, and
+absent-by-default). Full suite: 928 passed, 21 skipped (was 926 before this
+fix's 2 new tests). Re-verified manually end-to-end via the frontend's
+`/vendor-profile` Contract-defaults form → reload → `/contracts/new`
+pre-fill, all correct now.
 
 ## What Was Done
 
@@ -63,7 +91,8 @@ the plan is done — remaining work is all in the frontend repo
   `venv/bin/X` directly — the venv's script shebangs still hardcode this
   repo's pre-reorg path, `.../GitHub/Desiconnect/...` instead of
   `.../GitHub/jorna/Desiconnect/...`, and are broken as standalone
-  executables) — 900 passed, 21 skipped, nothing broken.
+  executables) — 928 passed, 21 skipped, nothing broken (as of the
+  `default_*` fix above).
 
 ## Remaining Work (this repo)
 

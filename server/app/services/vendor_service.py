@@ -170,6 +170,12 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "payment_method": v.payment_method,
         "venmo_handle": v.venmo_handle,
         "zelle_contact": v.zelle_contact,
+        "default_deposit_percent": v.default_deposit_percent,
+        "default_cancellation_window_hours": v.default_cancellation_window_hours,
+        "default_overtime_rate_cents": v.default_overtime_rate_cents,
+        "default_addon_rate_cents": v.default_addon_rate_cents,
+        "default_contract_terms": v.default_contract_terms,
+        "default_guest_count_mode": v.default_guest_count_mode,
     }
 
 
@@ -240,7 +246,10 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         if field in ["bio", "category", "subcategory", "specializations", "travel_radius_miles",
                      "open_to_long_distance", "open_to_price_negotiation",
                      "open_to_location_negotiation", "instagram_username",
-                     "payment_method", "venmo_handle", "zelle_contact"]:
+                     "payment_method", "venmo_handle", "zelle_contact",
+                     "default_deposit_percent", "default_cancellation_window_hours",
+                     "default_overtime_rate_cents", "default_addon_rate_cents",
+                     "default_contract_terms", "default_guest_count_mode"]:
             setattr(vendor, field, value)
     
     db.commit()
