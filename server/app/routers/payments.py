@@ -23,6 +23,8 @@ from app.services.stripe_service import (
     cancellation_preview,
     mark_booking_paid,
     confirm_payment_received,
+    mark_deposit_paid,
+    confirm_deposit_received,
     raise_dispute,
     resolve_dispute,
     create_card_setup_session,
@@ -309,6 +311,48 @@ def confirm_payment_received_route(
     track's two-sided attestation."""
     try:
         return confirm_payment_received(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/mark-deposit-paid",
+    summary="Client: mark a contract booking's deposit as paid",
+)
+@limiter.limit("5/minute")
+def mark_deposit_paid_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """For a real-account booking with a deposit configured. A guest booking
+    has no session to call this with — see /guest-bookings/{token}/mark-deposit-paid."""
+    try:
+        return mark_deposit_paid(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/confirm-deposit-received",
+    summary="Vendor: confirm receiving a contract booking's deposit",
+)
+@limiter.limit("5/minute")
+def confirm_deposit_received_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Works for a guest booking too — only checks the vendor's identity,
+    never booking.user_id."""
+    try:
+        return confirm_deposit_received(
             booking_id=booking_id, caller_user_id=current_user.user_id, db=db
         )
     except StripeError as e:

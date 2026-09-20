@@ -107,6 +107,12 @@ class UpdateVendorRequest(BaseModel):
     payment_method: Optional[str] = None
     venmo_handle: Optional[str] = None
     zelle_contact: Optional[str] = None
+    default_deposit_percent: Optional[int] = None
+    default_cancellation_window_hours: Optional[int] = None
+    default_overtime_rate_cents: Optional[int] = None
+    default_addon_rate_cents: Optional[int] = None
+    default_contract_terms: Optional[dict] = None
+    default_guest_count_mode: Optional[str] = None
 
     @field_validator("specializations")
     @classmethod
@@ -263,6 +269,22 @@ def get_my_vendor_route(
     try:
         return get_my_vendor(user_id=current_user.user_id, db=db)
     except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/me/clients", summary="Clients CRM: the authenticated vendor's own bookings, grouped by client")
+def get_my_clients_route(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.contract_service import ContractError, get_vendor_clients
+
+    vendor = db.query(Vendor).filter(Vendor.user_id == current_user.user_id).first()
+    if not vendor:
+        raise HTTPException(status_code=403, detail="You must be a vendor to view this")
+    try:
+        return get_vendor_clients(vendor_id=vendor.vendor_id, caller_user_id=current_user.user_id, db=db)
+    except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 

@@ -141,6 +141,8 @@ def start_negotiation(
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise NegotiationError(404, "Booking not found")
+    if booking.user_id is None:
+        raise NegotiationError(400, "Negotiation isn't available for a guest booking")
     if booking.status not in ("pending", "approved"):
         raise NegotiationError(400, f"Cannot negotiate on a booking with status '{booking.status}'")
     if booking.payment_status not in (PaymentStatus.UNPAID.value,):

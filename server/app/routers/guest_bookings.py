@@ -1,0 +1,105 @@
+"""Public, unauthenticated router for the client-facing side of a guest/
+contract booking — see docs/DECISIONS.md #13. No Depends(get_current_user)
+anywhere in this file, deliberately: the contract_token in the path is the
+entire credential, same trust model as the existing RSVP system's public
+`GET /guests/invitation`. Rate-limited more aggressively than most
+endpoints in this app precisely because there's no account behind any of
+these calls to throttle by identity instead.
+"""
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.db.database import get_db
+from app.limiter import limiter
+from app.services.guest_booking_service import (
+    GuestBookingError,
+    get_guest_booking,
+    fill_details,
+    sign_contract,
+    mark_full_paid,
+    mark_deposit_paid,
+)
+
+router = APIRouter(prefix="/guest-bookings", tags=["guest-bookings"])
+
+
+@router.get("/{contract_token}", summary="Public read of a guest booking/contract")
+@limiter.limit("20/minute")
+def get_guest_booking_route(
+    request: Request,
+    contract_token: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_guest_booking(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class FillDetailsRequest(BaseModel):
+    guest_name: Optional[str] = None
+    guest_email: Optional[str] = None
+    guest_phone: Optional[str] = None
+    location: Optional[str] = None
+    guest_count: Optional[int] = None
+
+
+@router.patch("/{contract_token}", summary="Client fills in their own contact + venue details")
+@limiter.limit("10/minute")
+def fill_details_route(
+    request: Request,
+    contract_token: str,
+    body: FillDetailsRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return fill_details(contract_token=contract_token, db=db, **body.model_dump())
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class SignRequest(BaseModel):
+    signer_name: str
+
+
+@router.post("/{contract_token}/sign", summary="Client e-signs by typing their full legal name")
+@limiter.limit("5/minute")
+def sign_contract_route(
+    request: Request,
+    contract_token: str,
+    body: SignRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return sign_contract(contract_token=contract_token, signer_name=body.signer_name, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{contract_token}/mark-paid", summary="Client: mark the full/remaining balance as paid")
+@limiter.limit("10/minute")
+def mark_full_paid_route(
+    request: Request,
+    contract_token: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return mark_full_paid(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{contract_token}/mark-deposit-paid", summary="Client: mark the deposit as paid")
+@limiter.limit("10/minute")
+def mark_deposit_paid_route(
+    request: Request,
+    contract_token: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return mark_deposit_paid(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)

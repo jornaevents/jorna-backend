@@ -51,6 +51,15 @@ class PaymentStatus(str, Enum):
     CANCELLED = "cancelled"
     MARKED_PAID = "marked_paid"
     CONFIRMED_PAID = "confirmed_paid"
+    # A third track's own two values, alongside the manual pair above:
+    # deposit-specific self-attestation for a contract booking with
+    # Booking.deposit_percent set. Booking.manual_payment_marked_at/
+    # manual_payment_confirmed_at (and MARKED_PAID/CONFIRMED_PAID here)
+    # keep meaning "the full/remaining balance" — these two mean
+    # "the deposit specifically." See Booking.deposit_marked_paid_at/
+    # deposit_confirmed_received_at.
+    DEPOSIT_MARKED_PAID = "deposit_marked_paid"
+    DEPOSIT_CONFIRMED_PAID = "deposit_confirmed_paid"
 
 
 class PriceUnit(str, Enum):
