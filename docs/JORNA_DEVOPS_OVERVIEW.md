@@ -71,8 +71,10 @@ Runs on every push/PR to `main`, two jobs:
   migration SQL gets caught before it reaches production.
 
 **Deploy:** `main` auto-deploys to **Railway** (`railway.toml`: Dockerfile
-build, `preDeployCommand = "alembic upgrade head"`, health check on `/`,
-restart on failure ×3). Railway's `checkSuites` flag makes deploy wait for
+build, `preDeployCommand = "python -m scripts.predeploy"` — runs the
+migration-state guard then `alembic upgrade head` in one Python process,
+see `CLAUDE.md`'s "Diagnosing a failed Railway deploy" — health check on
+`/`, restart on failure ×3). Railway's `checkSuites` flag makes deploy wait for
 the `Backend CI` GitHub check to go green before it even attempts the
 migration against production — **there is no staging environment and no
 manual approval gate**, so a bad migration runs directly against
