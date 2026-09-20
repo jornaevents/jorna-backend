@@ -27,12 +27,15 @@ net under that channel (every 4 hours).
 - Production: Postgres (Railway sets `DATABASE_URL`; `app/config.py`
   rewrites the `postgres://` scheme Railway provides to `postgresql://`,
   since SQLAlchemy 2.x dropped the old alias).
-- **Migrations live in `server/alembic/`** (45 revisions) and run via
-  `railway.toml`'s `preDeployCommand = "alembic upgrade head"` — i.e.
-  **every push to `main` applies pending migrations to production Postgres
-  before the new app version deploys.** There is no separate staging
-  database this runs against first. See `CLAUDE.md` for the decoy root
-  `alembic.ini`/`migrations/` to avoid.
+- **Migrations live in `server/alembic/`** (62 revisions) and run via
+  `railway.toml`'s `preDeployCommand = "python -m scripts.predeploy"`
+  (`server/scripts/predeploy.py`, which runs the migration-state guard
+  then `alembic upgrade head` in one process) — i.e. **every push to
+  `main` applies pending migrations to production Postgres before the new
+  app version deploys.** There is no separate staging database this runs
+  against first. See `CLAUDE.md`'s "Diagnosing a failed Railway deploy" for
+  the decoy root `alembic.ini`/`migrations/` to avoid, and for why this
+  isn't a bare `alembic upgrade head`.
 - New migration: `cd server && venv/bin/alembic revision --autogenerate -m "..."`,
   then review the generated file before committing — autogenerate misses
   some changes (data migrations, some constraint changes).

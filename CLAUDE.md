@@ -55,12 +55,13 @@ descriptions of a contract they don't own.
   no manual approval gate. Branch for all changes; merge to `main` only when
   the user says to deploy, and be especially careful with any migration — a
   bad one runs against production data with no in-between check.
-- **Before `alembic upgrade head` runs, `preDeployCommand` first runs
-  `python -m scripts.check_migration_state`** (`server/scripts/`), which
-  refuses to proceed (nonzero exit, deploy stops) if the DB's current
-  `alembic_version` isn't a revision this repo's migration chain actually
-  knows about — see "Diagnosing a failed Railway deploy" below for why this
-  exists.
+- **`preDeployCommand` is `python -m scripts.predeploy`** (`server/scripts/`),
+  which runs the migration-state guard (`check_migration_state`, refuses —
+  nonzero exit, deploy stops — if the DB's current `alembic_version` isn't a
+  revision this repo's migration chain actually knows about) and then
+  `alembic upgrade head`, both in one Python process via alembic's own API
+  rather than a shelled-out `&&` chain — see "Diagnosing a failed Railway
+  deploy" below for why both of these exist.
 - `server/alembic.ini` + `server/alembic/` is the live migration setup
   (this is what Railway runs) — always `cd server` before any `alembic`
   command.
@@ -105,6 +106,22 @@ That specific gap is now covered at deploy time instead:
 revision this repo's migration chain actually knows about, so a repeat of
 the 2026-08-30 scenario fails loudly in the Railway deploy log instead of
 upgrading blind from a git-invisible starting point.
+
+**2026-09-20 incident:** at the time, `preDeployCommand` chained these as a
+single shell string — `python -m scripts.check_migration_state && alembic
+upgrade head`. A deploy went out where the guard ran and printed its
+"known revision — proceeding" line, then the container started — with
+*zero* output from `alembic upgrade head` in between, success or failure.
+The app went live five migrations behind its own schema, 500ing on every
+endpoint touching a new column, until someone ran `alembic upgrade head`
+by hand against production. Root cause was never conclusively pinned down
+(most likely Railway's preDeployCommand doesn't reliably run `&&` the way
+a real shell does), so the fix doesn't depend on understanding it:
+`server/scripts/predeploy.py` now runs the guard and `alembic upgrade
+head` (via `alembic.command.upgrade`, the same API the CLI wraps) in one
+Python process, with nothing for a shell to silently drop. `railway.toml`'s
+`preDeployCommand` is just `python -m scripts.predeploy` — don't
+reintroduce a `&&` chain here.
 
 ```bash
 railway login                                  # first time in a fresh session; opens a browser

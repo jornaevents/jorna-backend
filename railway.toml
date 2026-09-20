@@ -3,7 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "server/Dockerfile"
 
 [deploy]
-preDeployCommand = "python -m scripts.check_migration_state && alembic upgrade head"
+preDeployCommand = "python -m scripts.predeploy"
 healthcheckPath = "/"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
