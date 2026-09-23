@@ -244,7 +244,7 @@ def _email_html(title: str, body: str) -> str:
         f'<h2 style="margin:0 0 12px">{title}</h2>'
         f'<p style="font-size:15px;line-height:1.5;margin:0 0 20px">{body}</p>'
         '<hr style="border:none;border-top:1px solid #eee;margin:20px 0">'
-        '<p style="font-size:12px;color:#888;margin:0">Desiconnect — your South Asian event marketplace.</p>'
+        '<p style="font-size:12px;color:#888;margin:0">Jorna — your South Asian celebration marketplace.</p>'
         '</div>'
     )
 
@@ -264,6 +264,29 @@ def _send_booking_email(to_email: Optional[str], title: str, body: str) -> dict:
 # ---------------------------------------------------------------------------
 # High-level booking notification dispatchers
 # ---------------------------------------------------------------------------
+
+def notify_vendor_contract_event(
+    *,
+    vendor_user,
+    title: str,
+    body: str,
+    booking_id: str,
+    event: str,
+    db,
+) -> dict:
+    """Tell a vendor something happened on one of their contracts (the client
+    signed, or says they've paid). Push to every device *and* email — unlike
+    the push-first/email-fallback status updates, each of these is a moment a
+    vendor may need to act on (confirm money arrived), and a contract client
+    has no in-app thread the vendor would otherwise be watching."""
+    if vendor_user is None:
+        return {"sent": 0, "devices": 0, "email": False}
+    push = send_push_to_user(
+        vendor_user, title, body, {"booking_id": booking_id, "event": event}, db=db
+    )
+    email = _send_booking_email(getattr(vendor_user, "email", None), title, body)
+    return {**push, "email": bool(email.get("success"))}
+
 
 def notify_booking_status_change(
     *,

@@ -420,13 +420,13 @@ def _send_password_reset_email(user: User, raw_token: str, client: str = "ios") 
     from app.services.email_service import send_email
     base = WEB_APP_URL if client == "web" else FRONTEND_URL
     reset_link = f"{base.rstrip('/')}/reset-password?token={raw_token}"
-    subject = "Reset your Desiconnect password"
+    subject = "Reset your Jorna password"
     html = (
         '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'
         'padding:24px;color:#1a1a1a">'
         f'<h2 style="margin:0 0 12px">Reset your password</h2>'
         f'<p style="font-size:15px;line-height:1.5">Hi {user.f_name}, we received a request to '
-        'reset your Desiconnect password. Click the button below to choose a new one.</p>'
+        'reset your Jorna password. Click the button below to choose a new one.</p>'
         f'<p style="margin:24px 0"><a href="{reset_link}" '
         'style="background:#c2410c;color:#fff;text-decoration:none;padding:12px 24px;'
         'border-radius:6px;font-size:15px;display:inline-block">Reset Password</a></p>'
@@ -434,11 +434,11 @@ def _send_password_reset_email(user: User, raw_token: str, client: str = "ios") 
         f'{PASSWORD_RESET_EXPIRE_MINUTES} minutes. If you didn\'t request this, you can safely '
         'ignore this email — your password won\'t change.</p>'
         '<hr style="border:none;border-top:1px solid #eee;margin:20px 0">'
-        '<p style="font-size:12px;color:#888;margin:0">Desiconnect — your South Asian event marketplace.</p>'
+        '<p style="font-size:12px;color:#888;margin:0">Jorna — your South Asian celebration marketplace.</p>'
         '</div>'
     )
     text = (
-        f"Hi {user.f_name},\n\nReset your Desiconnect password using this link:\n{reset_link}\n\n"
+        f"Hi {user.f_name},\n\nReset your Jorna password using this link:\n{reset_link}\n\n"
         f"This link expires in {PASSWORD_RESET_EXPIRE_MINUTES} minutes. "
         "If you didn't request this, ignore this email."
     )

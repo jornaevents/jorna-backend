@@ -16,6 +16,7 @@ from app.services.contract_service import (
     create_contract,
     get_contract,
     update_contract,
+    void_contract,
     create_lead,
     list_leads,
     update_lead,
@@ -45,6 +46,10 @@ class ContractTermsRequest(BaseModel):
     overtime_rate_cents: Optional[int] = None
     addon_rate_cents: Optional[int] = None
     contract_terms: Optional[dict] = None
+    guest_name: Optional[str] = None
+    guest_email: Optional[str] = None
+    guest_phone: Optional[str] = None
+    location: Optional[str] = None
 
 
 class ContractUpdateRequest(BaseModel):
@@ -58,6 +63,10 @@ class ContractUpdateRequest(BaseModel):
     overtime_rate_cents: Optional[int] = None
     addon_rate_cents: Optional[int] = None
     contract_terms: Optional[dict] = None
+    guest_name: Optional[str] = None
+    guest_email: Optional[str] = None
+    guest_phone: Optional[str] = None
+    location: Optional[str] = None
 
 
 @router.post("/contracts", summary="Author a guest booking/contract", status_code=201)
@@ -102,6 +111,18 @@ def update_contract_route(
             booking_id=booking_id, caller_user_id=current_user.user_id,
             update_data=update_data, db=db,
         )
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/contracts/{booking_id}/void", summary="Withdraw an unsigned contract and free its date")
+def void_contract_route(
+    booking_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return void_contract(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
