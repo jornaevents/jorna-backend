@@ -126,6 +126,10 @@ def create_contract(
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service or service.vendor_id != vendor.vendor_id:
         raise ContractError(404, "Service not found for this vendor")
+    # Hidden packages are fine here — a private package offered only by
+    # contract is the point of hiding one. Archived ones are retired.
+    if service.status == "archived":
+        raise ContractError(400, "That package is archived — restore it before using it in a contract")
 
     if amount_cents <= 0:
         raise ContractError(400, "amount_cents must be greater than zero")

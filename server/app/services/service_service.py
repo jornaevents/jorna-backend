@@ -3,7 +3,7 @@
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.db.models import Service, Vendor, User
+from app.db.models import Booking, Service, Vendor, User
 from app.services.storage_service import delete_service_image, delete_service_video
 
 
@@ -40,7 +40,32 @@ def _service_dict(service: Service) -> dict:
         "venue_longitude": service.venue_longitude,
         "require_guest_count": service.require_guest_count,
         "require_performer_count": service.require_performer_count,
+        "status": service.status or "active",
+        "included_hours": service.included_hours,
+        "inclusions": service.inclusions or [],
+        "add_ons": service.add_ons or [],
+        "deposit_percent": service.deposit_percent,
+        "cancellation_window_hours": service.cancellation_window_hours,
+        "overtime_rate_cents": service.overtime_rate_cents,
+        "sort_order": service.sort_order,
     }
+
+
+# The one definition of "a client can see and book this", for every query
+# that lists packages to clients (search, bundles, the public list). Hidden
+# packages are the vendor's private ones (still usable in their contracts);
+# archived ones are retired. Lookups by id for an *existing* booking must not
+# use this — an archived package's bookings still need their row.
+def listed(query):
+    return query.filter(Service.status == "active")
+
+
+def format_experience(years: Optional[int]) -> str:
+    """Service.experience is required free text that predates
+    Vendor.years_experience; older clients still read it."""
+    if years is None:
+        return ""
+    return "1 year" if years == 1 else f"{years} years"
 
 
 def _require_venue_location(
@@ -74,7 +99,7 @@ def create_service(
     name: str,
     price: float,
     duration_minutes: Optional[int],
-    experience: str,
+    experience: Optional[str],
     media: Optional[list[str]],
     category: Optional[str] = None,
     subcategory: Optional[str] = None,
@@ -86,6 +111,14 @@ def create_service(
     venue_longitude: Optional[float] = None,
     require_guest_count: bool = False,
     require_performer_count: bool = False,
+    status: str = "active",
+    included_hours: Optional[float] = None,
+    inclusions: Optional[list[str]] = None,
+    add_ons: Optional[list[dict]] = None,
+    deposit_percent: Optional[int] = None,
+    cancellation_window_hours: Optional[int] = None,
+    overtime_rate_cents: Optional[int] = None,
+    sort_order: Optional[int] = None,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -108,7 +141,9 @@ def create_service(
         name=name,
         price=price,
         duration_minutes=duration_minutes,
-        experience=experience,
+        # Optional now that years in business live on the vendor; still
+        # written for clients that read the old field.
+        experience=experience if experience else format_experience(vendor.years_experience),
         media=media,
         category=category,
         subcategory=subcategory,
@@ -120,6 +155,14 @@ def create_service(
         venue_longitude=venue_longitude,
         require_guest_count=require_guest_count,
         require_performer_count=require_performer_count,
+        status=status,
+        included_hours=included_hours,
+        inclusions=inclusions,
+        add_ons=add_ons,
+        deposit_percent=deposit_percent,
+        cancellation_window_hours=cancellation_window_hours,
+        overtime_rate_cents=overtime_rate_cents,
+        sort_order=sort_order,
     )
     db.add(service)
     db.commit()
@@ -159,6 +202,7 @@ def list_services(
     subcategory: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
+    include_unlisted: bool = False,
     db: Session,
 ) -> dict:
     """Return a paginated list of services with their vendor info.
@@ -179,8 +223,19 @@ def list_services(
         query = query.filter(Service.category == category)
     if subcategory:
         query = query.filter(Service.subcategory == subcategory)
+    # include_unlisted is only ever passed for the vendor's own list (the
+    # router checks ownership); everyone else sees what's bookable.
+    if not include_unlisted:
+        query = listed(query)
     total = query.count()
-    rows = query.offset(offset).limit(limit).all()
+    # The vendor's own order first; unordered packages after, by name, so
+    # the list is stable between requests.
+    rows = (
+        query.order_by(Service.sort_order.is_(None), Service.sort_order, Service.name)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     items = [_service_with_vendor_dict(s, v, u) for s, v, u in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -202,6 +257,9 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
         _merged("category"), _merged("location"),
         _merged("venue_latitude"), _merged("venue_longitude"),
     )
+    # status is NOT NULL: an explicit null means "no change", not "clear".
+    if update_data.get("status", "unset") is None:
+        update_data = {k: v for k, v in update_data.items() if k != "status"}
     for field, value in update_data.items():
         setattr(service, field, value)
     db.commit()
@@ -295,14 +353,26 @@ def remove_service_video(*, user_id: str, service_id: str, video_url: str, db: S
     return result, thumbnail_url
 
 
-def delete_service(*, user_id: str, service_id: str, db: Session) -> None:
-    """Delete a service. Raises 404 if not found, 403 if not the owner."""
+def delete_service(*, user_id: str, service_id: str, db: Session) -> bool:
+    """Delete a service. Raises 404 if not found, 403 if not the owner.
+
+    A package any booking still points at is archived instead: the booking's
+    service_id is a non-null foreign key, so deleting it used to fail (500 on
+    Postgres), and the client would have lost the record of what it booked
+    anyway. Returns True if it was archived rather than deleted. Either way
+    it's gone from every list a client sees, so callers treat both the same.
+    """
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise ServiceError(404, "Service not found")
     _owning_vendor(service, user_id, db)
+    if db.query(Booking.booking_id).filter(Booking.service_id == service_id).first():
+        service.status = "archived"
+        db.commit()
+        return True
     media = list(service.media or [])
     db.delete(service)
     db.commit()
     for entry in media:
         _delete_media_entry(entry)
+    return False

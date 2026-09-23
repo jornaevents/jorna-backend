@@ -176,6 +176,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "default_addon_rate_cents": v.default_addon_rate_cents,
         "default_contract_terms": v.default_contract_terms,
         "default_guest_count_mode": v.default_guest_count_mode,
+        "years_experience": v.years_experience,
     }
 
 
@@ -249,7 +250,8 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
                      "payment_method", "venmo_handle", "zelle_contact",
                      "default_deposit_percent", "default_cancellation_window_hours",
                      "default_overtime_rate_cents", "default_addon_rate_cents",
-                     "default_contract_terms", "default_guest_count_mode"]:
+                     "default_contract_terms", "default_guest_count_mode",
+                     "years_experience"]:
             setattr(vendor, field, value)
     
     db.commit()
@@ -284,7 +286,11 @@ def list_vendors(
             or_(
                 Vendor.category == category,
                 db.query(Service)
-                .filter(Service.vendor_id == Vendor.vendor_id, Service.category == category)
+                .filter(
+                    Service.vendor_id == Vendor.vendor_id,
+                    Service.category == category,
+                    Service.status == "active",
+                )
                 .exists(),
             )
         )
@@ -296,6 +302,7 @@ def list_vendors(
                 .filter(
                     Service.vendor_id == Vendor.vendor_id,
                     Service.subcategory == subcategory,
+                    Service.status == "active",
                 )
                 .exists(),
             )
@@ -365,6 +372,8 @@ def search_vendors(
         db.query(Vendor, Service, User)
         .join(Service, Vendor.vendor_id == Service.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
+        # A search row is a bookable listing; hidden/archived packages aren't.
+        .filter(Service.status == "active")
     )
     if service_name:
         query = query.filter(Service.name.ilike(f"%{service_name}%"))

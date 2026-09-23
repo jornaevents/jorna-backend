@@ -479,6 +479,8 @@ def _candidate_service_rows(
         # bundle can be one-click confirmed with no per-service price step. A user
         # who wants a negotiable service adds it manually via the bundle editor.
         .filter(Service.negotiable == False)  # noqa: E712 (SQL boolean compare)
+        # Only packages a client can actually book (hidden/archived excluded).
+        .filter(Service.status == "active")
     )
     if db_subcategory:
         q = q.filter(Service.subcategory == db_subcategory)

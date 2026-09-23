@@ -205,3 +205,38 @@ on. This is a deliberate tradeoff, not an oversight:
   `manual_payment_marked_at`/`manual_payment_confirmed_at`, which keep
   meaning "the full/remaining balance" — see `Booking.deposit_percent` and
   friends. A booking with no deposit configured never touches the new pair.
+
+## 14. Package status instead of delete; add-ons as JSON; experience on the vendor (0063)
+
+**Context.** A package (`Service`) was one price and free text. Deleting one
+that any booking referenced failed outright (`bookings.service_id` is a
+non-null FK), and there was no way to take a package off the listing
+without deleting it. Years of experience was required on every package,
+though it describes the vendor.
+
+**Decision.**
+- `Service.status` ∈ active / hidden / archived. *Active* is listed and
+  bookable. *Hidden* is off every client-facing list (search, `GET
+  /services`, AI bundles) and not bookable from the marketplace
+  (`create_booking` → 409), but the vendor can still use it in a contract —
+  a private package. *Archived* is retired: nowhere new, contracts refuse it,
+  existing bookings keep their row. `service_service.listed()` is the
+  single "a client can see this" filter; by-id lookups for an existing
+  booking deliberately don't use it.
+- `DELETE /services/{id}` archives instead of deleting when any booking
+  references the package (still 204, so older clients see "gone").
+- `GET /services?include_unlisted=true` returns hidden/archived packages
+  only to the signed-in owner of `vendor_id` (`get_optional_user`).
+- `add_ons` and `inclusions` are JSON on the row, not tables: a contract
+  will snapshot the add-ons it uses (Phase 2), so nothing joins back to
+  them. Each add-on gets a stable `id` so a snapshot can still say which one
+  it was after a rename.
+- Per-package `deposit_percent` / `cancellation_window_hours` /
+  `overtime_rate_cents` override `Vendor.default_*` when set.
+- `Vendor.years_experience` (backfilled from the leading number of the
+  vendor's `Service.experience` text). `Service.experience` stays required
+  in the table for older clients but is optional on create, filled from the
+  vendor's years.
+
+**Consequence.** Everything is additive — older iOS/web clients keep
+working unchanged and simply don't see the new fields.

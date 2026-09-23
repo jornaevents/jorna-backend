@@ -10,6 +10,7 @@ from app.db.models import User
 from app.config import ALGORITHM, SECRET_KEY
 
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
@@ -61,3 +62,13 @@ def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+
+def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """The signed-in user if a valid bearer token came with the request, else
+    None — for public endpoints that show the owner a little more (e.g. a
+    vendor's own hidden packages) without requiring anyone to sign in."""
+    return user_from_token(credentials.credentials if credentials else None, db)
