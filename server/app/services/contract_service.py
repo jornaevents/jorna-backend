@@ -7,13 +7,14 @@ lives in guest_booking_service.py instead — this file never trusts a
 contract_token as identity, only an authenticated vendor's own user_id.
 """
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Lead, Service, User, Vendor
-from app.models.schemas import BookingStatus, PaymentStatus
+from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.services.booking_service import vendor_has_conflicting_booking
+from app.services.email_service import send_email
 
 
 class ContractError(Exception):
@@ -66,11 +67,27 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "guest_phone": booking.guest_phone,
         "signer_name": booking.signer_name,
         "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        "status": booking.status,
         "contract_token": booking.contract_token,
         "vendor_display_name": f"{vendor_user.f_name} {vendor_user.l_name}".strip()
         if vendor_user
         else None,
     }
+
+
+def _check_dates(date_iso: str, date_end: str | None) -> None:
+    """Reject a schedule nobody could mean. A day of slack on "not in the
+    past": the server's today is UTC, so a vendor in California writing a
+    contract for tonight is already on tomorrow's date here."""
+    try:
+        start = date.fromisoformat(date_iso)
+        end = date.fromisoformat(date_end) if date_end else start
+    except ValueError:
+        raise ContractError(400, "Dates must be YYYY-MM-DD")
+    if start < datetime.now(timezone.utc).date() - timedelta(days=1):
+        raise ContractError(400, "The event date is in the past")
+    if end < start:
+        raise ContractError(400, "The end date is before the start date")
 
 
 def create_contract(
@@ -89,11 +106,15 @@ def create_contract(
     addon_rate_cents: int | None,
     contract_terms: dict | None,
     db: Session,
+    guest_name: str | None = None,
+    guest_email: str | None = None,
+    guest_phone: str | None = None,
+    location: str | None = None,
 ) -> dict:
     """A vendor authors the whole booking for a client who hasn't shown up
-    yet — no user_id, no login. location defaults to "TBD": the vendor often
-    doesn't know the venue at this point, and the client fills it in
-    themselves via the public link (guest_booking_service.fill_details).
+    yet — no user_id, no login. location defaults to "TBD" when the vendor
+    doesn't know the venue yet; the client fills it in themselves via the
+    public link (guest_booking_service.fill_details).
 
     status is set to APPROVED immediately, not PENDING — there is no vendor
     accept/decline step in this flow; the vendor is both author and
@@ -108,6 +129,8 @@ def create_contract(
 
     if amount_cents <= 0:
         raise ContractError(400, "amount_cents must be greater than zero")
+
+    _check_dates(date_iso, date_end)
 
     deposit_amount_cents = None
     if deposit_percent is not None:
@@ -130,7 +153,14 @@ def create_contract(
         date_end=date_end,
         time_start=time_start,
         time_end=time_end,
-        location="TBD",
+        # All optional up front: a vendor usually knows who they're quoting
+        # (and often where), and without a name every unopened contract in
+        # their list looks the same. The client can still correct these
+        # before signing (guest_booking_service.fill_details).
+        location=(location or "").strip() or "TBD",
+        guest_name=(guest_name or "").strip() or None,
+        guest_email=(guest_email or "").strip() or None,
+        guest_phone=(guest_phone or "").strip() or None,
         status=BookingStatus.APPROVED.value,
         payment_status=PaymentStatus.UNPAID.value,
         amount_cents=amount_cents,
@@ -168,10 +198,28 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
     vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
     if booking.signed_at is not None:
         raise ContractError(400, "This contract has already been signed and can no longer be edited")
+    if booking.status == BookingStatus.REJECTED.value:
+        raise ContractError(400, "This contract was voided and can no longer be edited")
 
     if "deposit_percent" in update_data and update_data["deposit_percent"] is not None:
         if not (0 <= update_data["deposit_percent"] <= 100):
             raise ContractError(400, "deposit_percent must be between 0 and 100")
+    if "amount_cents" in update_data and update_data["amount_cents"] <= 0:
+        raise ContractError(400, "amount_cents must be greater than zero")
+
+    # A moved date has to clear the same checks a new contract does —
+    # otherwise editing was a way around the double-booking guard.
+    schedule_fields = ("date_iso", "date_end", "time_start", "time_end")
+    if any(f in update_data for f in schedule_fields):
+        new = {f: update_data.get(f, getattr(booking, f)) for f in schedule_fields}
+        _check_dates(new["date_iso"], new["date_end"])
+        conflict = vendor_has_conflicting_booking(
+            vendor_id=booking.vendor_id, date_iso=new["date_iso"], date_end=new["date_end"],
+            time_start=new["time_start"], time_end=new["time_end"],
+            exclude_booking_id=booking.booking_id, db=db,
+        )
+        if conflict:
+            raise ContractError(409, "You already have a booking that overlaps this date/time")
 
     for field in (
         "date_iso", "date_end", "time_start", "time_end", "amount_cents",
@@ -180,6 +228,11 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
     ):
         if field in update_data:
             setattr(booking, field, update_data[field])
+    for field in ("guest_name", "guest_email", "guest_phone"):
+        if field in update_data:
+            setattr(booking, field, (update_data[field] or "").strip() or None)
+    if "location" in update_data:
+        booking.location = (update_data["location"] or "").strip() or "TBD"
 
     # Re-derive the snapshot rather than trust a client-supplied deposit_amount_cents.
     if "deposit_percent" in update_data or "amount_cents" in update_data:
@@ -193,6 +246,50 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
     db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     return _contract_dict(booking, service, vendor, db)
+
+
+def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """Withdraw an unsigned contract. Until this existed an unsent or
+    abandoned link held its date forever — the booking is created APPROVED,
+    which is what the double-booking guard counts — with no way to let it go.
+
+    Recorded the way a vendor withdrawing any accepted booking is (REJECTED +
+    VENDOR_WITHDREW), so every "is this booking live" rule, on both clients
+    and here, already treats it as dead. Signed contracts are out of scope:
+    releasing a client from a signed agreement is a cancellation with a
+    policy attached, not an undo. Idempotent — voiding twice is a no-op.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking or not booking.contract_token:
+        raise ContractError(404, "Contract not found")
+    vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
+    if booking.signed_at is not None:
+        raise ContractError(400, "This contract has already been signed, so it can't be voided")
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    if booking.status == BookingStatus.REJECTED.value:
+        return _contract_dict(booking, service, vendor, db)
+
+    booking.status = BookingStatus.REJECTED.value
+    booking.rejected_reason = RejectionReason.VENDOR_WITHDREW.value
+    db.commit()
+    db.refresh(booking)
+    result = _contract_dict(booking, service, vendor, db)
+
+    # Only someone who'd already given an email — a client who never opened
+    # the link has nothing to be told.
+    if booking.guest_email:
+        who = result["vendor_display_name"] or "Your vendor"
+        send_email(
+            to=booking.guest_email,
+            subject=f"{who} withdrew a booking offer",
+            html=(
+                f"<p>{who} withdrew the booking offer for "
+                f"<strong>{result['service_name'] or 'their service'}</strong> on "
+                f"{booking.date_iso}. The link you were sent no longer works, and "
+                "nothing is owed.</p>"
+            ),
+        )
+    return result
 
 
 # ── Clients CRM ──────────────────────────────────────────────────────
@@ -346,6 +443,10 @@ def convert_lead(
     addon_rate_cents: int | None,
     contract_terms: dict | None,
     db: Session,
+    guest_name: str | None = None,
+    guest_email: str | None = None,
+    guest_phone: str | None = None,
+    location: str | None = None,
 ) -> dict:
     """Turn a lead into a real contract/booking. The lead row is kept
     afterward (not deleted) as the vendor's own record of how this client
@@ -362,12 +463,16 @@ def convert_lead(
         cancellation_window_hours=cancellation_window_hours,
         overtime_rate_cents=overtime_rate_cents, addon_rate_cents=addon_rate_cents,
         contract_terms=contract_terms, db=db,
+        guest_name=guest_name, guest_email=guest_email, guest_phone=guest_phone,
+        location=location,
     )
 
+    # The lead fills whatever the vendor left blank on the form; anything
+    # they typed there is the newer, deliberate answer.
     booking = db.query(Booking).filter(Booking.booking_id == contract["booking_id"]).first()
-    booking.guest_name = lead.name
-    booking.guest_phone = lead.phone
-    booking.guest_email = lead.email
+    booking.guest_name = booking.guest_name or lead.name
+    booking.guest_phone = booking.guest_phone or lead.phone
+    booking.guest_email = booking.guest_email or lead.email
 
     lead.converted_booking_id = booking.booking_id
     lead.status = "won"

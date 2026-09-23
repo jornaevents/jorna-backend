@@ -122,13 +122,23 @@ for a client who's never used Jorna and never logs in — see
   `(guest_name, guest_phone)`. `Lead` CRUD (`/leads`) is a separate,
   minimal table for informal off-platform prospects that aren't a
   committed booking yet; `POST /leads/{id}/convert` turns one into a real
-  contract.
+  contract (the lead only fills contact fields the vendor left blank).
+  Create/convert/PATCH also take optional `guest_name`/`guest_email`/
+  `guest_phone`/`location`, and reject a past date or an end before the
+  start; a PATCH that moves the schedule re-runs the double-booking guard.
+  `POST /contracts/{booking_id}/void` withdraws an **unsigned** contract
+  (`status=REJECTED`, `rejected_reason=VENDOR_WITHDREW`), freeing its date —
+  before this, an abandoned link held its date forever. Signed contracts
+  can't be voided.
 - `routers/guest_bookings.py` + `services/guest_booking_service.py`
   (fully public, no `Depends(get_current_user)` anywhere): the client's
   side, reached only by `contract_token` — read, fill in contact/venue
   details, e-sign (`POST /guest-bookings/{token}/sign`, which also emails a
   copy of the agreement via `email_service.send_email`), and self-report
-  paying the deposit/balance. Rate-limited more aggressively than most of
+  paying the deposit/balance. Signing and each "I've paid" also notify the
+  vendor (push + email, `utils/notifications.notify_vendor_contract_event`).
+  A voided contract's link still reads (with `status`), but every write
+  returns 410. Rate-limited more aggressively than most of
   this app (`slowapi`, same `limiter` instance as everywhere else) since
   there's no account behind any of these calls to throttle by identity.
 - Deposit self-attestation (`deposit_marked_paid_at`/
