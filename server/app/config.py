@@ -78,7 +78,7 @@ SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 # for password-reset emails. Email is silently skipped when unset.
 RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 # Must be an address on a domain verified in your Resend dashboard.
-EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Desiconnect <noreply@desiconnect.com>")
+EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Jorna <noreply@desiconnect.com>")
 
 # ── YouTube ───────────────────────────────────────────────────────────
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")

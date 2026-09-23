@@ -244,7 +244,7 @@ def _email_html(title: str, body: str) -> str:
         f'<h2 style="margin:0 0 12px">{title}</h2>'
         f'<p style="font-size:15px;line-height:1.5;margin:0 0 20px">{body}</p>'
         '<hr style="border:none;border-top:1px solid #eee;margin:20px 0">'
-        '<p style="font-size:12px;color:#888;margin:0">Desiconnect — your South Asian event marketplace.</p>'
+        '<p style="font-size:12px;color:#888;margin:0">Jorna — your South Asian celebration marketplace.</p>'
         '</div>'
     )
 
