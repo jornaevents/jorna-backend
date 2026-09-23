@@ -46,6 +46,7 @@ def create_vendor(
     category: str | None = None,
     subcategory: str | None = None,
     specializations: list[dict] | None = None,
+    years_experience: int | None = None,
     db: Session,
 ) -> dict:
     """Create a vendor profile for *user_id*. Raises 400 if one already exists.
@@ -68,6 +69,7 @@ def create_vendor(
         category=category or "other",
         subcategory=subcategory,
         specializations=specializations,
+        years_experience=years_experience,
         rating=0.0,
         num_events=0,
     )
@@ -81,6 +83,7 @@ def create_vendor(
         "category": vendor.category,
         "subcategory": vendor.subcategory,
         "specializations": vendor.specializations or [],
+        "years_experience": vendor.years_experience,
         "rating": vendor.rating,
         "num_events": vendor.num_events,
         "tags": [],

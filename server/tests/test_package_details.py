@@ -210,3 +210,22 @@ def test_vendor_years_experience_round_trips():
         "/vendors/me", json={"years_experience": 120}, headers=v["headers"],
     ).status_code == 422
 
+
+
+def test_years_experience_can_be_set_when_becoming_a_vendor():
+    uid = uuid.uuid4().hex[:8]
+    db = TestingSessionLocal()
+    user = User(
+        email=f"pkg_new_{uid}@test.com", username=f"pkg_new_{uid}", password="pw",
+        phone="1234567890", f_name="New", l_name="Vendor", age=30, location="NJ",
+        gender="Test", language="EN", token_version=0,
+    )
+    db.add(user); db.commit(); db.refresh(user)
+    _created["users"].append(user.user_id)
+    db.close()
+    resp = client.post(
+        "/vendors", json={"bio": "DJ", "years_experience": 7}, headers=make_auth_headers(user),
+    )
+    assert resp.status_code in (200, 201), resp.text
+    _created["vendors"].append(resp.json()["vendor_id"])
+    assert resp.json()["years_experience"] == 7

@@ -73,6 +73,7 @@ class CreateVendorRequest(BaseModel):
     # The full list a vendor picks during onboarding; category/subcategory
     # above mirror its first entry, since that's what search still filters on.
     specializations: Optional[list[VendorSpecializationItem]] = None
+    years_experience: Optional[int] = Field(default=None, ge=0, le=99)
 
     @field_validator("subcategory")
     @classmethod
@@ -166,6 +167,7 @@ def create_vendor_route(
                 if body.specializations is not None
                 else None
             ),
+            years_experience=body.years_experience,
             db=db,
         )
     except VendorError as e:
