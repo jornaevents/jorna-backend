@@ -184,6 +184,11 @@ class Vendor(Base):
     # "required" | "optional" | "not_applicable"
     default_guest_count_mode = Column(String(20), nullable=True)
 
+    # Years in business — a fact about the vendor, not about any one package.
+    # Service.experience (free text, required) predates this and is kept for
+    # older clients; new packages copy this into it (see create_service).
+    years_experience = Column(Integer, nullable=True)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
@@ -198,6 +203,10 @@ class Service(Base):
         CheckConstraint(
             "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event', 'performer')",
             name="ck_services_price_unit",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'hidden', 'archived')",
+            name="ck_services_status",
         ),
     )
 
@@ -239,6 +248,28 @@ class Service(Base):
     # never loosens it.
     require_guest_count = Column(Boolean, nullable=False, default=False)
     require_performer_count = Column(Boolean, nullable=False, default=False)
+
+    # Where this package can be seen and booked (0063):
+    #   active   — listed publicly and bookable (every package before 0063).
+    #   hidden   — off the public listing, search and bundles, but the vendor
+    #              can still put it in a contract: a private/custom package.
+    #   archived — retired. Nowhere new; bookings that already reference it
+    #              keep working. A package with bookings is archived instead
+    #              of deleted, since those bookings can't lose their row.
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    # What the price covers, so a client isn't left to guess from free text.
+    included_hours = Column(Float, nullable=True)
+    inclusions = Column(JSON, nullable=True)        # list[str]
+    # Optional extras on top of the base price: [{id, name, price, price_unit}]
+    # with price_unit one of event/person/hour. JSON rather than a table: a
+    # contract snapshots the ones it uses, so nothing joins back to these.
+    add_ons = Column(JSON, nullable=True)
+    # Per-package contract terms. Null means "use the vendor's default_*".
+    deposit_percent = Column(Integer, nullable=True)
+    cancellation_window_hours = Column(Integer, nullable=True)
+    overtime_rate_cents = Column(Integer, nullable=True)
+    # The vendor's own ordering of their packages; null sorts last.
+    sort_order = Column(Integer, nullable=True)
 
 
 class Booking(Base):

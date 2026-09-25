@@ -3,7 +3,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -73,6 +73,7 @@ class CreateVendorRequest(BaseModel):
     # The full list a vendor picks during onboarding; category/subcategory
     # above mirror its first entry, since that's what search still filters on.
     specializations: Optional[list[VendorSpecializationItem]] = None
+    years_experience: Optional[int] = Field(default=None, ge=0, le=99)
 
     @field_validator("subcategory")
     @classmethod
@@ -113,6 +114,7 @@ class UpdateVendorRequest(BaseModel):
     default_addon_rate_cents: Optional[int] = None
     default_contract_terms: Optional[dict] = None
     default_guest_count_mode: Optional[str] = None
+    years_experience: Optional[int] = Field(default=None, ge=0, le=99)
 
     @field_validator("specializations")
     @classmethod
@@ -165,6 +167,7 @@ def create_vendor_route(
                 if body.specializations is not None
                 else None
             ),
+            years_experience=body.years_experience,
             db=db,
         )
     except VendorError as e:

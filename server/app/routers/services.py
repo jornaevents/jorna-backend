@@ -1,14 +1,15 @@
 """Thin router for service (offering) endpoints — delegates to service_service."""
 
 import asyncio
-from typing import List, Optional
+import uuid
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import Service as ServiceModel, User, Vendor
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_optional_user
 from app.models.schemas import VendorCategory, VENDOR_SUBCATEGORIES
 from app.services.service_service import (
     ServiceError,
@@ -70,7 +71,42 @@ class MediaItem(BaseModel):
     thumbnail_url: Optional[str] = None
 
 
-class UpdateServiceRequest(BaseModel):
+class AddOn(BaseModel):
+    """An optional extra on top of a package's base price."""
+
+    # Stable across edits, so a contract that picked "Extra hour" (Phase 2)
+    # can still say which one it was after the vendor renames it.
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12], max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    price: float = Field(gt=0)
+    # A subset of the package units: an add-on is flat, per guest, or per hour.
+    price_unit: Literal["event", "person", "hour"] = "event"
+
+
+class PackageDetails(BaseModel):
+    """Phase 1 package fields, shared by create and update. Everything is
+    optional so older clients that never send them keep working."""
+
+    status: Optional[Literal["active", "hidden", "archived"]] = None
+    included_hours: Optional[float] = Field(default=None, ge=0, le=24 * 14)
+    inclusions: Optional[list[str]] = Field(default=None, max_length=30)
+    add_ons: Optional[list[AddOn]] = Field(default=None, max_length=20)
+    deposit_percent: Optional[int] = Field(default=None, ge=0, le=100)
+    cancellation_window_hours: Optional[int] = Field(default=None, ge=0)
+    overtime_rate_cents: Optional[int] = Field(default=None, ge=0)
+    sort_order: Optional[int] = None
+
+    @field_validator("inclusions")
+    @classmethod
+    def _clean_inclusions(cls, v):
+        # Blank lines from a textarea aren't inclusions.
+        if v is None:
+            return v
+        cleaned = [item.strip()[:200] for item in v if item and item.strip()]
+        return cleaned
+
+
+class UpdateServiceRequest(PackageDetails):
     name: Optional[str] = None
     price: Optional[float] = None
     duration_minutes: Optional[int] = None
@@ -112,11 +148,13 @@ class UpdateServiceRequest(BaseModel):
         return _validate_subcategory(v, info)
 
 
-class CreateServiceRequest(BaseModel):
+class CreateServiceRequest(PackageDetails):
     name: str
     price: float
     duration_minutes: Optional[int] = None
-    experience: str
+    # Optional since 0063: years in business belong to the vendor. Left out,
+    # it's filled from Vendor.years_experience.
+    experience: Optional[str] = None
     media: Optional[list[MediaItem]] = None
     category: Optional[str] = None
     subcategory: Optional[str] = None
@@ -182,6 +220,14 @@ def create_service_route(
             venue_longitude=body.venue_longitude,
             require_guest_count=body.require_guest_count,
             require_performer_count=body.require_performer_count,
+            status=body.status or "active",
+            included_hours=body.included_hours,
+            inclusions=body.inclusions,
+            add_ons=[a.model_dump() for a in body.add_ons] if body.add_ons is not None else None,
+            deposit_percent=body.deposit_percent,
+            cancellation_window_hours=body.cancellation_window_hours,
+            overtime_rate_cents=body.overtime_rate_cents,
+            sort_order=body.sort_order,
             db=db,
         )
     except ServiceError as e:
@@ -502,11 +548,20 @@ def list_services_route(
     subcategory: Optional[str] = Query(None, description="Filter by service subcategory (e.g. dj vs dhol)"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    include_unlisted: bool = Query(
+        False, description="Also return hidden/archived packages — only honoured for the vendor's own list",
+    ),
+    current_user: Optional[User] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """Return a list of services (with vendor info), filterable by vendor_id
-    and/or category + subcategory. No auth required."""
+    and/or category + subcategory. No auth required; only active packages
+    unless the signed-in owner asks for their own with include_unlisted."""
+    owner = False
+    if include_unlisted and vendor_id and current_user:
+        vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
+        owner = bool(vendor and vendor.user_id == current_user.user_id)
     return list_services(
         vendor_id=vendor_id, category=category, subcategory=subcategory,
-        limit=limit, offset=offset, db=db,
+        limit=limit, offset=offset, include_unlisted=owner, db=db,
     )

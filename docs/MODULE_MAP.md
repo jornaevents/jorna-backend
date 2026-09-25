@@ -41,7 +41,7 @@ custom URL scheme can't be directly.
 | `messages.py` | `/messages` | `message_service.py` | Message CRUD/pagination within a conversation |
 | `notifications.py` | `/notifications` | `notification_service.py` | Push (FCM) + in-app notification records |
 | `reviews.py` | `/reviews` | `review_service.py` | Post-event reviews/ratings |
-| `services.py` (router) | `/services` | `service_service.py` | Vendor-listed services (what a vendor sells, pricing, media, categories) |
+| `services.py` (router) | `/services` | `service_service.py` | Vendor-listed services (what a vendor sells, pricing, media, categories, status, inclusions, add-ons, per-package terms — see DECISIONS #14) |
 | `feed.py` | `/feed` | `feed_service.py` | Discovery/browse feed |
 | `chatbot.py` | `/chatbot` | `chatbot_service.py`, `llm_service.py`, `plan_readiness.py` | Bundle-builder conversational flow (stateless — client holds state, see `docs/API.md`) |
 | `moderation.py` | (no prefix) | — | Content reports, user blocks |

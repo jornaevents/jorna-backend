@@ -751,6 +751,10 @@ def create_booking(
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise BookingError(404, "Service not found")
+    # Hidden and archived packages aren't bookable from the marketplace — a
+    # hidden one is the vendor's private package, offered only by contract.
+    if (service.status or "active") != "active":
+        raise BookingError(409, "This package isn't available to book right now.")
 
     # Same guard as update_booking — see its comment. A booking created
     # straight from a service page (book/page.tsx) supplies date_iso up
