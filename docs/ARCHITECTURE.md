@@ -130,6 +130,17 @@ for a client who's never used Jorna and never logs in — see
   (`status=REJECTED`, `rejected_reason=VENDOR_WITHDREW`), freeing its date —
   before this, an abandoned link held its date forever. Signed contracts
   can't be voided.
+- **Offer lifecycle (0064, `docs/DECISIONS.md` #15).** `Booking.
+  contract_status` is draft → sent → viewed → signed, or declined/voided;
+  "expired" is derived on read (`contract_service.contract_state`), never
+  stored. Create sends by default (`draft: true` saves without sending);
+  `POST /contracts/{id}/send` sends a draft or resends a lapsed offer,
+  restarting the hold. A sent/viewed contract holds its date until
+  `hold_expires_at` (vendor's `contract_hold_days`, default 7, or a
+  per-send `hold_days`); signed holds it for good. The one rule for "does
+  this booking take the vendor's date" is `booking_service.
+  commits_vendor_date()` — double-booking, calendar availability and the
+  bundle builder all use it.
 - `routers/guest_bookings.py` + `services/guest_booking_service.py`
   (fully public, no `Depends(get_current_user)` anywhere): the client's
   side, reached only by `contract_token` — read, fill in contact/venue
@@ -137,8 +148,13 @@ for a client who's never used Jorna and never logs in — see
   copy of the agreement via `email_service.send_email`), and self-report
   paying the deposit/balance. Signing and each "I've paid" also notify the
   vendor (push + email, `utils/notifications.notify_vendor_contract_event`).
-  A voided contract's link still reads (with `status`), but every write
-  returns 410. Rate-limited more aggressively than most of
+  A voided or declined contract's link still reads (with `status`), but
+  every write returns 410; so does signing an expired offer. A draft's link
+  404s. The first read marks the contract viewed (`?preview=true` — the
+  vendor's "View as client" — doesn't). `POST /guest-bookings/{token}/
+  decline` lets the client turn it down (REJECTED + `CLIENT_DECLINED`),
+  freeing the date and notifying the vendor. Signing re-runs the
+  double-booking guard. Rate-limited more aggressively than most of
   this app (`slowapi`, same `limiter` instance as everywhere else) since
   there's no account behind any of these calls to throttle by identity.
 - Deposit self-attestation (`deposit_marked_paid_at`/

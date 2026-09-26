@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import case, or_
+from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,42 @@ LOCKED_BOOKING_STATUSES = (
     BookingStatus.APPROVED.value,
     BookingStatus.PAYMENT_CONFIRMED.value,
 )
+
+# Contract states that hold a date tentatively, until hold_expires_at.
+HOLDING_CONTRACT_STATUSES = ("sent", "viewed")
+
+
+def _contract_state(booking: Booking) -> str | None:
+    # contract_service imports this module, so it can't be imported at the top.
+    from app.services.contract_service import contract_state
+    return contract_state(booking)
+
+
+def commits_vendor_date(now: datetime | None = None):
+    """SQL condition: this booking takes its vendor's date away from anyone else.
+
+    A locked status is the whole answer for an ordinary booking. A contract is
+    also created approved, but it only commits the vendor once it's out with
+    the client: signed holds the date for good, sent or viewed holds it
+    tentatively until hold_expires_at, and a draft or a lapsed offer holds
+    nothing. Before this, an unsigned contract blocked its date until someone
+    remembered to void it. docs/DECISIONS.md #15.
+
+    Every availability question — double-booking, the calendar, the bundle
+    builder — asks through this, so they can't disagree about a held date.
+    """
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    return and_(
+        Booking.status.in_(LOCKED_BOOKING_STATUSES),
+        or_(
+            Booking.contract_token.is_(None),
+            Booking.signed_at.isnot(None),
+            and_(
+                Booking.contract_status.in_(HOLDING_CONTRACT_STATUSES),
+                Booking.hold_expires_at > now,
+            ),
+        ),
+    )
 
 
 def _minutes(hhmm: str | None) -> int | None:
@@ -108,8 +144,10 @@ def vendor_has_conflicting_booking(
     time_end: str | None = None,
     exclude_booking_id: str | None = None,
 ) -> Booking | None:
-    """Return an existing locked (approved/paid) booking for *vendor_id* that
-    clashes with ``[date_iso, date_end]``, or ``None`` if the vendor is free.
+    """Return an existing booking that commits *vendor_id*'s date (see
+    commits_vendor_date — approved/paid, or a contract that's signed or still
+    holding) and clashes with ``[date_iso, date_end]``, or ``None`` if the
+    vendor is free.
 
     Dates decide it, except when both bookings are single-day and fall on the
     same day — then the hours do. A photographer who shoots a morning ceremony
@@ -143,7 +181,7 @@ def vendor_has_conflicting_booking(
     )
     query = db.query(Booking).filter(
         Booking.vendor_id == vendor_id,
-        Booking.status.in_(LOCKED_BOOKING_STATUSES),
+        commits_vendor_date(),
         Booking.date_iso <= req_end,
         existing_end >= req_start,
     )
@@ -343,6 +381,13 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "contract_terms": booking.contract_terms,
         "signer_name": booking.signer_name,
         "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        # Where the contract stands as an offer, "expired" derived — see
+        # contract_service.contract_state. Null on a non-contract booking.
+        "contract_status": _contract_state(booking),
+        "hold_expires_at": booking.hold_expires_at.isoformat() if booking.hold_expires_at else None,
+        "viewed_at": booking.viewed_at.isoformat() if booking.viewed_at else None,
+        "declined_at": booking.declined_at.isoformat() if booking.declined_at else None,
+        "decline_reason": booking.decline_reason,
         "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat() if booking.deposit_marked_paid_at else None,
         "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat() if booking.deposit_confirmed_received_at else None,
     }

@@ -11,7 +11,7 @@ class BookingStatus(str, Enum):
 
 class RejectionReason(str, Enum):
     """Why a booking's status became REJECTED — that one status value covers
-    three different real events, and nothing recorded which. A client-
+    several different real events, and nothing recorded which. A client-
     initiated cancellation isn't a member here: it already has its own
     marker (`Booking.cancelled_at`), set by the same code path that would
     otherwise need to write CLIENT_CANCELLED here too.
@@ -20,6 +20,7 @@ class RejectionReason(str, Enum):
     VENDOR_DECLINED = "vendor_declined"
     VENDOR_WITHDREW = "vendor_withdrew"
     RESCHEDULE_FAILED = "reschedule_failed"
+    CLIENT_DECLINED = "client_declined"  # a contract client turned the offer down
 
 
 class PaymentStatus(str, Enum):

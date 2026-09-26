@@ -984,12 +984,12 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
     # a vendor from every other client's builder; worse, this builder writes
     # pending bookings for every option it generates, so an abandoned draft went
     # on hiding its vendors from everyone, indefinitely.
-    from app.services.booking_service import LOCKED_BOOKING_STATUSES, booking_blocks
+    from app.services.booking_service import booking_blocks, commits_vendor_date
 
     rows = (
         db.query(Booking)
         .filter(
-            Booking.status.in_(LOCKED_BOOKING_STATUSES),
+            commits_vendor_date(),
             Booking.date_iso <= req_end,
             booking_end >= req_start,
         )
