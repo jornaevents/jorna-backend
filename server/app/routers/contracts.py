@@ -5,7 +5,7 @@ guest_bookings.py instead.
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -17,6 +17,7 @@ from app.services.contract_service import (
     get_contract,
     update_contract,
     void_contract,
+    send_contract,
     create_lead,
     list_leads,
     update_lead,
@@ -50,6 +51,10 @@ class ContractTermsRequest(BaseModel):
     guest_email: Optional[str] = None
     guest_phone: Optional[str] = None
     location: Optional[str] = None
+    # Save without sending: a draft holds no date until POST .../send.
+    draft: bool = False
+    # Override the vendor's hold window for this one contract.
+    hold_days: Optional[int] = Field(default=None, ge=1, le=60)
 
 
 class ContractUpdateRequest(BaseModel):
@@ -123,6 +128,26 @@ def void_contract_route(
 ):
     try:
         return void_contract(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class SendContractRequest(BaseModel):
+    hold_days: Optional[int] = Field(default=None, ge=1, le=60)
+
+
+@router.post("/contracts/{booking_id}/send", summary="Send a draft or resend an offer, restarting its date hold")
+def send_contract_route(
+    booking_id: str,
+    body: Optional[SendContractRequest] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return send_contract(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db,
+            hold_days=body.hold_days if body else None,
+        )
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

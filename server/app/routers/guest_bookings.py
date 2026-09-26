@@ -19,6 +19,7 @@ from app.services.guest_booking_service import (
     get_guest_booking,
     fill_details,
     sign_contract,
+    decline_contract,
     mark_full_paid,
     mark_deposit_paid,
 )
@@ -31,10 +32,13 @@ router = APIRouter(prefix="/guest-bookings", tags=["guest-bookings"])
 def get_guest_booking_route(
     request: Request,
     contract_token: str,
+    preview: bool = False,
     db: Session = Depends(get_db),
 ):
+    """preview=true is the vendor's "View as client" — it doesn't mark the
+    contract viewed."""
     try:
-        return get_guest_booking(contract_token=contract_token, db=db)
+        return get_guest_booking(contract_token=contract_token, db=db, preview=preview)
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -101,5 +105,25 @@ def mark_deposit_paid_route(
 ):
     try:
         return mark_deposit_paid(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class DeclineRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/{contract_token}/decline", summary="Client turns the offer down, freeing the vendor's date")
+@limiter.limit("5/minute")
+def decline_contract_route(
+    request: Request,
+    contract_token: str,
+    body: Optional[DeclineRequest] = None,
+    db: Session = Depends(get_db),
+):
+    try:
+        return decline_contract(
+            contract_token=contract_token, reason=body.reason if body else None, db=db,
+        )
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

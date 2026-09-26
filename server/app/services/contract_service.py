@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Lead, Service, User, Vendor
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
-from app.services.booking_service import vendor_has_conflicting_booking
+from app.services.booking_service import HOLDING_CONTRACT_STATUSES, vendor_has_conflicting_booking
 from app.services.email_service import send_email
+
+# How long a sent contract holds its date when the vendor hasn't set their
+# own Vendor.contract_hold_days. docs/DECISIONS.md #15.
+DEFAULT_HOLD_DAYS = 7
+MAX_HOLD_DAYS = 60
 
 
 class ContractError(Exception):
@@ -31,6 +36,46 @@ def _token() -> str:
     from booking_id. Same approach as guest_service._token() (RSVP), a
     private helper there too, so this mirrors rather than imports it."""
     return secrets.token_urlsafe(24)
+
+
+def _now() -> datetime:
+    """Naive UTC — the DateTime columns are stored without a timezone."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def contract_state(booking: Booking, now: datetime | None = None) -> str | None:
+    """The contract's status as a client or vendor should see it: the stored
+    one, except a sent/viewed offer past its hold is "expired". Never stored,
+    so nothing has to sweep for it and a resend simply moves the deadline."""
+    status = booking.contract_status
+    if (
+        status in HOLDING_CONTRACT_STATUSES
+        and booking.hold_expires_at is not None
+        and booking.hold_expires_at <= (now or _now())
+    ):
+        return "expired"
+    return status
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def _hold_days(vendor: Vendor, override: int | None) -> int:
+    days = override if override is not None else (vendor.contract_hold_days or DEFAULT_HOLD_DAYS)
+    if not (1 <= days <= MAX_HOLD_DAYS):
+        raise ContractError(400, f"A hold must last between 1 and {MAX_HOLD_DAYS} days")
+    return days
+
+
+def _start_hold(booking: Booking, vendor: Vendor, hold_days: int | None) -> None:
+    """Send (or resend): the offer goes live and holds the date for the
+    vendor's hold window from now. A resend of an opened offer stays
+    "viewed" — the client has still seen it."""
+    now = _now()
+    booking.contract_status = "viewed" if booking.viewed_at else "sent"
+    booking.sent_at = now
+    booking.hold_expires_at = now + timedelta(days=_hold_days(vendor, hold_days))
 
 
 def _own_vendor(*, vendor_id: str, caller_user_id: str, db: Session) -> Vendor:
@@ -68,6 +113,13 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "signer_name": booking.signer_name,
         "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
         "status": booking.status,
+        "contract_status": contract_state(booking),
+        "sent_at": _iso(booking.sent_at),
+        "viewed_at": _iso(booking.viewed_at),
+        "hold_expires_at": _iso(booking.hold_expires_at),
+        "declined_at": _iso(booking.declined_at),
+        "decline_reason": booking.decline_reason,
+        "voided_at": _iso(booking.voided_at),
         "contract_token": booking.contract_token,
         "vendor_display_name": f"{vendor_user.f_name} {vendor_user.l_name}".strip()
         if vendor_user
@@ -110,6 +162,8 @@ def create_contract(
     guest_email: str | None = None,
     guest_phone: str | None = None,
     location: str | None = None,
+    draft: bool = False,
+    hold_days: int | None = None,
 ) -> dict:
     """A vendor authors the whole booking for a client who hasn't shown up
     yet — no user_id, no login. location defaults to "TBD" when the vendor
@@ -118,8 +172,12 @@ def create_contract(
 
     status is set to APPROVED immediately, not PENDING — there is no vendor
     accept/decline step in this flow; the vendor is both author and
-    approver of their own offer. Signing later only sets signer_name/
-    signed_at, it doesn't change status again.
+    approver of their own offer. What decides whether it holds the date is
+    contract_status: sent unless draft=True, holding for hold_days (or the
+    vendor's default) — see send_contract and docs/DECISIONS.md #15.
+
+    A draft still has to fit the calendar as it stands: there's no point
+    writing an offer for a date that's already taken.
     """
     vendor = _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
 
@@ -177,7 +235,10 @@ def create_contract(
         addon_rate_cents=addon_rate_cents,
         contract_terms=contract_terms,
         contract_token=_token(),
+        contract_status="draft",
     )
+    if not draft:
+        _start_hold(booking, vendor, hold_days)
     db.add(booking)
     db.commit()
     db.refresh(booking)
@@ -202,6 +263,8 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
     vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
     if booking.signed_at is not None:
         raise ContractError(400, "This contract has already been signed and can no longer be edited")
+    if booking.contract_status == "declined":
+        raise ContractError(400, "Your client declined this contract, so it can no longer be edited")
     if booking.status == BookingStatus.REJECTED.value:
         raise ContractError(400, "This contract was voided and can no longer be edited")
 
@@ -275,6 +338,8 @@ def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
 
     booking.status = BookingStatus.REJECTED.value
     booking.rejected_reason = RejectionReason.VENDOR_WITHDREW.value
+    booking.contract_status = "voided"
+    booking.voided_at = _now()
     db.commit()
     db.refresh(booking)
     result = _contract_dict(booking, service, vendor, db)
@@ -294,6 +359,41 @@ def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
             ),
         )
     return result
+
+
+def send_contract(*, booking_id: str, caller_user_id: str, db: Session, hold_days: int | None = None) -> dict:
+    """Send a draft, or resend an offer — including one whose hold lapsed —
+    restarting the hold from now. The date has to still be free: a lapsed
+    hold let someone else take it, and that booking wins.
+
+    Doesn't contact the client — the vendor shares the link themselves, as
+    they always have. Signed, declined and voided contracts can't be sent.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking or not booking.contract_token:
+        raise ContractError(404, "Contract not found")
+    vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
+    if booking.signed_at is not None:
+        raise ContractError(400, "This contract has already been signed")
+    if booking.contract_status == "declined":
+        raise ContractError(400, "Your client declined this contract — start a new one to offer again")
+    if booking.status == BookingStatus.REJECTED.value:
+        raise ContractError(400, "This contract was voided and can't be sent")
+
+    _check_dates(booking.date_iso, booking.date_end)
+    conflict = vendor_has_conflicting_booking(
+        vendor_id=booking.vendor_id, date_iso=booking.date_iso, date_end=booking.date_end,
+        time_start=booking.time_start, time_end=booking.time_end,
+        exclude_booking_id=booking.booking_id, db=db,
+    )
+    if conflict:
+        raise ContractError(409, "That date is booked now — move this contract to another date first")
+
+    _start_hold(booking, vendor, hold_days)
+    db.commit()
+    db.refresh(booking)
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    return _contract_dict(booking, service, vendor, db)
 
 
 # ── Clients CRM ──────────────────────────────────────────────────────
@@ -451,6 +551,8 @@ def convert_lead(
     guest_email: str | None = None,
     guest_phone: str | None = None,
     location: str | None = None,
+    draft: bool = False,
+    hold_days: int | None = None,
 ) -> dict:
     """Turn a lead into a real contract/booking. The lead row is kept
     afterward (not deleted) as the vendor's own record of how this client
@@ -468,7 +570,7 @@ def convert_lead(
         overtime_rate_cents=overtime_rate_cents, addon_rate_cents=addon_rate_cents,
         contract_terms=contract_terms, db=db,
         guest_name=guest_name, guest_email=guest_email, guest_phone=guest_phone,
-        location=location,
+        location=location, draft=draft, hold_days=hold_days,
     )
 
     # The lead fills whatever the vendor left blank on the form; anything

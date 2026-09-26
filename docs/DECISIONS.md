@@ -240,3 +240,43 @@ though it describes the vendor.
 
 **Consequence.** Everything is additive — older iOS/web clients keep
 working unchanged and simply don't see the new fields.
+
+## 15. Contracts are offers: a tentative, expiring hold; hard block on signing (0064)
+
+**Context.** A contract was created `APPROVED`, which is what the
+double-booking guard counts, so it blocked its vendor's date from the
+moment it was written — through being ignored, forgotten, or never sent —
+until someone voided it. Nothing recorded whether it had been sent, opened
+or turned down.
+
+**Decision** (the user's, 2026-09-23).
+- `Booking.contract_status`: draft / sent / viewed / signed / declined /
+  voided, only on contract bookings. `Booking.status` stays `APPROVED` for
+  a live contract so every existing "is this booking live" reader is
+  unchanged; declined and voided are `REJECTED` with `CLIENT_DECLINED` /
+  `VENDOR_WITHDREW`.
+- A sent (or viewed) contract holds its date **tentatively** until
+  `hold_expires_at`: `Vendor.contract_hold_days`, default 7, overridable per
+  send (1–60). Signing is the hard block. A draft holds nothing and its
+  link 404s. `booking_service.commits_vendor_date()` is the single SQL rule
+  for "this booking takes the date", used by the conflict check, calendar
+  availability and the bundle builder.
+- **Expired is derived, not stored**: a sent/viewed contract past its hold.
+  No sweeper, and a resend (`POST /contracts/{id}/send`) just moves the
+  deadline — if the date is still free. An expired offer can't be signed:
+  the hold lapsing is exactly when the date could have gone to someone else.
+  Hold expiry and offer expiry are deliberately the same deadline — one
+  date for the vendor to reason about.
+- Signing re-runs the double-booking guard (409), catching anything the hold
+  didn't — a pre-hold contract, or a hold restored by hand.
+- "Viewed" is the client's first read of the link. The vendor's own "View
+  as client" passes `?preview=true` so it doesn't count; a forged preview
+  only leaves viewed unset, so it isn't a security boundary.
+- Sending doesn't email the client — vendors share the link themselves,
+  as before. That's for the Phase 2b builder's Send step.
+
+**Migration.** Existing unsigned, un-voided contracts were backfilled as
+`sent` with a fresh 7-day hold from deploy time, rather than an age-based
+expiry that would have released a batch of vendor dates the moment it
+shipped.
+

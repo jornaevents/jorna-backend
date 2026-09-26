@@ -12,7 +12,9 @@ from datetime import date, datetime, time, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Service, User, Vendor
-from app.models.schemas import BookingStatus, PaymentStatus
+from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
+from app.services.booking_service import vendor_has_conflicting_booking
+from app.services.contract_service import contract_state
 from app.services.email_service import send_email
 from app.utils.notifications import notify_vendor_contract_event
 
@@ -33,7 +35,15 @@ def _by_token(contract_token: str, db: Session) -> Booking:
         # user_id check is the real boundary — never serve a real account's
         # booking off of anything token-shaped.
         raise GuestBookingError(404, "Booking not found")
+    if booking.contract_status == "draft":
+        # The vendor hasn't sent it yet — as far as the link goes, it
+        # doesn't exist.
+        raise GuestBookingError(404, "Booking not found")
     return booking
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _pretty_date(iso: str | None) -> str:
@@ -58,8 +68,20 @@ def _pretty_time(raw: str | None) -> str:
 def _require_live(booking: Booking) -> None:
     """A voided contract's link still opens (so the client sees *why* it
     stopped working), but nothing on it can be acted on any more."""
+    if booking.contract_status == "declined":
+        raise GuestBookingError(410, "You declined this booking offer")
     if booking.status == BookingStatus.REJECTED.value:
         raise GuestBookingError(410, "This booking offer was withdrawn by the vendor")
+
+
+def _require_open_offer(booking: Booking) -> None:
+    """Signing needs the offer to still be on the table: an expired hold
+    means the vendor's date may have gone to someone else. The vendor can
+    resend it (contract_service.send_contract) if it's still free."""
+    if contract_state(booking) == "expired":
+        raise GuestBookingError(
+            410, "This offer has expired — ask your vendor to resend it if the date is still open",
+        )
 
 
 def _tell_vendor(booking: Booking, title: str, body: str, event: str, db: Session) -> None:
@@ -101,14 +123,25 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "signer_name": booking.signer_name,
         "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
         "status": booking.status,
+        "contract_status": contract_state(booking),
+        "hold_expires_at": booking.hold_expires_at.isoformat() if booking.hold_expires_at else None,
         "payment_status": booking.payment_status,
         "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat() if booking.deposit_marked_paid_at else None,
         "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat() if booking.deposit_confirmed_received_at else None,
     }
 
 
-def get_guest_booking(*, contract_token: str, db: Session) -> dict:
+def get_guest_booking(*, contract_token: str, db: Session, preview: bool = False) -> dict:
+    """The client opening their link. The first open marks the contract
+    viewed; preview=True is the vendor's own "View as client", which
+    mustn't count as the client having seen it. It's only a hint anyone
+    could send — the worst a forged one does is leave "viewed" unset."""
     booking = _by_token(contract_token, db)
+    if not preview and booking.viewed_at is None and booking.contract_status == "sent":
+        booking.contract_status = "viewed"
+        booking.viewed_at = _now()
+        db.commit()
+        db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
@@ -165,9 +198,20 @@ def sign_contract(*, contract_token: str, signer_name: str, db: Session) -> dict
         raise GuestBookingError(400, "Type your full legal name to sign")
     if not booking.guest_email:
         raise GuestBookingError(400, "Add your email first so we can send you a copy of this agreement")
+    _require_open_offer(booking)
+    # The hold should have kept the date clear, but a contract from before
+    # holds existed, or one resent after lapsing, might not have been.
+    # Signing is the hard block, so it's the last place to catch it.
+    if vendor_has_conflicting_booking(
+        vendor_id=booking.vendor_id, date_iso=booking.date_iso, date_end=booking.date_end,
+        time_start=booking.time_start, time_end=booking.time_end,
+        exclude_booking_id=booking.booking_id, db=db,
+    ):
+        raise GuestBookingError(409, "Your vendor is no longer free on this date — contact them directly")
 
     booking.signer_name = signer_name.strip()
     booking.signed_at = datetime.now(timezone.utc)
+    booking.contract_status = "signed"
     db.commit()
     db.refresh(booking)
 
@@ -188,6 +232,37 @@ def sign_contract(*, contract_token: str, signer_name: str, db: Session) -> dict
         booking_id=booking.booking_id, event="contract_signed", db=db,
     )
 
+    return _guest_dict(booking, service, vendor, vendor_user)
+
+
+def decline_contract(*, contract_token: str, reason: str | None, db: Session) -> dict:
+    """The client turns the offer down, which frees the vendor's date now
+    rather than when the hold runs out. Recorded like any other dead
+    booking (REJECTED), with CLIENT_DECLINED saying who ended it."""
+    booking = _by_token(contract_token, db)
+    _require_live(booking)
+    if booking.signed_at is not None:
+        raise GuestBookingError(400, "This booking has already been signed")
+
+    booking.status = BookingStatus.REJECTED.value
+    booking.rejected_reason = RejectionReason.CLIENT_DECLINED.value
+    booking.contract_status = "declined"
+    booking.declined_at = _now()
+    booking.decline_reason = (reason or "").strip()[:500] or None
+    db.commit()
+    db.refresh(booking)
+
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
+    _tell_vendor(
+        booking,
+        f"{_client_label(booking)} declined your contract",
+        f"{service.name if service else 'Your contract'} on {_pretty_date(booking.date_iso)}. "
+        "The date is open again."
+        + (f' They said: "{booking.decline_reason}"' if booking.decline_reason else ""),
+        "contract_declined", db,
+    )
     return _guest_dict(booking, service, vendor, vendor_user)
 
 

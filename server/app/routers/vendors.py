@@ -115,6 +115,7 @@ class UpdateVendorRequest(BaseModel):
     default_contract_terms: Optional[dict] = None
     default_guest_count_mode: Optional[str] = None
     years_experience: Optional[int] = Field(default=None, ge=0, le=99)
+    contract_hold_days: Optional[int] = Field(default=None, ge=1, le=60)
 
     @field_validator("specializations")
     @classmethod

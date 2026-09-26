@@ -189,6 +189,11 @@ class Vendor(Base):
     # older clients; new packages copy this into it (see create_service).
     years_experience = Column(Integer, nullable=True)
 
+    # How many days a sent-but-unsigned contract holds its date before the
+    # hold lapses and the date opens up again. Null means the default
+    # (contract_service.DEFAULT_HOLD_DAYS). See docs/DECISIONS.md #15.
+    contract_hold_days = Column(Integer, nullable=True)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
@@ -421,6 +426,21 @@ class Booking(Base):
     # immutable (see contract_service's guard).
     signer_name = Column(String(255), nullable=True)
     signed_at = Column(DateTime, nullable=True)
+
+    # Where a contract stands as an offer — only ever set on a contract
+    # (contract_token) booking. draft / sent / viewed / signed / declined /
+    # voided. "expired" is never stored: it's a sent or viewed contract whose
+    # hold_expires_at has passed, derived on read (contract_service.
+    # contract_state) so nothing has to sweep it. Only sent/viewed with a
+    # future hold_expires_at — or signed — commits the vendor's date (see
+    # booking_service.commits_vendor_date). docs/DECISIONS.md #15.
+    contract_status = Column(String(20), nullable=True)
+    sent_at = Column(DateTime, nullable=True)        # the most recent send
+    viewed_at = Column(DateTime, nullable=True)      # first time the client opened it
+    hold_expires_at = Column(DateTime, nullable=True)
+    declined_at = Column(DateTime, nullable=True)
+    decline_reason = Column(String(500), nullable=True)
+    voided_at = Column(DateTime, nullable=True)
 
     # A second self-attestation pair, alongside manual_payment_marked_at/
     # manual_payment_confirmed_at above — that existing pair keeps meaning
