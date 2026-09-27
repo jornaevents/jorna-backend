@@ -280,3 +280,47 @@ or turned down.
 expiry that would have released a batch of vendor dates the moment it
 shipped.
 
+## 16. Contracts are proposals: line items, a payment schedule, clauses, a signed snapshot (0065)
+
+**Context.** A contract was one package at one price with one optional
+deposit and a couple of free-text terms. Vendors quote several packages,
+add-ons and one-off extras, take payment in stages, and need to show later
+exactly what a client agreed to.
+
+**Decision.** (`services/contract_document.py` owns the shapes.)
+- **Line items are snapshots.** `Booking.line_items` holds packages, add-ons
+  and custom lines with the vendor's own price (the catalogue only fills a
+  blank). Nothing joins back to `Service`, so renaming, repricing or
+  archiving a package never changes a contract. The server computes totals;
+  `amount_cents` stays the grand total so every existing reader works.
+  `service_id` is the first package — the column can't be null. The old
+  one-package create is stored as a one-line contract.
+- **A schedule replaces the single deposit** on builder-made contracts.
+  Installments must add up to the total to the cent, and are due on
+  signing, on a date, or N days before the event. The single-deposit fields
+  are **mirrored from the schedule** (`sync_legacy_payment_fields`: the
+  first of two or more payments is "the deposit"; marked paid once every
+  remaining one is; confirmed once all are), and the old deposit/payment
+  endpoints act on installments — so the Bookings page, earnings, the
+  pipeline and iOS needed no change. Contracts without a schedule behave
+  exactly as before.
+- **Clauses are sent text**, `[{key, title, body}]`. The key follows a clause
+  across contracts; the text is what's agreed.
+- **A signature is for one revision.** Every edit bumps `revision`; the
+  client page sends the revision it showed, and signing a stale one is a
+  409. Signing freezes `signed_snapshot` (everything agreed, plus signer and
+  time) and its SHA-256 — the record to settle a dispute against, rather
+  than the live row.
+- **Templates are per account** (`contract_templates`), replacing browser
+  storage. The body is the builder's own shape; the server never computes
+  from it.
+- **Timeline** (`contract_events`): created, sent/resent, emailed, viewed,
+  edited, signed, declined, voided, payment marked/confirmed. Contracts from
+  before this derive one from their timestamps; "expired" is appended on
+  read, since it's never stored (#15).
+- **Sending can email the client their link** (`email_client`), best
+  effort. A vendor can still just share the link.
+
+**Consequence.** Additive: no backfill, and older clients see a scheduled
+contract through its deposit fields.
+

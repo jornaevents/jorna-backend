@@ -47,6 +47,11 @@ def _contract_state(booking: Booking) -> str | None:
     return contract_state(booking)
 
 
+def _schedule_view(booking: Booking) -> list[dict] | None:
+    from app.services.contract_document import schedule_view
+    return schedule_view(booking)
+
+
 def commits_vendor_date(now: datetime | None = None):
     """SQL condition: this booking takes its vendor's date away from anyone else.
 
@@ -388,6 +393,8 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "viewed_at": booking.viewed_at.isoformat() if booking.viewed_at else None,
         "declined_at": booking.declined_at.isoformat() if booking.declined_at else None,
         "decline_reason": booking.decline_reason,
+        # Installments, when the contract has a schedule (contract_document).
+        "payment_schedule": _schedule_view(booking),
         "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat() if booking.deposit_marked_paid_at else None,
         "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat() if booking.deposit_confirmed_received_at else None,
     }
