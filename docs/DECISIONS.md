@@ -393,3 +393,17 @@ money, so collecting it was the vendor chasing by text.
   latest, not a burst.
 - Days are UTC calendar days, like `due_on`.
 
+
+## 19. A signed contract is never deleted by tidying a plan
+
+- Removing a booking from a plan, swapping its package or deleting the whole
+  plan used to delete the booking row outright — and with it the signed
+  snapshot, its SHA-256 and the timeline (#16). Unpaid signed contracts
+  weren't covered by the money guard (`MONEY_MOVED_STATUSES`), because on the
+  Venmo/Zelle track no money "moves" through Jorna.
+- `bundle_service._has_signed_contract` now refuses both client delete
+  paths. Ending a signed booking is a cancellation, which keeps the record;
+  a swap after one is cancelled adds the replacement and leaves it be.
+- Not in `_delete_booking_cascade`: account deletion and the duplicate
+  cleanup also pass through there, and whether deleting an account may take
+  signed contracts with it is still an open question.

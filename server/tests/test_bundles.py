@@ -948,6 +948,30 @@ class TestPaidBookingsSurviveDeletion:
         assert "DJ Set" in detail, detail           # what it was for
         assert "efund" in detail, detail            # what to do instead
 
+    def test_a_signed_contract_outlives_the_plan_even_unpaid(self, seeded_db):
+        """Removing or deleting used to take a signed contract — its frozen
+        copy and timeline — with it. Paid or not, it's the record."""
+        from datetime import datetime, timezone
+
+        user, db = seeded_db["user"], seeded_db["db"]
+        bundle_id, booking_id = self._bundle_with(seeded_db, "unpaid")
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        booking.signed_at = datetime.now(timezone.utc)
+        booking.contract_status = "signed"
+        db.commit()
+        headers = make_auth_headers(user)
+
+        single = client.delete(f"/bundles/{bundle_id}/bookings/{booking_id}", headers=headers)
+        assert single.status_code == 400
+        assert "signed contract" in single.json()["detail"]
+        whole = client.delete(f"/bundles/{bundle_id}", headers=headers)
+        assert whole.status_code == 400
+        assert "cancel" in whole.json()["detail"].lower()
+
+        db.expire_all()
+        assert db.query(Booking).filter(Booking.booking_id == booking_id).first() is not None
+        assert db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first() is not None
+
     def test_an_unpaid_plan_still_deletes(self, seeded_db):
         """The guard must not have made every plan undeletable."""
         user, booking, db = seeded_db["user"], seeded_db["booking1"], seeded_db["db"]
