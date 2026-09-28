@@ -1289,6 +1289,14 @@ def confirm_payment_received(*, booking_id: str, caller_user_id: str, db: Sessio
         raise StripeError(403, "You are not the vendor for this booking")
     if booking.payment_method != "manual":
         raise StripeError(400, "This booking is on the protected track — payment happens automatically")
+    if booking.payment_schedule:
+        # A scheduled contract (contract_document): confirm every payment the
+        # client has marked sent — what "Confirm payment" meant before.
+        return _confirm_scheduled(
+            booking, [i["id"] for i in booking.payment_schedule if i.get("marked_paid_at")], db,
+            nothing="Nothing to confirm yet — no payment has been marked as sent",
+            reply=lambda: {"message": "Confirmed.", "payment_status": booking.payment_status},
+        )
     if booking.payment_status != PaymentStatus.MARKED_PAID.value:
         raise StripeError(400, f"Nothing to confirm yet (payment status: '{booking.payment_status}')")
 
@@ -1348,6 +1356,21 @@ def mark_deposit_paid(*, booking_id: str, caller_user_id: str, db: Session) -> d
     return {"message": "Deposit marked as paid.", "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat()}
 
 
+def _confirm_scheduled(booking: Booking, ids: list[str], db: Session, *, nothing: str, reply) -> dict:
+    from app.services import contract_document as doc
+
+    changed = doc.confirm_received(booking, ids)
+    if not changed:
+        raise StripeError(400, nothing)
+    for i in changed:
+        doc.record(db, booking, "payment_confirmed", "vendor", {
+            "installment_id": i["id"], "label": i["label"], "amount_cents": i["amount_cents"],
+        })
+    db.commit()
+    db.refresh(booking)
+    return reply()
+
+
 def confirm_deposit_received(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     """The vendor attesting they received the deposit. Works for a guest
     booking too, unlike mark_deposit_paid above -- this only checks the
@@ -1362,6 +1385,17 @@ def confirm_deposit_received(*, booking_id: str, caller_user_id: str, db: Sessio
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     if not vendor or vendor.user_id != caller_user_id:
         raise StripeError(403, "You are not the vendor for this booking")
+    if booking.payment_schedule and len(booking.payment_schedule) >= 2:
+        first = booking.payment_schedule[0]
+        if not first.get("marked_paid_at"):
+            raise StripeError(400, "Nothing to confirm yet — the deposit hasn't been marked as paid")
+        return _confirm_scheduled(
+            booking, [first["id"]], db, nothing="Deposit already confirmed",
+            reply=lambda: {
+                "message": "Deposit confirmed.",
+                "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat(),
+            },
+        )
     if booking.deposit_percent is None:
         raise StripeError(400, "This booking has no deposit configured")
     if booking.deposit_marked_paid_at is None:

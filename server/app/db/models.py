@@ -442,6 +442,28 @@ class Booking(Base):
     decline_reason = Column(String(500), nullable=True)
     voided_at = Column(DateTime, nullable=True)
 
+    # What the agreement says (0065, docs/DECISIONS.md #16), all snapshots —
+    # nothing here joins back to the package it came from, so editing or
+    # archiving a package never rewrites a contract. See contract_document.
+    #   line_items: [{id, kind: package|addon|custom, service_id, addon_id,
+    #                 name, description, unit, unit_price_cents, quantity,
+    #                 total_cents}]; amount_cents stays the grand total.
+    #   payment_schedule: [{id, label, amount_cents, due_type: on_signing|
+    #                 date|before_event, due_date, due_days, marked_paid_at,
+    #                 confirmed_at}]. Null on a contract written before
+    #                 schedules — those keep the single deposit fields.
+    #   terms_clauses: [{key, title, body}], the clause text as sent.
+    line_items = Column(JSON, nullable=True)
+    discount_cents = Column(Integer, nullable=True)
+    payment_schedule = Column(JSON, nullable=True)
+    terms_clauses = Column(JSON, nullable=True)
+    # Bumped by every edit to a contract that's already been sent, so a
+    # signature can say which version it was for (sign 409s on a mismatch).
+    revision = Column(Integer, nullable=True)
+    # Exactly what was signed, frozen at signing, and its SHA-256.
+    signed_snapshot = Column(JSON, nullable=True)
+    signed_snapshot_sha256 = Column(String(64), nullable=True)
+
     # A second self-attestation pair, alongside manual_payment_marked_at/
     # manual_payment_confirmed_at above — that existing pair keeps meaning
     # "the full/remaining balance"; these two mean "the deposit
@@ -449,6 +471,38 @@ class Booking(Base):
     # entirely and behaves exactly as before this column existed.
     deposit_marked_paid_at = Column(DateTime, nullable=True)
     deposit_confirmed_received_at = Column(DateTime, nullable=True)
+
+
+class ContractTemplate(Base):
+    """A vendor's reusable starting point for a contract — items, schedule
+    rule, clauses, terms. Stored per account (0065) instead of per browser.
+    The body is the builder's own shape, opaque here: nothing on the server
+    computes from a template, it only hands it back."""
+
+    __tablename__ = "contract_templates"
+
+    template_id = Column(String(36), primary_key=True, default=uuid_str)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    body = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ContractEvent(Base):
+    """One line of a contract's timeline — sent, viewed, edited, signed, a
+    payment marked or confirmed. Append-only. Contracts from before 0065 have
+    none; their timeline is derived from the booking's own timestamps
+    (contract_document.timeline)."""
+
+    __tablename__ = "contract_events"
+
+    event_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    kind = Column(String(40), nullable=False)
+    actor = Column(String(20), nullable=False)  # vendor | client | system
+    detail = Column(JSON, nullable=True)
 
 
 class Lead(Base):

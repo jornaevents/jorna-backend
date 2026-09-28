@@ -141,6 +141,15 @@ for a client who's never used Jorna and never logs in — see
   this booking take the vendor's date" is `booking_service.
   commits_vendor_date()` — double-booking, calendar availability and the
   bundle builder all use it.
+- **Proposals (0065, `docs/DECISIONS.md` #16).** `services/contract_document.
+  py` owns what a contract says: snapshotted `line_items` (+ `discount_cents`;
+  `amount_cents` is the total), a `payment_schedule` mirrored into the
+  single-deposit fields for older readers, `terms_clauses`, `revision`, and
+  the `signed_snapshot` + SHA-256 frozen at signing. `GET /contracts/{id}`
+  includes a `timeline` (`contract_events`). Also: `POST /contracts/{id}/
+  payments/{installment_id}/confirm`, `POST /guest-bookings/{token}/
+  payments/{installment_id}/mark-paid`, `/contract-templates` CRUD, and
+  `email_client` on create/send.
 - `routers/guest_bookings.py` + `services/guest_booking_service.py`
   (fully public, no `Depends(get_current_user)` anywhere): the client's
   side, reached only by `contract_token` — read, fill in contact/venue

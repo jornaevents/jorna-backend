@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Booking, Service, User, Vendor
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.services.booking_service import vendor_has_conflicting_booking
+from app.services import contract_document as doc
 from app.services.contract_service import contract_state
 from app.services.email_service import send_email
 from app.utils.notifications import notify_vendor_contract_event
@@ -111,6 +112,15 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "location": booking.location,
         "guest_count": booking.guest_count,
         "amount_cents": booking.amount_cents,
+        "line_items": booking.line_items,
+        "subtotal_cents": sum(i["total_cents"] for i in booking.line_items) if booking.line_items else booking.amount_cents,
+        "discount_cents": booking.discount_cents,
+        "payment_schedule": doc.schedule_view(booking),
+        "terms_clauses": booking.terms_clauses,
+        # Sent back with the signature: a signature is for the version the
+        # client read, and sign_contract refuses a stale one.
+        "revision": booking.revision,
+        "signed_snapshot_sha256": booking.signed_snapshot_sha256,
         "deposit_percent": booking.deposit_percent,
         "deposit_amount_cents": booking.deposit_amount_cents,
         "cancellation_window_hours": booking.cancellation_window_hours,
@@ -140,6 +150,7 @@ def get_guest_booking(*, contract_token: str, db: Session, preview: bool = False
     if not preview and booking.viewed_at is None and booking.contract_status == "sent":
         booking.contract_status = "viewed"
         booking.viewed_at = _now()
+        doc.record(db, booking, "viewed", "client")
         db.commit()
         db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
@@ -184,7 +195,7 @@ def fill_details(
     return _guest_dict(booking, service, vendor, vendor_user)
 
 
-def sign_contract(*, contract_token: str, signer_name: str, db: Session) -> dict:
+def sign_contract(*, contract_token: str, signer_name: str, db: Session, revision: int | None = None) -> dict:
     """The client's e-signature — a typed full legal name, nothing more.
     Not a verified identity: the token is the only credential this whole
     flow has (see docs/DECISIONS.md #13's accepted-risk note). Requires an
@@ -199,6 +210,11 @@ def sign_contract(*, contract_token: str, signer_name: str, db: Session) -> dict
     if not booking.guest_email:
         raise GuestBookingError(400, "Add your email first so we can send you a copy of this agreement")
     _require_open_offer(booking)
+    # Older clients don't send a revision; the builder-era page always does.
+    if revision is not None and booking.revision is not None and revision != booking.revision:
+        raise GuestBookingError(
+            409, "Your vendor updated this contract after you opened it — review the latest version and sign again",
+        )
     # The hold should have kept the date clear, but a contract from before
     # holds existed, or one resent after lapsing, might not have been.
     # Signing is the hard block, so it's the last place to catch it.
@@ -212,6 +228,11 @@ def sign_contract(*, contract_token: str, signer_name: str, db: Session) -> dict
     booking.signer_name = signer_name.strip()
     booking.signed_at = datetime.now(timezone.utc)
     booking.contract_status = "signed"
+    doc.freeze(booking)
+    doc.record(db, booking, "signed", "client", {
+        "signer_name": booking.signer_name, "revision": booking.revision,
+        "sha256": booking.signed_snapshot_sha256,
+    })
     db.commit()
     db.refresh(booking)
 
@@ -249,6 +270,7 @@ def decline_contract(*, contract_token: str, reason: str | None, db: Session) ->
     booking.contract_status = "declined"
     booking.declined_at = _now()
     booking.decline_reason = (reason or "").strip()[:500] or None
+    doc.record(db, booking, "declined", "client", {"reason": booking.decline_reason})
     db.commit()
     db.refresh(booking)
 
@@ -270,11 +292,16 @@ def _send_signed_receipt(booking: Booking, service: Service | None, vendor: Vend
     """Best-effort — a failed send must not fail the signature itself. The
     email is the client's only record of this agreement, but the signature
     is already committed by the time this runs."""
-    payment_line = (
-        f"A {booking.deposit_percent}% deposit (${(booking.deposit_amount_cents or 0) / 100:,.2f}) is due"
-        if booking.deposit_percent is not None
-        else f"${(booking.amount_cents or 0) / 100:,.2f} is due"
-    )
+    if booking.payment_schedule:
+        payment_line = "<br>".join(
+            f"{i['label']}: ${i['amount_cents'] / 100:,.2f}"
+            + (f" — due {_pretty_date(i['due_on'])}" if i.get("due_on") else " — due now")
+            for i in doc.schedule_view(booking)
+        )
+    elif booking.deposit_percent is not None:
+        payment_line = f"A {booking.deposit_percent}% deposit (${(booking.deposit_amount_cents or 0) / 100:,.2f}) is due"
+    else:
+        payment_line = f"${(booking.amount_cents or 0) / 100:,.2f} is due"
     pay_to = []
     if vendor and vendor.venmo_handle:
         pay_to.append(f"Venmo: {vendor.venmo_handle}")
@@ -300,18 +327,65 @@ def _send_signed_receipt(booking: Booking, service: Service | None, vendor: Vend
     )
 
 
-def mark_full_paid(*, contract_token: str, db: Session) -> dict:
-    """The guest sibling of stripe_service.mark_booking_paid — no session,
-    so the token is the only proof this is the right person."""
-    booking = _by_token(contract_token, db)
+def _mark_scheduled(booking: Booking, ids: list[str], db: Session) -> list[dict]:
+    """Mark scheduled payments sent and tell the vendor, one notice for the
+    lot. Returns the payments that changed."""
+    changed = doc.mark_paid(booking, ids)
+    if not changed:
+        return changed
+    for i in changed:
+        doc.record(db, booking, "payment_marked", "client", {
+            "installment_id": i["id"], "label": i["label"], "amount_cents": i["amount_cents"],
+        })
+    db.commit()
+    db.refresh(booking)
+    labels = ", ".join(i["label"] for i in changed)
+    amount = sum(i["amount_cents"] for i in changed)
+    _tell_vendor(
+        booking,
+        f"{_client_label(booking)} says they've sent {labels}",
+        f"${amount / 100:,.2f} for {_pretty_date(booking.date_iso)}. "
+        "Confirm it arrived on the contract's page.",
+        "contract_payment_marked", db,
+    )
+    return changed
+
+
+def _require_signed(booking: Booking) -> None:
     _require_live(booking)
     if booking.signed_at is None:
         raise GuestBookingError(400, "This booking hasn't been signed yet")
+
+
+def mark_installment_paid(*, contract_token: str, installment_id: str, db: Session) -> dict:
+    """The client says one scheduled payment is sent."""
+    booking = _by_token(contract_token, db)
+    _require_signed(booking)
+    try:
+        item = doc.installment(booking, installment_id)
+    except doc.DocumentError as e:
+        raise GuestBookingError(404, e.detail)
+    if not _mark_scheduled(booking, [installment_id], db):
+        raise GuestBookingError(400, f"“{item['label']}” is already marked as sent")
+    return get_guest_booking(contract_token=contract_token, db=db, preview=True)
+
+
+def mark_full_paid(*, contract_token: str, db: Session) -> dict:
+    """The guest sibling of stripe_service.mark_booking_paid — no session,
+    so the token is the only proof this is the right person. On a scheduled
+    contract, "paid in full" marks every payment not yet marked."""
+    booking = _by_token(contract_token, db)
+    _require_signed(booking)
+    if booking.payment_schedule:
+        if not _mark_scheduled(booking, [i["id"] for i in booking.payment_schedule], db):
+            raise GuestBookingError(400, "Every payment is already marked as sent")
+        return {"message": "Marked as paid.", "payment_status": booking.payment_status}
     if booking.payment_status != PaymentStatus.UNPAID.value:
         raise GuestBookingError(400, f"Already marked (payment status: '{booking.payment_status}')")
 
     booking.payment_status = PaymentStatus.MARKED_PAID.value
     booking.manual_payment_marked_at = datetime.now(timezone.utc)
+    doc.record(db, booking, "payment_marked", "client", {"label": "Full payment", "amount_cents": booking.amount_cents})
     db.commit()
     db.refresh(booking)
     _tell_vendor(
@@ -325,17 +399,24 @@ def mark_full_paid(*, contract_token: str, db: Session) -> dict:
 
 
 def mark_deposit_paid(*, contract_token: str, db: Session) -> dict:
-    """The guest sibling of stripe_service.mark_deposit_paid."""
+    """The guest sibling of stripe_service.mark_deposit_paid. On a scheduled
+    contract the deposit is the first of two or more payments."""
     booking = _by_token(contract_token, db)
-    _require_live(booking)
-    if booking.signed_at is None:
-        raise GuestBookingError(400, "This booking hasn't been signed yet")
+    _require_signed(booking)
+    if booking.payment_schedule and len(booking.payment_schedule) >= 2:
+        if not _mark_scheduled(booking, [booking.payment_schedule[0]["id"]], db):
+            raise GuestBookingError(400, "Deposit already marked as paid")
+        return {
+            "message": "Deposit marked as paid.",
+            "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat(),
+        }
     if booking.deposit_percent is None:
         raise GuestBookingError(400, "This booking has no deposit configured")
     if booking.deposit_marked_paid_at is not None:
         raise GuestBookingError(400, "Deposit already marked as paid")
 
     booking.deposit_marked_paid_at = datetime.now(timezone.utc)
+    doc.record(db, booking, "payment_marked", "client", {"label": "Deposit", "amount_cents": booking.deposit_amount_cents})
     db.commit()
     db.refresh(booking)
     _tell_vendor(

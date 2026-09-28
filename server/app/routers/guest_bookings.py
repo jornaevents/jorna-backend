@@ -21,6 +21,7 @@ from app.services.guest_booking_service import (
     sign_contract,
     decline_contract,
     mark_full_paid,
+    mark_installment_paid,
     mark_deposit_paid,
 )
 
@@ -67,6 +68,9 @@ def fill_details_route(
 
 class SignRequest(BaseModel):
     signer_name: str
+    # The revision the client read (GET returns it). Refused if the vendor
+    # has edited since. Optional so older pages keep working.
+    revision: Optional[int] = None
 
 
 @router.post("/{contract_token}/sign", summary="Client e-signs by typing their full legal name")
@@ -78,7 +82,9 @@ def sign_contract_route(
     db: Session = Depends(get_db),
 ):
     try:
-        return sign_contract(contract_token=contract_token, signer_name=body.signer_name, db=db)
+        return sign_contract(
+            contract_token=contract_token, signer_name=body.signer_name, revision=body.revision, db=db,
+        )
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -127,3 +133,21 @@ def decline_contract_route(
         )
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/{contract_token}/payments/{installment_id}/mark-paid",
+    summary="Client: mark one scheduled payment as sent",
+)
+@limiter.limit("10/minute")
+def mark_installment_paid_route(
+    request: Request,
+    contract_token: str,
+    installment_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return mark_installment_paid(contract_token=contract_token, installment_id=installment_id, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
