@@ -139,6 +139,11 @@ def _refund_preview(booking: Booking) -> dict:
     }
 
 
+def _contract_state(booking: Booking) -> str | None:
+    from app.services.contract_service import contract_state
+    return contract_state(booking)
+
+
 def _booking_summary(
     booking: Booking,
     service: Service | None,
@@ -212,6 +217,13 @@ def _booking_summary(
         "price_unit": service.price_unit if service else None,
         "price_pending_quantity": total_cents is None,
         "amount_cents": booking.amount_cents,
+        # An accepted request is a contract the client signs on the no-login
+        # link (docs/DECISIONS.md #17). The token is theirs to open it with —
+        # this dict only ever goes to the booking's own client.
+        "contract_token": booking.contract_token,
+        "contract_status": _contract_state(booking),
+        "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        "hold_expires_at": booking.hold_expires_at.isoformat() if booking.hold_expires_at else None,
         # Negotiation is now per-service (the vendor toggles it per service),
         # not vendor-wide. Key name kept for client compatibility.
         "open_to_price_negotiation": service.negotiable if service else False,
