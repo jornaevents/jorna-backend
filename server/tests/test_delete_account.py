@@ -276,17 +276,27 @@ def test_a_vendor_holding_a_clients_money_is_refused_too():
     db.close()
 
 
-@pytest.mark.parametrize("side", ["client", "vendor"])
-def test_a_signed_contract_refuses_the_whole_delete(side):
-    """Unpaid or not, cancelled or not: the contract is both parties' record,
-    and either one closing their account would take it from the other."""
-    db = TestingSessionLocal()
-    client = _user(db, f"dels_{uuid.uuid4().hex[:8]}")
+def _signed(db, client: User, date_iso: str, *, cancelled: bool = False):
     vuser, _, _, _, _, booking = _plan(db, client)
+    booking.date_iso = date_iso
     booking.signed_at = datetime.now(timezone.utc)
     booking.contract_status = "signed"
-    booking.status = "rejected"  # cancelled after signing still counts
+    if cancelled:
+        booking.status = "rejected"
     db.commit()
+    return vuser, booking
+
+
+@pytest.mark.parametrize("side", ["client", "vendor"])
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_a_signed_contract_for_an_event_still_ahead_refuses_the_delete(side, cancelled):
+    """Unpaid or not, cancelled or not: until the event is over the contract is
+    both parties' record, and either one closing their account would take it
+    from the other."""
+    db = TestingSessionLocal()
+    client = _user(db, f"dels_{uuid.uuid4().hex[:8]}")
+    ahead = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
+    vuser, booking = _signed(db, client, ahead, cancelled=cancelled)
     uid = client.user_id if side == "client" else vuser.user_id
 
     with pytest.raises(UserError) as e:
@@ -296,6 +306,42 @@ def test_a_signed_contract_refuses_the_whole_delete(side):
     assert "signed contract" in e.value.detail
     assert _exists(db, uid)
     assert db.query(Booking).filter(Booking.booking_id == booking.booking_id).first() is not None
+    db.close()
+
+
+def test_today_is_not_over_yet():
+    """The wedding day itself still counts as ahead — over means after it."""
+    db = TestingSessionLocal()
+    client = _user(db, f"delt_{uuid.uuid4().hex[:8]}")
+    today = datetime.now(timezone.utc).date().isoformat()
+    _signed(db, client, today)
+
+    with pytest.raises(UserError):
+        delete_user(user_id=client.user_id, db=db)
+    db.close()
+
+
+def test_a_contract_with_no_date_yet_refuses_the_delete():
+    db = TestingSessionLocal()
+    client = _user(db, f"delq_{uuid.uuid4().hex[:8]}")
+    _signed(db, client, "TBD")
+
+    with pytest.raises(UserError):
+        delete_user(user_id=client.user_id, db=db)
+    db.close()
+
+
+@pytest.mark.parametrize("side", ["client", "vendor"])
+def test_once_the_event_is_over_the_account_can_go(side):
+    db = TestingSessionLocal()
+    client = _user(db, f"delp_{uuid.uuid4().hex[:8]}")
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).date().isoformat()
+    vuser, _ = _signed(db, client, past)
+    uid = client.user_id if side == "client" else vuser.user_id
+
+    delete_user(user_id=uid, db=db)
+
+    assert not _exists(db, uid)
     db.close()
 
 
