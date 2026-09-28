@@ -158,6 +158,7 @@ def _booking_summary(
     Pure (no DB access) so callers can batch-load the Service/Vendor/User once
     via ``_resolve_booking_refs`` instead of issuing three queries per booking.
     """
+    from app.services.contract_document import schedule_view
     from app.services.booking_service import (
         _DEAD_BOOKING_STATUSES,
         _DEAD_VENUE_PAYMENT_STATUSES,
@@ -225,6 +226,10 @@ def _booking_summary(
         "contract_status": _contract_state(booking),
         "signed_at": utc_iso(booking.signed_at),
         "hold_expires_at": utc_iso(booking.hold_expires_at),
+        # The contract's payments, each with its due date and whether the
+        # client marked it sent / the vendor confirmed it. Null on a booking
+        # without a schedule, which pays in one go (payment_status).
+        "payment_schedule": schedule_view(booking),
         # Negotiation is now per-service (the vendor toggles it per service),
         # not vendor-wide. Key name kept for client compatibility.
         "open_to_price_negotiation": service.negotiable if service else False,

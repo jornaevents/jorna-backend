@@ -385,8 +385,9 @@ money, so collecting it was the vendor chasing by text.
   is 3 days past due and still not marked sent.
 - A payment marked sent or confirmed gets nothing further.
 - A date that passed before the contract was signed counts from the signing
-  day (`effective_due`) — a late-signed contract's balance is due, not
-  overdue.
+  day (`contract_document.effective_due`) — a late-signed contract's
+  balance is due, not overdue. Every schedule view carries it as
+  `effective_due`, so the client app shows the same date the emails do.
 - Each reminder is a `payment_reminder` timeline event, which is also the
   dedupe: the sweep can run any number of times. A sweep that finds a payment
   past several moments at once (a restart, a late signature) sends only the

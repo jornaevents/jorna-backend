@@ -220,6 +220,18 @@ def due_on(installment: dict, booking: Booking) -> str | None:
     return booking.signed_at.date().isoformat() if booking.signed_at else None
 
 
+def effective_due(installment: dict, booking: Booking) -> date | None:
+    """When a payment is actually due: its schedule date, but never before
+    the day the contract was signed. A contract signed ten days before the
+    event has a "14 days before" balance whose date is already gone; the
+    first thing that should happen is a reminder, not an overdue notice."""
+    raw = due_on(installment, booking)
+    if raw is None or booking.signed_at is None:
+        return None
+    due = date.fromisoformat(raw)
+    return max(due, booking.signed_at.date())
+
+
 def schedule_view(booking: Booking) -> list[dict] | None:
     if not booking.payment_schedule:
         return None
@@ -227,11 +239,18 @@ def schedule_view(booking: Booking) -> list[dict] | None:
         {
             **i,
             "due_on": due_on(i, booking),
+            # What reminders count from, and what a client should read as the
+            # due date: never before the signing day. Null until signed.
+            "effective_due": _iso_date(effective_due(i, booking)),
             "marked_paid_at": utc_iso(i.get("marked_paid_at")),
             "confirmed_at": utc_iso(i.get("confirmed_at")),
         }
         for i in booking.payment_schedule
     ]
+
+
+def _iso_date(d: date | None) -> str | None:
+    return d.isoformat() if d else None
 
 
 def _parse(ts: str | None) -> datetime | None:
