@@ -1254,6 +1254,14 @@ def mark_booking_paid(*, booking_id: str, caller_user_id: str, db: Session) -> d
 
     if booking.status != BookingStatus.APPROVED.value:
         raise StripeError(400, "This booking hasn't been accepted yet")
+    _require_signed_contract(booking)
+    if booking.payment_schedule:
+        # "Paid in full" on a scheduled contract: everything not yet marked.
+        return _client_mark_scheduled(
+            booking, [i["id"] for i in booking.payment_schedule], db,
+            nothing="Every payment is already marked as sent",
+            reply=lambda: {"message": "Marked as paid.", "payment_status": booking.payment_status},
+        )
     if booking.payment_status != PaymentStatus.UNPAID.value:
         raise StripeError(400, f"Already marked (payment status: '{booking.payment_status}')")
 
@@ -1333,6 +1341,16 @@ def mark_deposit_paid(*, booking_id: str, caller_user_id: str, db: Session) -> d
         raise StripeError(403, "You are not the customer for this booking")
     if booking.payment_method != "manual":
         raise StripeError(400, "This booking is on the protected track — payment happens automatically")
+    _require_signed_contract(booking)
+    if booking.payment_schedule and len(booking.payment_schedule) >= 2:
+        return _client_mark_scheduled(
+            booking, [booking.payment_schedule[0]["id"]], db,
+            nothing="Deposit already marked as paid",
+            reply=lambda: {
+                "message": "Deposit marked as paid.",
+                "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat(),
+            },
+        )
     if booking.deposit_percent is None:
         raise StripeError(400, "This booking has no deposit configured")
     if booking.deposit_marked_paid_at is not None:
@@ -1354,6 +1372,28 @@ def mark_deposit_paid(*, booking_id: str, caller_user_id: str, db: Session) -> d
         logger.warning("mark_deposit_paid: couldn't post system message for %s: %s", booking_id, exc)
 
     return {"message": "Deposit marked as paid.", "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat()}
+
+
+def _require_signed_contract(booking: Booking) -> None:
+    """An accepted request is a proposal until the client signs it
+    (DECISIONS #17) — nothing is owed before then."""
+    if booking.contract_token and booking.signed_at is None:
+        raise StripeError(400, "Sign the contract first — the link is in the email your vendor sent")
+
+
+def _client_mark_scheduled(booking: Booking, ids: list[str], db: Session, *, nothing: str, reply) -> dict:
+    from app.services import contract_document as doc
+
+    changed = doc.mark_paid(booking, ids)
+    if not changed:
+        raise StripeError(400, nothing)
+    for i in changed:
+        doc.record(db, booking, "payment_marked", "client", {
+            "installment_id": i["id"], "label": i["label"], "amount_cents": i["amount_cents"],
+        })
+    db.commit()
+    db.refresh(booking)
+    return reply()
 
 
 def _confirm_scheduled(booking: Booking, ids: list[str], db: Session, *, nothing: str, reply) -> dict:

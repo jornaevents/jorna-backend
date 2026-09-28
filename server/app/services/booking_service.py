@@ -1006,6 +1006,73 @@ def create_booking(
     }
 
 
+def check_can_accept(booking: Booking, db: Session) -> None:
+    """Everything that stops a vendor accepting a request, shared by a plain
+    accept (update_booking_status) and accepting with a written proposal
+    (contract_service.propose_from_request). Raises BookingError."""
+    if booking.status not in (BookingStatus.PENDING.value, BookingStatus.NEGOTIATION_ONGOING.value):
+        raise BookingError(400, f"Cannot change status from {booking.status} to approved")
+    parent = (
+        db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+        if booking.bundle_id
+        else None
+    )
+    if parent is not None and parent.status == "draft":
+        raise BookingError(
+            400,
+            "This request hasn't been sent yet — the client is still putting "
+            "their plan together. You'll be asked when they send it.",
+        )
+
+    # A vendor can't approve two bookings that collide. Checked only on approval
+    # (a pending request is just a lead); checkout re-checks to catch the race
+    # between approval and payment.
+    conflict = vendor_has_conflicting_booking(
+        vendor_id=booking.vendor_id,
+        date_iso=booking.date_iso,
+        date_end=booking.date_end,
+        time_start=booking.time_start,
+        time_end=booking.time_end,
+        db=db,
+        exclude_booking_id=booking.booking_id,
+    )
+    if conflict:
+        # Name the hours that clash. "You're busy that day" is answerable
+        # with "no I'm not, that one finishes at two" — and now it might be
+        # right, so the refusal has to say which booking and when.
+        when = (
+            f" ({conflict.time_start}–{conflict.time_end})"
+            if conflict.time_start and conflict.time_end
+            else ""
+        )
+        raise BookingError(
+            409,
+            f"That clashes with a booking you've already confirmed{when}. "
+            "You can take another job the same day as long as the hours "
+            "don't overlap.",
+        )
+
+    # A vendor can't lock in the listed price while a counter-offer is still
+    # on the table — clicking plain Accept would silently discard an open
+    # Negotiation row with zero warning. Keyed off the Negotiation row itself
+    # (not booking.status): that row is the thing that would get thrown away.
+    from app.db.models import Negotiation
+
+    open_negotiation = (
+        db.query(Negotiation)
+        .filter(Negotiation.booking_id == booking.booking_id, Negotiation.status == "open")
+        .first()
+    )
+    if open_negotiation:
+        raise BookingError(
+            409,
+            "There's an open price offer on this booking. Accept, "
+            "counter, or decline it in the negotiation first — "
+            "approving here would lock in the original price and "
+            "throw away the offer.",
+        )
+
+
 def update_booking_status(
     *,
     booking_id: str,
@@ -1090,60 +1157,22 @@ def update_booking_status(
                 "their plan together. You'll be asked when they send it.",
             )
 
-    # A vendor can't approve two bookings that collide. Checked only on approval
-    # (a pending request is just a lead); checkout re-checks to catch the race
-    # between approval and payment.
     if status_str == BookingStatus.APPROVED.value:
-        conflict = vendor_has_conflicting_booking(
-            vendor_id=booking.vendor_id,
-            date_iso=booking.date_iso,
-            date_end=booking.date_end,
-            time_start=booking.time_start,
-            time_end=booking.time_end,
-            db=db,
-            exclude_booking_id=booking.booking_id,
-        )
-        if conflict:
-            # Name the hours that clash. "You're busy that day" is answerable
-            # with "no I'm not, that one finishes at two" — and now it might be
-            # right, so the refusal has to say which booking and when.
-            when = (
-                f" ({conflict.time_start}–{conflict.time_end})"
-                if conflict.time_start and conflict.time_end
-                else ""
-            )
-            raise BookingError(
-                409,
-                f"That clashes with a booking you've already confirmed{when}. "
-                "You can take another job the same day as long as the hours "
-                "don't overlap.",
-            )
+        check_can_accept(booking, db)
 
-    # A vendor can't lock in the listed price while a counter-offer is still
-    # on the table — that's this exact bug: clicking plain Accept here would
-    # silently discard an open Negotiation row with zero warning. Keyed off
-    # the Negotiation row itself (not booking.status) since that row is the
-    # thing that actually gets thrown away, and it's the source of truth
-    # regardless of how booking.status happens to read.
-    if status_str == BookingStatus.APPROVED.value:
-        from app.db.models import Negotiation
+    # A signed-in client's request becomes a proposal they sign, not a
+    # booking that's final the moment the vendor says yes (DECISIONS #17).
+    # A contract the vendor wrote themselves already is one.
+    proposal_vendor = None
+    if status_str == BookingStatus.APPROVED.value and booking.user_id is not None and not booking.contract_token:
+        from app.services.contract_service import ContractError, attach_proposal
 
-        open_negotiation = (
-            db.query(Negotiation)
-            .filter(
-                Negotiation.booking_id == booking.booking_id,
-                Negotiation.status == "open",
-            )
-            .first()
-        )
-        if open_negotiation:
-            raise BookingError(
-                409,
-                "There's an open price offer on this booking. Accept, "
-                "counter, or decline it in the negotiation first — "
-                "approving here would lock in the original price and "
-                "throw away the offer.",
-            )
+        try:
+            attach_proposal(booking, vendor, db)
+        except ContractError as e:
+            db.rollback()
+            raise BookingError(e.status_code, e.detail)
+        proposal_vendor = vendor
 
     booking.status = status_str
     if status_str == BookingStatus.APPROVED.value:
@@ -1159,6 +1188,14 @@ def update_booking_status(
             if cancelling
             else RejectionReason.VENDOR_DECLINED.value
         )
+        # An accepted request's proposal goes with it, so its link says
+        # withdrawn rather than still waiting for a signature.
+        if booking.contract_token and booking.signed_at is None:
+            from app.services import contract_document as doc
+
+            booking.contract_status = "voided"
+            booking.voided_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            doc.record(db, booking, "voided", "vendor")
         # Nothing is waiting on a booking that isn't happening. A live date
         # change would otherwise sit on the client's board forever, waiting on a
         # vendor who has gone — and offer them a refund on a booking that was
@@ -1176,6 +1213,11 @@ def update_booking_status(
         sync_event_venue(booking.bundle_id, db)
     db.commit()
     db.refresh(booking)
+    if proposal_vendor is not None:
+        from app.services.contract_service import send_proposal_email
+
+        send_proposal_email(booking, proposal_vendor, db)
+        db.refresh(booking)
 
     # A vendor pulling out of an accepted, paid booking always owes the
     # client every cent back — no ramp, unlike a client-initiated

@@ -546,6 +546,163 @@ def confirm_installment(*, booking_id: str, installment_id: str, caller_user_id:
     return _contract_dict(booking, service, vendor, db)
 
 
+# ── Marketplace requests become proposals (Phase 4, DECISIONS #17) ──
+
+def _vendor_terms(vendor: Vendor, service: Service | None) -> dict:
+    """The terms a vendor usually offers: the package's own where it sets
+    them, otherwise the vendor-wide defaults."""
+    pick = lambda own, default: own if own is not None else default  # noqa: E731
+    return {
+        "deposit_percent": pick(service.deposit_percent if service else None, vendor.default_deposit_percent),
+        "cancellation_window_hours": pick(
+            service.cancellation_window_hours if service else None, vendor.default_cancellation_window_hours,
+        ),
+        "overtime_rate_cents": pick(service.overtime_rate_cents if service else None, vendor.default_overtime_rate_cents),
+    }
+
+
+def _default_clauses(vendor: Vendor) -> list[dict] | None:
+    terms = vendor.default_contract_terms or {}
+    raw = []
+    if terms.get("equipment_power"):
+        raw.append({"key": "equipment_power", "title": "Equipment & power", "body": terms["equipment_power"]})
+    if terms.get("travel"):
+        raw.append({"key": "travel", "title": "Travel", "body": terms["travel"]})
+    for c in terms.get("custom") or []:
+        if c.get("label") and c.get("value"):
+            raw.append({"title": c["label"], "body": c["value"]})
+    return doc.normalize_clauses(raw)
+
+
+def _default_schedule(total: int, deposit_percent: int | None) -> list[dict]:
+    """Deposit on signing and the rest two weeks out when the vendor takes a
+    deposit; otherwise the whole amount on signing."""
+    if deposit_percent and 0 < deposit_percent < 100:
+        deposit = round(total * deposit_percent / 100)
+        raw = [
+            {"label": "Deposit", "amount_cents": deposit, "due_type": "on_signing"},
+            {"label": "Final balance", "amount_cents": total - deposit, "due_type": "before_event", "due_days": 14},
+        ]
+    else:
+        raw = [{"label": "Payment in full", "amount_cents": total, "due_type": "on_signing"}]
+    return doc.normalize_schedule(raw, total_cents=total)
+
+
+def attach_proposal(
+    booking: Booking,
+    vendor: Vendor,
+    db: Session,
+    *,
+    line_items: list | None = None,
+    discount_cents: int | None = None,
+    payment_schedule: list | None = None,
+    terms_clauses: list | None = None,
+    cancellation_window_hours: int | None = None,
+    overtime_rate_cents: int | None = None,
+    hold_days: int | None = None,
+) -> None:
+    """Turn an accepted marketplace request into a sent proposal, in place —
+    the same row, so its messages, bundle and event stay attached. Without a
+    document it's built from the request and the vendor's usual terms, which
+    is what a plain "Accept" (web Bookings page, iOS) gets.
+
+    Doesn't commit or email; the caller does both once the rest of the
+    acceptance has gone through.
+    """
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    usual = _vendor_terms(vendor, service)
+    if line_items:
+        items, primary = doc.normalize_line_items(line_items, vendor_id=vendor.vendor_id, db=db)
+        _, total = doc.totals(items, discount_cents)
+    else:
+        from app.services.booking_service import resolve_total_cents
+
+        total = resolve_total_cents(booking, service)
+        if not total or total <= 0:
+            raise ContractError(
+                409,
+                "This request doesn't have a total yet — the client hasn't said how many "
+                "guests or hours. Accept it from the contract builder and set the price.",
+            )
+        items, primary, discount_cents = doc.single_item(service, total), service.service_id, None
+
+    booking.line_items = items
+    booking.service_id = primary
+    booking.amount_cents = total
+    booking.discount_cents = discount_cents or None
+    booking.payment_schedule = (
+        doc.normalize_schedule(payment_schedule, total_cents=total)
+        if payment_schedule
+        else _default_schedule(total, usual["deposit_percent"])
+    )
+    doc.sync_legacy_payment_fields(booking)
+    booking.terms_clauses = (
+        doc.normalize_clauses(terms_clauses) if terms_clauses is not None else _default_clauses(vendor)
+    )
+    booking.cancellation_window_hours = (
+        cancellation_window_hours if cancellation_window_hours is not None else usual["cancellation_window_hours"]
+    )
+    booking.overtime_rate_cents = (
+        overtime_rate_cents if overtime_rate_cents is not None else usual["overtime_rate_cents"]
+    )
+    booking.revision = 1
+
+    # Who it's for comes from the client's account; the sign page reads and
+    # lets them correct these, as it does for anyone.
+    client = db.query(User).filter(User.user_id == booking.user_id).first()
+    if client:
+        booking.guest_name = booking.guest_name or f"{client.f_name} {client.l_name}".strip() or None
+        booking.guest_email = booking.guest_email or client.email
+        booking.guest_phone = booking.guest_phone or client.phone
+
+    booking.contract_token = booking.contract_token or _token()
+    booking.status = BookingStatus.APPROVED.value
+    booking.confirmed_at = datetime.now(timezone.utc)
+    _start_hold(booking, vendor, hold_days)
+    doc.record(db, booking, "created", "vendor", {"from_request": True})
+    doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
+
+
+def send_proposal_email(booking: Booking, vendor: Vendor, db: Session) -> None:
+    """After the acceptance commits: the client's link, to their account's
+    email. Records the event, so it commits its own row."""
+    if booking.guest_email:
+        _email_client(booking, vendor, db)
+        db.commit()
+
+
+def propose_from_request(
+    *, booking_id: str, caller_user_id: str, db: Session, email_client: bool = True, **document,
+) -> dict:
+    """The vendor accepts a marketplace request with a proposal they've
+    written (the builder, ?request=). Same checks as a plain accept."""
+    from app.services.booking_service import BookingError, check_can_accept
+
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking or booking.user_id is None:
+        raise ContractError(404, "Request not found")
+    vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
+    if booking.contract_token:
+        raise ContractError(400, "This request already has a contract — edit that instead")
+    try:
+        check_can_accept(booking, db)
+    except BookingError as e:
+        raise ContractError(e.status_code, e.detail)
+
+    attach_proposal(booking, vendor, db, **document)
+    db.commit()
+    db.refresh(booking)
+    if email_client:
+        send_proposal_email(booking, vendor, db)
+        db.refresh(booking)
+
+    from app.services.calendar_service import sync_booking_to_calendar
+
+    sync_booking_to_calendar(booking, db)
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    return _contract_dict(booking, service, vendor, db)
+
+
 # ── Templates ────────────────────────────────────────────────────────
 
 MAX_TEMPLATES = 50

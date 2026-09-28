@@ -18,6 +18,7 @@ from app.services.contract_service import (
     create_template,
     delete_template,
     list_templates,
+    propose_from_request,
     update_template,
     create_contract,
     get_contract,
@@ -190,6 +191,39 @@ def confirm_installment_route(
         return confirm_installment(
             booking_id=booking_id, installment_id=installment_id,
             caller_user_id=current_user.user_id, db=db,
+        )
+    except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class ProposalRequest(BaseModel):
+    """Accepting a marketplace request with a proposal the vendor wrote. All
+    optional: whatever's left out comes from the request and the vendor's
+    usual terms, as a plain accept would."""
+
+    line_items: Optional[list[dict]] = Field(default=None, max_length=30)
+    discount_cents: Optional[int] = Field(default=None, ge=0)
+    payment_schedule: Optional[list[dict]] = Field(default=None, max_length=12)
+    terms_clauses: Optional[list[dict]] = Field(default=None, max_length=30)
+    cancellation_window_hours: Optional[int] = Field(default=None, ge=0)
+    overtime_rate_cents: Optional[int] = Field(default=None, ge=0)
+    hold_days: Optional[int] = Field(default=None, ge=1, le=60)
+    email_client: bool = True
+
+
+@router.post(
+    "/bookings/{booking_id}/propose",
+    summary="Accept a marketplace request by sending the client a proposal to sign",
+)
+def propose_from_request_route(
+    booking_id: str,
+    body: ProposalRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return propose_from_request(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db, **body.model_dump(),
         )
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

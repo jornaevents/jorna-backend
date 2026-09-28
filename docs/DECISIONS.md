@@ -195,6 +195,9 @@ on. This is a deliberate tradeoff, not an oversight:
   `booking.user_id != caller_user_id` or `== caller_user_id`, and no real
   caller id ever equals `None` — confirmed with tests
   (`tests/test_guest_booking_guards.py`), not just reasoned about.
+- *Since #17, a signed-in client's accepted request is also a contract and
+  is signed on this same token link — see #17 for how that changed the
+  boundary above.*
 - **No account-claim / magic-link flow is in scope.** Once signed, a guest
   has no way to log back in and see or manage the booking again — all
   further coordination happens outside the app. This was an explicit,
@@ -323,4 +326,47 @@ exactly what a client agreed to.
 
 **Consequence.** Additive: no backfill, and older clients see a scheduled
 contract through its deposit fields.
+
+## 17. Marketplace requests become proposals, signed on the no-login link (Phase 4)
+
+**Context.** Two ways to book, two models: a vendor-written contract (#13,
+#15, #16) needed the client's signature and could carry a payment plan; a
+signed-in client's marketplace request was final the moment the vendor
+clicked Accept — no contract, no deposit, no signature, and the date locked
+for good.
+
+**Decision** (the user's, 2026-09-23 and 2026-09-27).
+- **Accepting a request turns it into a proposal, in place.** The same row
+  gets a contract token, line items, a payment schedule and clauses, and is
+  sent with the usual tentative hold (#15); the client signs to make it
+  final. Messages, bundle and event stay attached because it's the same
+  booking.
+- **Both ways of accepting do this.** A plain Accept (`PUT
+  /bookings/{id}/status` approved — the web Bookings page and iOS) builds the
+  proposal from the request and the vendor's usual terms
+  (`contract_service.attach_proposal`: the package's own deposit/
+  cancellation/overtime over the vendor defaults; deposit on signing and the
+  balance 14 days before, or all on signing; default terms as clauses).
+  `POST /bookings/{id}/propose` accepts with a document the vendor wrote in
+  the builder. `booking_service.check_can_accept` is the one set of checks
+  for both.
+- A per-guest/per-hour request whose quantity isn't known has no total, so a
+  plain Accept 409s and points to the builder.
+- **The client signs on the same no-login link as a guest**
+  (`/guest-bookings/{token}`), emailed to their account address. The user
+  chose this over a signed-in screen knowingly: it works in every client
+  app today without changes, and it means **#13's rule "never serve a real
+  account's booking off a token" no longer holds** — the rule now is that
+  only a booking that has become a contract (`contract_status` set) answers
+  to a token. An account booking that never became one has no token.
+- **Nothing is owed before signing.** The signed-in "I've paid" endpoints
+  (`mark_booking_paid`, `mark_deposit_paid`) refuse an unsigned contract and
+  act on the schedule once it's signed.
+- A vendor backing out before it's signed voids the proposal, so the link
+  says withdrawn.
+- Requests accepted before this keep working as they were — no contract,
+  nothing to sign.
+
+**Known gap.** A date change (change request) on an accepted-but-unsigned
+proposal moves the booking without bumping its revision.
 

@@ -31,10 +31,13 @@ class GuestBookingError(Exception):
 
 def _by_token(contract_token: str, db: Session) -> Booking:
     booking = db.query(Booking).filter(Booking.contract_token == contract_token).first()
-    if not booking or booking.user_id is not None:
-        # A non-guest booking has no contract_token in practice, but the
-        # user_id check is the real boundary — never serve a real account's
-        # booking off of anything token-shaped.
+    if not booking or booking.contract_status is None:
+        # Only a booking that has become a contract answers to a token. That
+        # includes a signed-in client's accepted request (DECISIONS #17):
+        # they sign on this same no-login link, by the user's choice — the
+        # token is as much the credential for them as for a guest. An
+        # account booking that never became a contract has no token and
+        # stays unreachable here.
         raise GuestBookingError(404, "Booking not found")
     if booking.contract_status == "draft":
         # The vendor hasn't sent it yet — as far as the link goes, it
