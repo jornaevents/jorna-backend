@@ -18,10 +18,12 @@ source of truth for two sibling client repos, each with its own `CLAUDE.md`:
 
 - `knag9753/front_end_desiconnect` (`…/GitHub/front_end_desiconnect`) — native
   iOS SwiftUI client.
-- `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — Next.js
-  web app. Transferred from `dabkeyanik/jorna-website` in 2026-08;
-  `jornaevents-commits` is the account driving development on it going
-  forward (old URLs still redirect).
+- `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — both
+  Next.js web apps: `apps/client` (book.jornaevents.com, hosts) and
+  `apps/vendor` (jornaevents.com, vendors + the contract signing page).
+  The vendor app was its own repo, `jorna-vendor`, until 2026-09-28; that
+  repo is archived. Transferred from `dabkeyanik/jorna-website` in 2026-08
+  (old URLs still redirect).
 
 A booking/pricing/escrow change almost always touches this repo plus one or
 both clients. If a client repo's docs describe backend behavior differently
@@ -68,7 +70,7 @@ descriptions of a contract they don't own.
 - **`src/`, `index.html`, `vite.config.ts`, and `package.json` at the repo
   root are a stale Figma-Make-generated Vite prototype** ("Event Planning
   Marketplace"), not the production web app. The real, deployed web frontend
-  is the separate `jorna-website` repo (Next.js on Cloudflare Pages). Don't
+  is the separate `jorna-website` repo (two Next.js apps on Cloudflare Pages). Don't
   edit these root files expecting them to affect anything users see.
 - **Tests use a local SQLite file** (`server/tests/test_api.py` sets
   `sqlite:///./test.db`), not Postgres — no external DB or `DATABASE_URL`
