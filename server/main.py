@@ -198,6 +198,7 @@ _CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
 # that the digest still reads as "new," long enough that a real conversation
 # reads as one email rather than several.
 _MESSAGE_DIGEST_INTERVAL_SECONDS = 20 * 60
+_PAYMENT_REMINDER_INTERVAL_SECONDS = 60 * 60  # hourly
 _CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 _CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS = 4 * 60 * 60  # every 4 hours
 
@@ -262,6 +263,26 @@ async def _periodic_checkin_reminders():
         except Exception as exc:
             logger.warning("Check-in reminder sweep failed: %s", exc)
         await asyncio.sleep(_CHECKIN_REMINDER_INTERVAL_SECONDS)
+
+
+async def _periodic_payment_reminders():
+    """Remind clients of scheduled payments coming due, and vendors of ones
+    overdue (services/payment_reminder_service.py).
+
+    Same shape as the sweeps above. Hourly is plenty for day-granular due
+    dates, and it's idempotent through the payment_reminder events each
+    reminder records on the contract's timeline.
+    """
+    from app.db.database import SessionLocal
+    from app.services.payment_reminder_service import send_payment_reminders
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                send_payment_reminders(db=session)
+        except Exception as exc:
+            logger.warning("Payment reminder sweep failed: %s", exc)
+        await asyncio.sleep(_PAYMENT_REMINDER_INTERVAL_SECONDS)
 
 
 async def _periodic_message_digests():
@@ -389,6 +410,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_periodic_token_cleanup()),
         asyncio.create_task(_periodic_checkin_reminders()),
         asyncio.create_task(_periodic_message_digests()),
+        asyncio.create_task(_periodic_payment_reminders()),
         asyncio.create_task(_periodic_calendar_channel_renewal()),
         asyncio.create_task(_periodic_calendar_busy_resync()),
     ]
