@@ -90,10 +90,20 @@ The production database is **Supabase Postgres**, reached only via the
 plugin sitting in the same Railway project (`superb-encouragement`), which is
 an unused/empty leftover and easy to check by mistake.
 
-Railway's `checkSuites` deploy-trigger flag is **on**: a push to `main` now
-waits for the `Backend CI` GitHub check suite (`Lint + test` +
-`Migration chain (Postgres)`, `.github/workflows/ci.yml`) to go green before
-Railway even attempts to deploy. The migration-chain CI job catches a broken
+**Deploys run from CI, not from Railway's GitHub trigger** (since
+2026-09-28). The `deploy` job in `.github/workflows/ci.yml` runs only on a
+push to `main`, only after `Lint + test` and `Migration chain (Postgres)`
+pass on that commit, and calls `.github/scripts/deploy-railway.sh`, which
+asks Railway to deploy that exact SHA from the GitHub source and waits for
+SUCCESS (the job fails if the deploy does). It needs the `RAILWAY_TOKEN`
+Actions secret — a Railway *project* token for `superb-encouragement` /
+production. Railway's own "wait for CI" trigger hung on most merges because
+its own `railway-app` check suite never leaves `queued`; its automatic
+deploys should stay **off**, or it will race or hang alongside CI. If a
+deploy job fails, re-run it from the Actions tab rather than redeploying by
+hand, so the deployed commit stays the one CI tested.
+
+The migration-chain CI job catches a broken
 `down_revision` link, a duplicate head, or bad migration SQL — it does
 **not** catch a migration that was run directly against prod without ever
 being committed (that's what caused the 2026-08-30 incident:
@@ -158,8 +168,9 @@ venv/bin/alembic upgrade head                 # apply migrations (server/alembic
 CI (`.github/workflows/ci.yml`, job `Backend CI`) runs two jobs on every PR
 into `main`: `Lint + test` (ruff + pytest, sqlite-backed) and
 `Migration chain (Postgres)` (applies the full Alembic chain to a clean
-Postgres 16 container). Railway waits for both to pass before deploying —
-see "Diagnosing a failed Railway deploy" above.
+Postgres 16 container). On a push to `main`, a third job, `Deploy to
+Railway`, deploys the commit once both pass — see "Diagnosing a failed
+Railway deploy" above.
 
 ## Issue & work tracking
 
