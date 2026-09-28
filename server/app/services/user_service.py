@@ -100,6 +100,7 @@ def delete_user(*, user_id: str, db: Session) -> None:
         BundleError,
         _delete_booking_cascade,
         _delete_bundle_cascade,
+        _has_signed_contract,
         _money_has_moved,
     )
 
@@ -124,6 +125,22 @@ def delete_user(*, user_id: str, db: Session) -> None:
             "lose the record of where it went. Refund or resolve "
             f"{'that booking' if len(held) == 1 else 'those bookings'} first, then "
             "delete your account.",
+        )
+
+    # A signed contract is the record of what both sides agreed — its frozen
+    # copy, fingerprint and timeline hang off the booking row, and the other
+    # party is owed it as much as this one (DECISIONS.md #19). Deleting the
+    # account would take it for both of them, so an account with one stays.
+    signed = [b for b in db.query(Booking).filter(or_(*sides)).all() if _has_signed_contract(b)]
+    if signed:
+        raise UserError(
+            400,
+            f"You have {len(signed)} signed contract{'s' if len(signed) > 1 else ''}, "
+            "so your account can't be deleted — "
+            f"{'they are' if len(signed) > 1 else 'it is'} the record of what you and "
+            f"{'the other parties' if len(signed) > 1 else 'the other party'} agreed, "
+            "and deleting your account would delete "
+            f"{'them' if len(signed) > 1 else 'it'} for both of you.",
         )
 
     service_ids = (

@@ -276,6 +276,29 @@ def test_a_vendor_holding_a_clients_money_is_refused_too():
     db.close()
 
 
+@pytest.mark.parametrize("side", ["client", "vendor"])
+def test_a_signed_contract_refuses_the_whole_delete(side):
+    """Unpaid or not, cancelled or not: the contract is both parties' record,
+    and either one closing their account would take it from the other."""
+    db = TestingSessionLocal()
+    client = _user(db, f"dels_{uuid.uuid4().hex[:8]}")
+    vuser, _, _, _, _, booking = _plan(db, client)
+    booking.signed_at = datetime.now(timezone.utc)
+    booking.contract_status = "signed"
+    booking.status = "rejected"  # cancelled after signing still counts
+    db.commit()
+    uid = client.user_id if side == "client" else vuser.user_id
+
+    with pytest.raises(UserError) as e:
+        delete_user(user_id=uid, db=db)
+
+    assert e.value.status_code == 400
+    assert "signed contract" in e.value.detail
+    assert _exists(db, uid)
+    assert db.query(Booking).filter(Booking.booking_id == booking.booking_id).first() is not None
+    db.close()
+
+
 def test_deleting_an_account_that_isnt_there_is_a_404():
     db = TestingSessionLocal()
     with pytest.raises(UserError) as e:

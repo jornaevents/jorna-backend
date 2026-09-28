@@ -48,6 +48,16 @@ def _money_has_moved(booking: Booking) -> bool:
     return (booking.payment_status or PaymentStatus.UNPAID.value) in MONEY_MOVED_STATUSES
 
 
+def _has_signed_contract(booking: Booking) -> bool:
+    """A signed contract is the record of what both sides agreed — its frozen
+    copy, fingerprint and timeline all hang off the booking row. Tidying a
+    plan must never delete one; ending it is a cancellation, which keeps it.
+    Checked on the client's delete paths, not in _delete_booking_cascade:
+    account deletion and the duplicate cleanup go through that too, and what
+    they owe a signed contract is its own decision."""
+    return booking.signed_at is not None
+
+
 def _latest_change_requests(bookings: list[Booking], db: Session):
     """The newest date change per booking, in one query.
 
@@ -785,6 +795,12 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
     # (where the record *is* the evidence the money came back).
     if _money_has_moved(booking):
         raise BundleError(400, "Can't remove a booking that's already been paid")
+    if _has_signed_contract(booking):
+        raise BundleError(
+            400,
+            "This booking has a signed contract, so it stays on your plan as the "
+            "record of what was agreed. To end it, cancel the booking instead.",
+        )
 
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     # Delete the booking outright so it also disappears from the vendor's side.
@@ -1079,6 +1095,19 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
             "record of where it went. Refund or resolve "
             f"{'that booking' if len(held) == 1 else 'those bookings'} first, "
             "then delete the plan.",
+        )
+
+    signed = [
+        b for b in db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+        if _has_signed_contract(b)
+    ]
+    if signed:
+        raise BundleError(
+            400,
+            f"{len(signed)} booking{'s' if len(signed) > 1 else ''} on this plan "
+            f"{'have' if len(signed) > 1 else 'has'} a signed contract, so the plan "
+            "can't be deleted — it's the record of what was agreed. Cancel "
+            f"{'those bookings' if len(signed) > 1 else 'that booking'} instead.",
         )
 
     try:
