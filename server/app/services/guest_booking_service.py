@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timezone
 
 from sqlalchemy.orm import Session
 
+from app.utils.timeutil import utc_iso
 from app.db.models import Booking, Service, User, Vendor
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.services.booking_service import vendor_has_conflicting_booking
@@ -134,13 +135,13 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "guest_email": booking.guest_email,
         "guest_phone": booking.guest_phone,
         "signer_name": booking.signer_name,
-        "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        "signed_at": utc_iso(booking.signed_at),
         "status": booking.status,
         "contract_status": contract_state(booking),
-        "hold_expires_at": booking.hold_expires_at.isoformat() if booking.hold_expires_at else None,
+        "hold_expires_at": utc_iso(booking.hold_expires_at),
         "payment_status": booking.payment_status,
-        "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat() if booking.deposit_marked_paid_at else None,
-        "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat() if booking.deposit_confirmed_received_at else None,
+        "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
+        "deposit_confirmed_received_at": utc_iso(booking.deposit_confirmed_received_at),
     }
 
 
@@ -411,7 +412,7 @@ def mark_deposit_paid(*, contract_token: str, db: Session) -> dict:
             raise GuestBookingError(400, "Deposit already marked as paid")
         return {
             "message": "Deposit marked as paid.",
-            "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat(),
+            "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
         }
     if booking.deposit_percent is None:
         raise GuestBookingError(400, "This booking has no deposit configured")
@@ -431,5 +432,5 @@ def mark_deposit_paid(*, contract_token: str, db: Session) -> dict:
     )
     return {
         "message": "Deposit marked as paid.",
-        "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat(),
+        "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
     }

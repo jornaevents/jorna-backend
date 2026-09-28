@@ -18,6 +18,7 @@ from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.services import contract_document as doc
 from app.services.booking_service import HOLDING_CONTRACT_STATUSES, vendor_has_conflicting_booking
 from app.services.email_service import send_email
+from app.utils.timeutil import utc_iso
 
 # How long a sent contract holds its date when the vendor hasn't set their
 # own Vendor.contract_hold_days. docs/DECISIONS.md #15.
@@ -61,7 +62,7 @@ def contract_state(booking: Booking, now: datetime | None = None) -> str | None:
 
 
 def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
+    return utc_iso(dt)
 
 
 def _hold_days(vendor: Vendor, override: int | None) -> int:
@@ -122,7 +123,7 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "guest_email": booking.guest_email,
         "guest_phone": booking.guest_phone,
         "signer_name": booking.signer_name,
-        "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        "signed_at": _iso(booking.signed_at),
         "status": booking.status,
         "payment_status": booking.payment_status,
         "contract_status": contract_state(booking),
@@ -714,8 +715,8 @@ def _template_dict(t: ContractTemplate) -> dict:
         "template_id": t.template_id,
         "name": t.name,
         "body": t.body,
-        "created_at": t.created_at.isoformat(),
-        "updated_at": t.updated_at.isoformat(),
+        "created_at": _iso(t.created_at),
+        "updated_at": _iso(t.updated_at),
     }
 
 

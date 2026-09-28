@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Booking, ContractEvent, Service
 from app.models.schemas import PaymentStatus
+from app.utils.timeutil import utc_iso
 
 ITEM_KINDS = ("package", "addon", "custom")
 UNITS = ("event", "person", "hour", "day", "item")
@@ -222,7 +223,15 @@ def due_on(installment: dict, booking: Booking) -> str | None:
 def schedule_view(booking: Booking) -> list[dict] | None:
     if not booking.payment_schedule:
         return None
-    return [{**i, "due_on": due_on(i, booking)} for i in booking.payment_schedule]
+    return [
+        {
+            **i,
+            "due_on": due_on(i, booking),
+            "marked_paid_at": utc_iso(i.get("marked_paid_at")),
+            "confirmed_at": utc_iso(i.get("confirmed_at")),
+        }
+        for i in booking.payment_schedule
+    ]
 
 
 def _parse(ts: str | None) -> datetime | None:
@@ -417,4 +426,4 @@ def timeline(booking: Booking, db: Session, state: str | None) -> list[dict]:
     if state == "expired" and booking.hold_expires_at:
         events.append({"at": booking.hold_expires_at, "kind": "expired", "actor": "system", "detail": None})
     events.sort(key=lambda e: e["at"])
-    return [{**e, "at": e["at"].isoformat()} for e in events]
+    return [{**e, "at": utc_iso(e["at"])} for e in events]

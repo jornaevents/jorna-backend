@@ -79,7 +79,7 @@ def test_resending_restarts_the_hold_but_only_if_the_date_is_still_free():
     resent = client.post(f"/contracts/{free['booking_id']}/send", headers=v["headers"])
     assert resent.status_code == 200, resent.text
     assert resent.json()["contract_status"] == "sent"
-    assert datetime.fromisoformat(resent.json()["hold_expires_at"]) > _now() + timedelta(days=6)
+    assert datetime.fromisoformat(resent.json()["hold_expires_at"]) > datetime.now(timezone.utc) + timedelta(days=6)
     assert _sign(free["contract_token"]).status_code == 200
 
     taken = _create_contract(v, date_iso="2027-10-04")
