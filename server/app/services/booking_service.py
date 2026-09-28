@@ -8,6 +8,7 @@ from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.utils.timeutil import utc_iso
 from app.config import ESCROW_ENABLED
 from app.db.models import Booking, Bundle, Event, User, Vendor, Service
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
@@ -385,18 +386,18 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "addon_rate_cents": booking.addon_rate_cents,
         "contract_terms": booking.contract_terms,
         "signer_name": booking.signer_name,
-        "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
+        "signed_at": utc_iso(booking.signed_at),
         # Where the contract stands as an offer, "expired" derived — see
         # contract_service.contract_state. Null on a non-contract booking.
         "contract_status": _contract_state(booking),
-        "hold_expires_at": booking.hold_expires_at.isoformat() if booking.hold_expires_at else None,
-        "viewed_at": booking.viewed_at.isoformat() if booking.viewed_at else None,
-        "declined_at": booking.declined_at.isoformat() if booking.declined_at else None,
+        "hold_expires_at": utc_iso(booking.hold_expires_at),
+        "viewed_at": utc_iso(booking.viewed_at),
+        "declined_at": utc_iso(booking.declined_at),
         "decline_reason": booking.decline_reason,
         # Installments, when the contract has a schedule (contract_document).
         "payment_schedule": _schedule_view(booking),
-        "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat() if booking.deposit_marked_paid_at else None,
-        "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat() if booking.deposit_confirmed_received_at else None,
+        "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
+        "deposit_confirmed_received_at": utc_iso(booking.deposit_confirmed_received_at),
     }
 
 

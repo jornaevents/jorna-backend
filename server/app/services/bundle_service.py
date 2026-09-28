@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
+from app.utils.timeutil import utc_iso
 from app.db.models import Booking, Bundle, Event, Service, User, Vendor
 from app.models.schemas import PaymentStatus
 
@@ -222,19 +223,19 @@ def _booking_summary(
         # this dict only ever goes to the booking's own client.
         "contract_token": booking.contract_token,
         "contract_status": _contract_state(booking),
-        "signed_at": booking.signed_at.isoformat() if booking.signed_at else None,
-        "hold_expires_at": booking.hold_expires_at.isoformat() if booking.hold_expires_at else None,
+        "signed_at": utc_iso(booking.signed_at),
+        "hold_expires_at": utc_iso(booking.hold_expires_at),
         # Negotiation is now per-service (the vendor toggles it per service),
         # not vendor-wide. Key name kept for client compatibility.
         "open_to_price_negotiation": service.negotiable if service else False,
         # Vendor-approval timestamp (when the vendor accepted the request).
         # Also what the 24-hour cancellation grace window runs from — see
         # stripe_service.cancellation_split.
-        "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,
+        "confirmed_at": utc_iso(booking.confirmed_at),
         # Escrow lifecycle. Clients need these to show the release state
         # honestly: who still has to confirm, and (via refund_preview below)
         # what cancelling would pay out right now.
-        "paid_at": booking.paid_at.isoformat() if booking.paid_at else None,
+        "paid_at": utc_iso(booking.paid_at),
         # What stripe_service.cancel_booking would pay out this instant — the
         # same numbers the UI's eligibility countdown reads, computed once
         # here rather than reimplemented in JS. Only meaningful while there's
@@ -243,13 +244,13 @@ def _booking_summary(
             _refund_preview(booking) if booking.payment_status == PaymentStatus.PAID.value else None
         ),
         "customer_confirmed_at": (
-            booking.customer_confirmed_at.isoformat() if booking.customer_confirmed_at else None
+            utc_iso(booking.customer_confirmed_at)
         ),
         "vendor_confirmed_at": (
-            booking.vendor_confirmed_at.isoformat() if booking.vendor_confirmed_at else None
+            utc_iso(booking.vendor_confirmed_at)
         ),
         "funds_released_at": (
-            booking.funds_released_at.isoformat() if booking.funds_released_at else None
+            utc_iso(booking.funds_released_at)
         ),
         # GPS venue check-in timestamps (stored as ISO strings). Lets the client's
         # bundle view show whether the vendor has arrived and checked in.
