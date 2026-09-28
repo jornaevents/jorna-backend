@@ -370,3 +370,26 @@ for good.
 **Known gap.** A date change (change request) on an accepted-but-unsigned
 proposal moves the booking without bumping its revision.
 
+## 18. Payment reminders: the client before and on the day, the vendor when overdue
+
+**Context.** Contracts have payment schedules (#16) with due dates, but
+nothing said those dates out loud again after signing. Jorna never holds the
+money, so collecting it was the vendor chasing by text.
+
+**Decision** (the user's, 2026-09-28: remind both sides).
+- `services/payment_reminder_service.py`, an hourly sweep in `main.py`.
+- **Client:** an email 3 days before a payment is due and on the due date,
+  linking to their contract page to mark it sent. Nothing ahead of a "due
+  when signed" payment — the signed receipt already said so.
+- **Vendor:** a push + email (`notify_vendor_contract_event`) once a payment
+  is 3 days past due and still not marked sent.
+- A payment marked sent or confirmed gets nothing further.
+- A date that passed before the contract was signed counts from the signing
+  day (`effective_due`) — a late-signed contract's balance is due, not
+  overdue.
+- Each reminder is a `payment_reminder` timeline event, which is also the
+  dedupe: the sweep can run any number of times. A sweep that finds a payment
+  past several moments at once (a restart, a late signature) sends only the
+  latest, not a burst.
+- Days are UTC calendar days, like `due_on`.
+
