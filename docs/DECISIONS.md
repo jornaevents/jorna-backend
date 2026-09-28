@@ -404,6 +404,10 @@ money, so collecting it was the vendor chasing by text.
 - `bundle_service._has_signed_contract` now refuses both client delete
   paths. Ending a signed booking is a cancellation, which keeps the record;
   a swap after one is cancelled adds the replacement and leaves it be.
-- Not in `_delete_booking_cascade`: account deletion and the duplicate
-  cleanup also pass through there, and whether deleting an account may take
-  signed contracts with it is still an open question.
+- Deleting an account is refused too, while either side of it has any
+  signed contract — cancelled or not (`user_service.delete_user`). The
+  contract is both parties' record; one of them closing their account
+  mustn't take it from the other.
+- The check sits in those callers, not `_delete_booking_cascade`, so the
+  duplicate cleanup (which already keeps the most progressed booking) can't
+  be aborted halfway by one.
