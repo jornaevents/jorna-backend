@@ -213,3 +213,40 @@ def test_a_vendor_backing_out_voids_the_unsigned_proposal(world):
         f"/guest-bookings/{req.contract_token}/sign", json={"signer_name": "Priya Mehta"},
     ).status_code == 410
 
+
+
+def test_the_clients_plan_shows_each_payment_and_when_its_due(world):
+    """The client app's plan lists every payment on the contract with the
+    date the reminder emails count from — never before the signing day."""
+    from app.services.bundle_service import _booking_summary
+
+    w = world
+    soon = (datetime.now(timezone.utc) + timedelta(days=5)).date().isoformat()
+    req = w["request"](date_iso=soon)
+    _accept(w, req)
+    w["db"].refresh(req)
+
+    def summary():
+        w["db"].refresh(req)
+        return _booking_summary(req, w["flat"], w["vendor"], w["db"].get(User, w["vendor"].user_id))
+
+    before = summary()["payment_schedule"]
+    assert [i["label"] for i in before] == ["Deposit", "Final balance"]
+    assert all(i["effective_due"] is None for i in before)  # nothing's owed unsigned
+
+    client.post(f"/guest-bookings/{req.contract_token}/sign", json={"signer_name": "Priya Mehta"})
+    today = datetime.now(timezone.utc).date().isoformat()
+    deposit, balance = summary()["payment_schedule"]
+    assert deposit["effective_due"] == today
+    # The balance's own date (days before a 5-days-away event) may already
+    # have passed; the client is told it's due today, not that it's late.
+    assert balance["effective_due"] >= today
+    assert balance["marked_paid_at"] is None
+
+    marked = client.post(f"/guest-bookings/{req.contract_token}/payments/{deposit['id']}/mark-paid")
+    assert marked.status_code == 200, marked.text
+    deposit, balance = summary()["payment_schedule"]
+    assert deposit["marked_paid_at"] and deposit["marked_paid_at"].endswith("+00:00")
+    assert balance["marked_paid_at"] is None
+    # Leave nothing owed: the reminder tests sweep this same database.
+    client.post(f"/guest-bookings/{req.contract_token}/payments/{balance['id']}/mark-paid")

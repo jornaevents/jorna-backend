@@ -48,25 +48,13 @@ def _money(cents: int) -> str:
     return f"${cents / 100:,.2f}"
 
 
-def effective_due(installment: dict, booking: Booking) -> date | None:
-    """When a payment is actually due: its schedule date, but never before
-    the day the contract was signed. A contract signed ten days before the
-    event has a "14 days before" balance whose date is already gone; the
-    first thing that should happen is a reminder, not an overdue notice."""
-    raw = doc.due_on(installment, booking)
-    if raw is None or booking.signed_at is None:
-        return None
-    due = date.fromisoformat(raw)
-    return max(due, booking.signed_at.date())
-
-
 def reminder_due(installment: dict, booking: Booking, today: date) -> str | None:
     """Which reminder this payment is owed today, if any: "overdue" (to the
     vendor), "due" or "upcoming" (to the client) — the latest that applies.
     None once the client has marked it sent or the vendor confirmed it."""
     if installment.get("marked_paid_at") or installment.get("confirmed_at"):
         return None
-    due = effective_due(installment, booking)
+    due = doc.effective_due(installment, booking)
     if due is None:
         return None
     if today >= due + OVERDUE_AFTER:
@@ -157,7 +145,7 @@ def send_payment_reminders(*, db: Session, now: datetime | None = None) -> int:
                 kind = reminder_due(installment, booking, today)
                 if kind is None or (installment["id"], kind) in done:
                     continue
-                _remind(booking, installment, kind, effective_due(installment, booking), db)
+                _remind(booking, installment, kind, doc.effective_due(installment, booking), db)
                 db.commit()
                 sent += 1
         except Exception as exc:  # one bad contract must not stop the rest
