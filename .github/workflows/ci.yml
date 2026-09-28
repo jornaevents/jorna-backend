@@ -89,16 +89,46 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/desiconnect_ci
         run: alembic upgrade head
 
-  # Production deploy — only for a push to main, only after both jobs above
-  # pass on this exact commit. Replaces Railway's own GitHub trigger, whose
-  # "wait for CI" hung on most merges (see .github/scripts/deploy-railway.sh).
-  # The concurrency group keeps deploys in merge order; a newer one waits
-  # rather than cancelling one already running its migrations.
-  deploy:
-    name: Deploy to Railway
+  # Deploys — only for a push to main, only after both jobs above pass on this
+  # exact commit. Replaces Railway's own GitHub trigger, whose "wait for CI"
+  # hung on most merges (see .github/scripts/deploy-railway.sh). Staging goes
+  # first so every migration runs against a real Postgres with real-shaped
+  # data before it touches production. The concurrency groups keep deploys in
+  # merge order; a newer one waits rather than cancelling one already running
+  # its migrations.
+  #
+  # Each job runs in the GitHub environment of the same name, which holds its
+  # RAILWAY_TOKEN secret (a project token only works for its own Railway
+  # environment) and, for staging, the RAILWAY_ENVIRONMENT_ID variable.
+  deploy-staging:
+    name: Deploy to staging
     needs: [test, migrations]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: railway-staging
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy this commit and wait for it
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: .github/scripts/deploy-railway.sh
+
+  # The `production` environment requires a reviewer's approval, so this job
+  # waits in the Actions tab after staging succeeds — check staging, then
+  # approve. Rejecting (or never approving) leaves production where it was.
+  deploy-production:
+    name: Deploy to production
+    needs: [deploy-staging]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
     concurrency:
       group: railway-production
       cancel-in-progress: false
@@ -109,5 +139,6 @@ jobs:
       - name: Deploy this commit and wait for it
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ENVIRONMENT_ID: d4a7b9a8-3797-47af-982e-7389585c9004
           COMMIT_SHA: ${{ github.sha }}
         run: .github/scripts/deploy-railway.sh

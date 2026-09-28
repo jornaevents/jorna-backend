@@ -31,9 +31,9 @@ net under that channel (every 4 hours).
   `railway.toml`'s `preDeployCommand = "python -m scripts.predeploy"`
   (`server/scripts/predeploy.py`, which runs the migration-state guard
   then `alembic upgrade head` in one process) — i.e. **every push to
-  `main` applies pending migrations to production Postgres before the new
-  app version deploys.** There is no separate staging database this runs
-  against first. See `CLAUDE.md`'s "Diagnosing a failed Railway deploy" for
+  `main` applies pending migrations to staging Postgres, then — after a
+  reviewer approves — to production Postgres, before each new app version
+  deploys** (docs/STAGING.md). See `CLAUDE.md`'s "Diagnosing a failed Railway deploy" for
   the decoy root `alembic.ini`/`migrations/` to avoid, and for why this
   isn't a bare `alembic upgrade head`.
 - New migration: `cd server && venv/bin/alembic revision --autogenerate -m "..."`,

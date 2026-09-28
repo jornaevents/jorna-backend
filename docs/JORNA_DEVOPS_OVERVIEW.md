@@ -14,7 +14,8 @@ replacement.
 | `front_end_desiconnect` | iOS SwiftUI | App Store (TestFlight/manual) | Native mobile client |
 | `jorna-website` | Next.js 16 / React 19 / TS, static export — two apps, `apps/client` and `apps/vendor` | Cloudflare Pages: `jorna-events` (`book.jornaevents.com`) and `jorna-vendor` (`jornaevents.com`) | Web clients for hosts and vendors, `/app` route (`basePath: "/app"`); the vendor app also serves the no-login contract signing page |
 
-There is no staging environment on any of the three. All three branch per
+The backend and both web apps deploy to staging first, then to production
+after approval (docs/STAGING.md); iOS has no staging. All three branch per
 change and merge to `main` to deploy; a booking/pricing/escrow change
 usually needs coordinated PRs across the backend plus one or both clients.
 
