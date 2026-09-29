@@ -29,7 +29,6 @@ jobs:
       pull-requests: write
       checks: read
       actions: read
-      id-token: write
     steps:
       # A fork's PR runs without secrets, and its code is a stranger's — this
       # agent runs commands. Failing (rather than skipping, which would count
@@ -56,6 +55,9 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Post as github-actions with this job's own token (the permissions
+          # above) rather than through the Claude GitHub App.
+          github_token: ${{ github.token }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
