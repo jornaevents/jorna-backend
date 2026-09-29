@@ -106,19 +106,21 @@ against a clean Postgres 16, since SQLite can't replay the chain.
 
 ## Deploying
 
-**Merging to `main` is deploying.** CI (`.github/workflows/ci.yml`) runs
-`Lint + test` and `Migration chain (Postgres)`; when both pass on a push to
-`main`, the `Deploy to Railway` job deploys that exact commit and waits for
-it to go live. Railway runs `scripts/predeploy.py` first — a guard that
-refuses to deploy if production's migration state is unknown, then
-`alembic upgrade head` against production Postgres. There's no staging.
+**Merging to `main` deploys to staging, then to production after
+approval.** CI (`.github/workflows/ci.yml`) runs `Lint + test` and
+`Migration chain (Postgres)`; when both pass on a push to `main`, `Deploy to
+staging` deploys that exact commit to the staging Railway environment, and
+`Deploy to production` waits for a reviewer to approve it in the Actions tab.
+Railway runs `scripts/predeploy.py` first in each — a guard that refuses to
+deploy if the database's migration state is unknown, then `alembic upgrade
+head`. See [`docs/STAGING.md`](docs/STAGING.md).
 
 - Branch for every change, and be especially careful with migrations.
-- A failed deploy shows as a red `Deploy to Railway` check. Re-run that job
+- A failed deploy shows as a red `Deploy to staging` or `Deploy to production` check. Re-run that job
   from the Actions tab rather than redeploying by hand, so what's live is
   always a commit CI tested.
-- The deploy needs the `RAILWAY_TOKEN` Actions secret (a Railway project
-  token). Railway's own automatic GitHub deploys are off on purpose — see
+- Each deploy job needs a `RAILWAY_TOKEN` secret (a Railway project token
+  for that environment) on its GitHub environment. Railway's own automatic GitHub deploys are off on purpose — see
   "Diagnosing a failed Railway deploy" in [`CLAUDE.md`](CLAUDE.md).
 - Production data lives in **Supabase** Postgres, reached through the
   service's `DATABASE_URL` — not the empty `Postgres` service in the same

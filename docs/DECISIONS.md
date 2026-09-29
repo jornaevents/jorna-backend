@@ -13,7 +13,12 @@ coordinated PRs across repos, and client docs describing this API can drift
 from what the code actually does (this is exactly what `docs/API.md`
 existing here, as the canonical version, is meant to reduce).
 
-## 2. SQLite for dev/test, Postgres for production — no separate staging DB
+## 2. SQLite for dev/test, Postgres for staging and production
+
+**Update 2026-09-28:** a staging Railway environment with its own Postgres
+now sits between CI and production (docs/STAGING.md), so every migration
+runs against real Postgres before production. The rest of this entry is the
+original reasoning for keeping tests on SQLite, which still holds.
 
 `app/config.py` defaults `DATABASE_URL` to a local SQLite file when unset.
 Tests (`server/tests/test_api.py`) hardcode `sqlite:///./test.db` rather than

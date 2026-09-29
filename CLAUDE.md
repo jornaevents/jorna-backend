@@ -51,12 +51,14 @@ descriptions of a contract they don't own.
 
 ## Critical rules
 
-- **`main` auto-deploys to Railway on every push, and the deploy runs Alembic
-  migrations against production Postgres first** (`railway.toml`'s
-  `preDeployCommand`, `server/alembic/`). There is no staging environment and
-  no manual approval gate. Branch for all changes; merge to `main` only when
-  the user says to deploy, and be especially careful with any migration — a
-  bad one runs against production data with no in-between check.
+- **A push to `main` deploys to staging, then to production once a reviewer
+  approves**, and each deploy runs Alembic migrations against that
+  environment's Postgres first (`railway.toml`'s `preDeployCommand`,
+  `server/alembic/`). Staging is a separate Railway environment with its own
+  empty database — see [docs/STAGING.md](docs/STAGING.md). Branch for all
+  changes; merge to `main` only when the user says to deploy, and be
+  especially careful with any migration: staging catches one that fails, not
+  one that quietly mangles production-shaped data.
 - **`preDeployCommand` is `python -m scripts.predeploy`** (`server/scripts/`),
   which runs the migration-state guard (`check_migration_state`, refuses —
   nonzero exit, deploy stops — if the DB's current `alembic_version` isn't a
@@ -90,16 +92,19 @@ descriptions of a contract they don't own.
 The production database is **Supabase Postgres**, reached only via the
 `DATABASE_URL` env var on the `Desiconnect` service — **not** the `Postgres`
 plugin sitting in the same Railway project (`superb-encouragement`), which is
-an unused/empty leftover and easy to check by mistake.
+an unused/empty leftover and easy to check by mistake. (In the `staging`
+environment it's the opposite: that environment's own `Postgres` service
+*is* staging's database.)
 
 **Deploys run from CI, not from Railway's GitHub trigger** (since
-2026-09-28). The `deploy` job in `.github/workflows/ci.yml` runs only on a
-push to `main`, only after `Lint + test` and `Migration chain (Postgres)`
-pass on that commit, and calls `.github/scripts/deploy-railway.sh`, which
-asks Railway to deploy that exact SHA from the GitHub source and waits for
-SUCCESS (the job fails if the deploy does). It needs the `RAILWAY_TOKEN`
-Actions secret — a Railway *project* token for `superb-encouragement` /
-production. Railway's own "wait for CI" trigger hung on most merges because
+2026-09-28). On a push to `main`, once `Lint + test` and `Migration chain
+(Postgres)` pass, `Deploy to staging` and then `Deploy to production` (which
+waits for approval in the `production` GitHub environment) each call
+`.github/scripts/deploy-railway.sh`, which asks Railway to deploy that exact
+SHA from the GitHub source to one environment and waits for SUCCESS (the job
+fails if the deploy does). Each job reads `RAILWAY_TOKEN` — a Railway
+*project* token scoped to that environment — from its own GitHub
+environment's secrets. Railway's own "wait for CI" trigger hung on most merges because
 its own `railway-app` check suite never leaves `queued`; its automatic
 deploys should stay **off**, or it will race or hang alongside CI. If a
 deploy job fails, re-run it from the Actions tab rather than redeploying by
@@ -170,9 +175,9 @@ venv/bin/alembic upgrade head                 # apply migrations (server/alembic
 CI (`.github/workflows/ci.yml`, job `Backend CI`) runs two jobs on every PR
 into `main`: `Lint + test` (ruff + pytest, sqlite-backed) and
 `Migration chain (Postgres)` (applies the full Alembic chain to a clean
-Postgres 16 container). On a push to `main`, a third job, `Deploy to
-Railway`, deploys the commit once both pass — see "Diagnosing a failed
-Railway deploy" above.
+Postgres 16 container). On a push to `main`, `Deploy to staging` and then
+`Deploy to production` (after approval) deploy the commit once both pass —
+see "Diagnosing a failed Railway deploy" above and docs/STAGING.md.
 
 ## Issue & work tracking
 

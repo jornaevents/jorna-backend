@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Deploy one exact commit of jorna-backend to Railway production and wait for
-# the result. Run by the `deploy` job in ci.yml once both CI jobs have passed
-# on that commit.
+# Deploy one exact commit of jorna-backend to one Railway environment and wait
+# for the result. Run by ci.yml's `deploy-staging` and `deploy-production`
+# jobs, in that order, once both CI jobs have passed on that commit.
 #
 # Why CI deploys instead of Railway's own GitHub trigger: that trigger's
 # "wait for CI" watches the commit's check suites, and Railway's own suite
@@ -11,16 +11,21 @@
 # GitHub's source keeps RAILWAY_GIT_COMMIT_SHA set, which Sentry's release
 # tag reads (app/config.py RELEASE).
 #
-# Needs RAILWAY_TOKEN: a Railway *project* token for superb-encouragement /
-# production (Project Settings → Tokens), stored as a GitHub Actions secret.
+# Needs RAILWAY_TOKEN: a Railway *project* token for superb-encouragement,
+# scoped to the environment being deployed (Project Settings → Tokens). A
+# project token only works for its own environment, so staging and production
+# each keep theirs as a secret on the matching GitHub environment.
+# RAILWAY_ENVIRONMENT_ID picks the environment; the service ID is the same in
+# every environment of a project.
 set -euo pipefail
 
 : "${RAILWAY_TOKEN:?RAILWAY_TOKEN secret is not set — see .github/scripts/deploy-railway.sh}"
 : "${COMMIT_SHA:?COMMIT_SHA is required}"
+: "${RAILWAY_ENVIRONMENT_ID:?RAILWAY_ENVIRONMENT_ID is not set — see .github/scripts/deploy-railway.sh}"
 
 API=https://backboard.railway.com/graphql/v2
 SERVICE_ID=6bf00f93-ea7e-4d01-b111-c984abf6411e      # Desiconnect
-ENVIRONMENT_ID=d4a7b9a8-3797-47af-982e-7389585c9004  # production
+ENVIRONMENT_ID=$RAILWAY_ENVIRONMENT_ID
 TIMEOUT_SECONDS=${TIMEOUT_SECONDS:-1200}
 
 gql() {
