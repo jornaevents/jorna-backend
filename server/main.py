@@ -31,12 +31,12 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
+from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, ESCROW_ENABLED, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import admin, bundles, calendar, bookings, change_requests, chatbot, checkin, conversations, events, feed, guests, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
+from app.routers import admin, bundles, calendar, bookings, change_requests, chatbot, checkin, contracts, conversations, events, feed, guest_bookings, guests, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -198,6 +198,7 @@ _CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
 # that the digest still reads as "new," long enough that a real conversation
 # reads as one email rather than several.
 _MESSAGE_DIGEST_INTERVAL_SECONDS = 20 * 60
+_PAYMENT_REMINDER_INTERVAL_SECONDS = 60 * 60  # hourly
 _CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 _CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS = 4 * 60 * 60  # every 4 hours
 
@@ -262,6 +263,26 @@ async def _periodic_checkin_reminders():
         except Exception as exc:
             logger.warning("Check-in reminder sweep failed: %s", exc)
         await asyncio.sleep(_CHECKIN_REMINDER_INTERVAL_SECONDS)
+
+
+async def _periodic_payment_reminders():
+    """Remind clients of scheduled payments coming due, and vendors of ones
+    overdue (services/payment_reminder_service.py).
+
+    Same shape as the sweeps above. Hourly is plenty for day-granular due
+    dates, and it's idempotent through the payment_reminder events each
+    reminder records on the contract's timeline.
+    """
+    from app.db.database import SessionLocal
+    from app.services.payment_reminder_service import send_payment_reminders
+
+    while True:
+        try:
+            with SessionLocal() as session:
+                send_payment_reminders(db=session)
+        except Exception as exc:
+            logger.warning("Payment reminder sweep failed: %s", exc)
+        await asyncio.sleep(_PAYMENT_REMINDER_INTERVAL_SECONDS)
 
 
 async def _periodic_message_digests():
@@ -335,16 +356,17 @@ async def lifespan(app: FastAPI):
             "SECRET_KEY environment variable is not set. "
             "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
         )
-    if not STRIPE_SECRET_KEY:
-        raise RuntimeError(
-            "STRIPE_SECRET_KEY environment variable is not set. "
-            "Add your Stripe test key (sk_test_...) to the .env file."
-        )
-    if not STRIPE_WEBHOOK_SECRET:
-        raise RuntimeError(
-            "STRIPE_WEBHOOK_SECRET environment variable is not set. "
-            "Add your Stripe webhook signing secret (whsec_...) to the .env file."
-        )
+    if ESCROW_ENABLED:
+        if not STRIPE_SECRET_KEY:
+            raise RuntimeError(
+                "STRIPE_SECRET_KEY environment variable is not set. "
+                "Add your Stripe test key (sk_test_...) to the .env file."
+            )
+        if not STRIPE_WEBHOOK_SECRET:
+            raise RuntimeError(
+                "STRIPE_WEBHOOK_SECRET environment variable is not set. "
+                "Add your Stripe webhook signing secret (whsec_...) to the .env file."
+            )
 
     if not os.getenv("OPENROUTER_API_KEY"):
         logger.warning(
@@ -386,12 +408,14 @@ async def lifespan(app: FastAPI):
     # Start the background sweeps.
     background = [
         asyncio.create_task(_periodic_token_cleanup()),
-        asyncio.create_task(_periodic_escrow_release()),
         asyncio.create_task(_periodic_checkin_reminders()),
         asyncio.create_task(_periodic_message_digests()),
+        asyncio.create_task(_periodic_payment_reminders()),
         asyncio.create_task(_periodic_calendar_channel_renewal()),
         asyncio.create_task(_periodic_calendar_busy_resync()),
     ]
+    if ESCROW_ENABLED:
+        background.append(asyncio.create_task(_periodic_escrow_release()))
 
     yield
 
@@ -434,6 +458,8 @@ app.include_router(feed.router)
 app.include_router(chatbot.router)
 app.include_router(moderation.router)
 app.include_router(admin.router)
+app.include_router(contracts.router)
+app.include_router(guest_bookings.router)
 
 app.add_middleware(
     CORSMiddleware,

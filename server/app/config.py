@@ -53,6 +53,14 @@ WEB_APP_URL: str = os.getenv("WEB_APP_URL", "https://jornaevents.com/app")
 INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 
 # ── Stripe ───────────────────────────────────────────────────────────
+# Master switch for Stripe Connect escrow (checkout, payouts, disputes, the
+# daily auto-release sweep). Defaults on so nothing changes until this is
+# explicitly set to "false" — flip it in the deploy environment as a separate
+# step from shipping the code that reads it. When off, every booking is
+# forced onto the manual Venmo/Zelle track regardless of a vendor's stored
+# payment_method (see booking_service.create_booking) and Stripe-only
+# endpoints/boot checks are skipped. See docs/DECISIONS.md #12.
+ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
 STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -70,7 +78,7 @@ SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 # for password-reset emails. Email is silently skipped when unset.
 RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 # Must be an address on a domain verified in your Resend dashboard.
-EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Desiconnect <noreply@desiconnect.com>")
+EMAIL_FROM: str = os.getenv("EMAIL_FROM", "Jorna <noreply@desiconnect.com>")
 
 # ── YouTube ───────────────────────────────────────────────────────────
 YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")

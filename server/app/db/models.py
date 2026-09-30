@@ -172,6 +172,28 @@ class Vendor(Base):
     # Auto-populated by the scraper — kept separate from user-inputted tags
     instagram_tags = Column(JSON, nullable=True)
 
+    # Contract defaults — pure seed values read once by the frontend
+    # Contracts builder when a vendor starts a new booking/contract; nothing
+    # here is consumed by backend logic beyond being returned on GET
+    # /vendors/me. Same shape/purpose as Booking.contract_terms above.
+    default_deposit_percent = Column(Integer, nullable=True)
+    default_cancellation_window_hours = Column(Integer, nullable=True)
+    default_overtime_rate_cents = Column(Integer, nullable=True)
+    default_addon_rate_cents = Column(Integer, nullable=True)
+    default_contract_terms = Column(JSON, nullable=True)
+    # "required" | "optional" | "not_applicable"
+    default_guest_count_mode = Column(String(20), nullable=True)
+
+    # Years in business — a fact about the vendor, not about any one package.
+    # Service.experience (free text, required) predates this and is kept for
+    # older clients; new packages copy this into it (see create_service).
+    years_experience = Column(Integer, nullable=True)
+
+    # How many days a sent-but-unsigned contract holds its date before the
+    # hold lapses and the date opens up again. Null means the default
+    # (contract_service.DEFAULT_HOLD_DAYS). See docs/DECISIONS.md #15.
+    contract_hold_days = Column(Integer, nullable=True)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
@@ -186,6 +208,10 @@ class Service(Base):
         CheckConstraint(
             "price_unit IS NULL OR price_unit IN ('person', 'hour', 'day', 'event', 'performer')",
             name="ck_services_price_unit",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'hidden', 'archived')",
+            name="ck_services_status",
         ),
     )
 
@@ -228,12 +254,36 @@ class Service(Base):
     require_guest_count = Column(Boolean, nullable=False, default=False)
     require_performer_count = Column(Boolean, nullable=False, default=False)
 
+    # Where this package can be seen and booked (0063):
+    #   active   — listed publicly and bookable (every package before 0063).
+    #   hidden   — off the public listing, search and bundles, but the vendor
+    #              can still put it in a contract: a private/custom package.
+    #   archived — retired. Nowhere new; bookings that already reference it
+    #              keep working. A package with bookings is archived instead
+    #              of deleted, since those bookings can't lose their row.
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    # What the price covers, so a client isn't left to guess from free text.
+    included_hours = Column(Float, nullable=True)
+    inclusions = Column(JSON, nullable=True)        # list[str]
+    # Optional extras on top of the base price: [{id, name, price, price_unit}]
+    # with price_unit one of event/person/hour. JSON rather than a table: a
+    # contract snapshots the ones it uses, so nothing joins back to these.
+    add_ons = Column(JSON, nullable=True)
+    # Per-package contract terms. Null means "use the vendor's default_*".
+    deposit_percent = Column(Integer, nullable=True)
+    cancellation_window_hours = Column(Integer, nullable=True)
+    overtime_rate_cents = Column(Integer, nullable=True)
+    # The vendor's own ordering of their packages; null sorts last.
+    sort_order = Column(Integer, nullable=True)
+
 
 class Booking(Base):
     __tablename__ = "bookings"
 
     booking_id = Column(String(36), primary_key=True, default=uuid_str)
-    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # Nullable: a guest/contract booking (see guest_name/contract_token
+    # below) has no client account at all.
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True, index=True)
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
     service_id = Column(String(36), ForeignKey("services.service_id"), nullable=False, index=True)
     time_start = Column(String(50), nullable=False)
@@ -268,7 +318,7 @@ class Booking(Base):
     # misconfigured payment_intent.succeeded webhook). See sync_booking_payment.
     checkout_session_id = Column(String(255), nullable=True)
     # unpaid | processing | paid | released | refunded | cancelled | disputed
-    #   | marked_paid | confirmed_paid
+    #   | marked_paid | confirmed_paid | deposit_marked_paid | deposit_confirmed_paid
     # 'cancelled' is distinct from 'refunded': it's a post-grace client
     # cancellation split between the platform and the vendor, not a 100%
     # refund — see cancelled_at / refund_cents / vendor_cancellation_cents.
@@ -277,7 +327,9 @@ class Booking(Base):
     # distinct from 'paid', which specifically means Stripe processed a
     # charge and Jorna is holding funds. Reusing 'paid' for a self-report
     # would wrongly enable the held-funds release UI for money Jorna never
-    # touched.
+    # touched. deposit_marked_paid/deposit_confirmed_paid are that same
+    # self-report idea applied to just the deposit — see
+    # deposit_marked_paid_at/deposit_confirmed_received_at below.
     payment_status = Column(String(50), nullable=False, default="unpaid")
     amount_cents = Column(Integer, nullable=True)       # total charged to customer
     platform_fee_cents = Column(Integer, nullable=True) # Desiconnect's cut
@@ -317,6 +369,15 @@ class Booking(Base):
     refund_cents = Column(Integer, nullable=True)
     vendor_cancellation_cents = Column(Integer, nullable=True)
 
+    # Why `status` became "rejected" — that one value covers a vendor
+    # declining outright, a vendor withdrawing after already approving, and a
+    # failed reschedule's refund, with nothing before this to tell them apart
+    # (a client-initiated cancellation is already distinguishable via
+    # cancelled_at above). Nullable, and left null on every row written
+    # before this column existed rather than guessed at after the fact — see
+    # RejectionReason in app/models/schemas.py.
+    rejected_reason = Column(String(30), nullable=True)
+
     # Snapshot of the vendor's payment_method at the moment this booking was
     # created, so a vendor changing tracks later never rewrites the terms of
     # a booking already in flight. Null for any booking created before this
@@ -330,6 +391,145 @@ class Booking(Base):
     # just what each side told the app happened, timestamped for the record.
     manual_payment_marked_at = Column(DateTime, nullable=True)
     manual_payment_confirmed_at = Column(DateTime, nullable=True)
+
+    # user_id is nullable to support a guest/contract booking: a vendor
+    # authors the whole thing (event, price, terms) for a client who has
+    # never signed up for Jorna, and that client fills in their own contact
+    # info and e-signs via a public link with no login at all. These three
+    # are that client's own words, not a User row's — see guest_name/email/
+    # phone below and contract_token for the link's credential. See
+    # docs/DECISIONS.md's guest-booking entry for what a guest booking can't
+    # do (messaging, negotiation, change requests, GPS check-in) and why.
+    guest_name = Column(String(255), nullable=True)
+    guest_email = Column(String(255), nullable=True)
+    guest_phone = Column(String(50), nullable=True)
+    # The public link's whole credential, same pattern as Guest.token
+    # (guest_service._token()) — unguessable, not derived from booking_id,
+    # only ever set on a guest/contract booking.
+    contract_token = Column(String(64), unique=True, index=True, nullable=True)
+
+    # Contract terms, snapshotted at creation from the vendor's own defaults
+    # (Vendor.default_* below) or overridden per booking — never recomputed
+    # later, same "snapshot the deal" discipline as payment_method above.
+    # Typed columns for anything ever compared/computed against; free-form
+    # prose terms (equipment/power, travel, custom clauses) live in
+    # contract_terms instead rather than one column per clause.
+    deposit_percent = Column(Integer, nullable=True)
+    deposit_amount_cents = Column(Integer, nullable=True)
+    cancellation_window_hours = Column(Integer, nullable=True)
+    overtime_rate_cents = Column(Integer, nullable=True)
+    addon_rate_cents = Column(Integer, nullable=True)
+    contract_terms = Column(JSON, nullable=True)
+
+    # Presence of signed_at *is* "signed" — no separate boolean, same
+    # pattern as manual_payment_marked_at above. Once set, the contract is
+    # immutable (see contract_service's guard).
+    signer_name = Column(String(255), nullable=True)
+    signed_at = Column(DateTime, nullable=True)
+
+    # Where a contract stands as an offer — only ever set on a contract
+    # (contract_token) booking. draft / sent / viewed / signed / declined /
+    # voided. "expired" is never stored: it's a sent or viewed contract whose
+    # hold_expires_at has passed, derived on read (contract_service.
+    # contract_state) so nothing has to sweep it. Only sent/viewed with a
+    # future hold_expires_at — or signed — commits the vendor's date (see
+    # booking_service.commits_vendor_date). docs/DECISIONS.md #15.
+    contract_status = Column(String(20), nullable=True)
+    sent_at = Column(DateTime, nullable=True)        # the most recent send
+    viewed_at = Column(DateTime, nullable=True)      # first time the client opened it
+    hold_expires_at = Column(DateTime, nullable=True)
+    declined_at = Column(DateTime, nullable=True)
+    decline_reason = Column(String(500), nullable=True)
+    voided_at = Column(DateTime, nullable=True)
+
+    # What the agreement says (0065, docs/DECISIONS.md #16), all snapshots —
+    # nothing here joins back to the package it came from, so editing or
+    # archiving a package never rewrites a contract. See contract_document.
+    #   line_items: [{id, kind: package|addon|custom, service_id, addon_id,
+    #                 name, description, unit, unit_price_cents, quantity,
+    #                 total_cents}]; amount_cents stays the grand total.
+    #   payment_schedule: [{id, label, amount_cents, due_type: on_signing|
+    #                 date|before_event, due_date, due_days, marked_paid_at,
+    #                 confirmed_at}]. Null on a contract written before
+    #                 schedules — those keep the single deposit fields.
+    #   terms_clauses: [{key, title, body}], the clause text as sent.
+    line_items = Column(JSON, nullable=True)
+    discount_cents = Column(Integer, nullable=True)
+    payment_schedule = Column(JSON, nullable=True)
+    terms_clauses = Column(JSON, nullable=True)
+    # Bumped by every edit to a contract that's already been sent, so a
+    # signature can say which version it was for (sign 409s on a mismatch).
+    revision = Column(Integer, nullable=True)
+    # Exactly what was signed, frozen at signing, and its SHA-256.
+    signed_snapshot = Column(JSON, nullable=True)
+    signed_snapshot_sha256 = Column(String(64), nullable=True)
+
+    # A second self-attestation pair, alongside manual_payment_marked_at/
+    # manual_payment_confirmed_at above — that existing pair keeps meaning
+    # "the full/remaining balance"; these two mean "the deposit
+    # specifically." A booking with deposit_percent unset skips this pair
+    # entirely and behaves exactly as before this column existed.
+    deposit_marked_paid_at = Column(DateTime, nullable=True)
+    deposit_confirmed_received_at = Column(DateTime, nullable=True)
+
+
+class ContractTemplate(Base):
+    """A vendor's reusable starting point for a contract — items, schedule
+    rule, clauses, terms. Stored per account (0065) instead of per browser.
+    The body is the builder's own shape, opaque here: nothing on the server
+    computes from a template, it only hands it back."""
+
+    __tablename__ = "contract_templates"
+
+    template_id = Column(String(36), primary_key=True, default=uuid_str)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    body = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ContractEvent(Base):
+    """One line of a contract's timeline — sent, viewed, edited, signed, a
+    payment marked or confirmed. Append-only. Contracts from before 0065 have
+    none; their timeline is derived from the booking's own timestamps
+    (contract_document.timeline)."""
+
+    __tablename__ = "contract_events"
+
+    event_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    kind = Column(String(40), nullable=False)
+    actor = Column(String(20), nullable=False)  # vendor | client | system
+    detail = Column(JSON, nullable=True)
+
+
+class Lead(Base):
+    """An informal, off-platform prospect a vendor wants to track before it
+    becomes a real Booking — no client account, no committed date/price yet.
+    A Booking requires a service_id/date/time/location; a lead usually has
+    none of that ("might be October, no venue yet"), so it isn't shoehorned
+    into Booking with everything nullable. Converting a lead creates a real
+    Booking and sets converted_booking_id — the lead row is kept afterward
+    as CRM history of how that client was won, not deleted.
+    """
+    __tablename__ = "leads"
+
+    lead_id = Column(String(36), primary_key=True, default=uuid_str)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    phone = Column(String(50), nullable=True)
+    email = Column(String(255), nullable=True)
+    # Free-text, not date_iso's strict format — a lead often doesn't have a
+    # real date yet ("fall 2026", "TBD").
+    event_date_iso = Column(String(50), nullable=True)
+    note = Column(Text, nullable=True)
+    # new | contacted | quoted | won | lost — vendor-set, purely descriptive
+    status = Column(String(20), nullable=False, default="new")
+    converted_booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class Bundle(Base):

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Negotiation, NegotiationOffer, Service, User, Vendor
+from app.models.schemas import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +141,11 @@ def start_negotiation(
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise NegotiationError(404, "Booking not found")
+    if booking.user_id is None:
+        raise NegotiationError(400, "Negotiation isn't available for a guest booking")
     if booking.status not in ("pending", "approved"):
         raise NegotiationError(400, f"Cannot negotiate on a booking with status '{booking.status}'")
-    if booking.payment_status not in ("unpaid",):
+    if booking.payment_status not in (PaymentStatus.UNPAID.value,):
         raise NegotiationError(400, "Cannot negotiate after payment has been initiated")
 
     # Negotiation is a per-service toggle the vendor sets; enforce it server-side

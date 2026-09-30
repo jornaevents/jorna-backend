@@ -484,15 +484,16 @@ def get_vendor_availability(
     #    vendor. This took every booking regardless of status, so a request the
     #    vendor had declined, or one that was refunded, went on marking them
     #    busy and hiding them from search. A pending request is a lead and
-    #    doesn't commit anybody either; LOCKED_BOOKING_STATUSES is the same set
-    #    the approval check uses.
-    from app.services.booking_service import LOCKED_BOOKING_STATUSES
+    #    doesn't commit anybody either, and nor does an unsigned contract
+    #    whose hold has lapsed; commits_vendor_date is the same rule the
+    #    approval check uses.
+    from app.services.booking_service import commits_vendor_date
 
     bookings = (
         db.query(Booking)
         .filter(
             Booking.vendor_id == vendor_id,
-            Booking.status.in_(LOCKED_BOOKING_STATUSES),
+            commits_vendor_date(),
             Booking.date_iso <= end_date[:10],
             func.coalesce(Booking.date_end, Booking.date_iso) >= start_date[:10],
         )

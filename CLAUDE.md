@@ -3,11 +3,14 @@
 Desiconnect (product name **Jorna**) is a **marketplace for planning South
 Asian events** — weddings and large celebrations. Clients assemble a team of
 vendors (venue, catering, DJ, dhol, mehndi, photography, …); vendors list
-services and get booked. Payments run through **Stripe Connect escrow**: a
-client's money is held until the event happens and both sides confirm, then
-it's released (or auto-released after a deadline — see `docs/DECISIONS.md`).
-A chatbot ("bundle builder") can assemble a full vendor bundle for a client
-conversationally.
+services and get booked. Payments can run through **Stripe Connect escrow** —
+a client's money held until the event happens and both sides confirm, then
+released (or auto-released after a deadline — see `docs/DECISIONS.md`) — but
+that whole track is currently **disabled for the MVP** behind the
+`ESCROW_ENABLED` flag (`app/config.py`, see `docs/DECISIONS.md` #12): vendors
+are paid off-platform via a Venmo handle/Zelle contact on their profile
+instead. A chatbot ("bundle builder") can assemble a full vendor bundle for a
+client conversationally.
 
 This repo (`knag9753/Desiconnect`) is the **FastAPI + SQLAlchemy** backend,
 deployed on **Railway** against **Postgres**. It is the schema/business-logic
@@ -15,10 +18,12 @@ source of truth for two sibling client repos, each with its own `CLAUDE.md`:
 
 - `knag9753/front_end_desiconnect` (`…/GitHub/front_end_desiconnect`) — native
   iOS SwiftUI client.
-- `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — Next.js
-  web app. Transferred from `dabkeyanik/jorna-website` in 2026-08;
-  `jornaevents-commits` is the account driving development on it going
-  forward (old URLs still redirect).
+- `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — both
+  Next.js web apps: `apps/client` (book.jornaevents.com, hosts) and
+  `apps/vendor` (jornaevents.com, vendors + the contract signing page).
+  The vendor app was its own repo, `jorna-vendor`, until 2026-09-28; that
+  repo is archived. Transferred from `dabkeyanik/jorna-website` in 2026-08
+  (old URLs still redirect).
 
 A booking/pricing/escrow change almost always touches this repo plus one or
 both clients. If a client repo's docs describe backend behavior differently
@@ -46,22 +51,28 @@ descriptions of a contract they don't own.
 
 ## Critical rules
 
-- **`main` auto-deploys to Railway on every push, and the deploy runs Alembic
-  migrations against production Postgres first** (`railway.toml`'s
-  `preDeployCommand = "alembic upgrade head"`, `server/alembic/`). There is no
-  staging environment and no manual approval gate. Branch for all changes;
-  merge to `main` only when the user says to deploy, and be especially
-  careful with any migration — a bad one runs against production data with no
-  in-between check.
-- **There are two alembic setups in this repo and only one is real.** The
-  root `alembic.ini` + `migrations/` directory is a stale leftover (4 old
-  migrations, last touched early in the project) — **don't use it**. The live
-  one is `server/alembic.ini` + `server/alembic/` (45 migrations, this is
-  what Railway runs). Always `cd server` before any `alembic` command.
+- **A push to `main` deploys to staging, then to production once a reviewer
+  approves**, and each deploy runs Alembic migrations against that
+  environment's Postgres first (`railway.toml`'s `preDeployCommand`,
+  `server/alembic/`). Staging is a separate Railway environment with its own
+  empty database — see [docs/STAGING.md](docs/STAGING.md). Branch for all
+  changes; merge to `main` only when the user says to deploy, and be
+  especially careful with any migration: staging catches one that fails, not
+  one that quietly mangles production-shaped data.
+- **`preDeployCommand` is `python -m scripts.predeploy`** (`server/scripts/`),
+  which runs the migration-state guard (`check_migration_state`, refuses —
+  nonzero exit, deploy stops — if the DB's current `alembic_version` isn't a
+  revision this repo's migration chain actually knows about) and then
+  `alembic upgrade head`, both in one Python process via alembic's own API
+  rather than a shelled-out `&&` chain — see "Diagnosing a failed Railway
+  deploy" below for why both of these exist.
+- `server/alembic.ini` + `server/alembic/` is the live migration setup
+  (this is what Railway runs) — always `cd server` before any `alembic`
+  command.
 - **`src/`, `index.html`, `vite.config.ts`, and `package.json` at the repo
   root are a stale Figma-Make-generated Vite prototype** ("Event Planning
   Marketplace"), not the production web app. The real, deployed web frontend
-  is the separate `jorna-website` repo (Next.js on Cloudflare Pages). Don't
+  is the separate `jorna-website` repo (two Next.js apps on Cloudflare Pages). Don't
   edit these root files expecting them to affect anything users see.
 - **Tests use a local SQLite file** (`server/tests/test_api.py` sets
   `sqlite:///./test.db`), not Postgres — no external DB or `DATABASE_URL`
@@ -81,18 +92,53 @@ descriptions of a contract they don't own.
 The production database is **Supabase Postgres**, reached only via the
 `DATABASE_URL` env var on the `Desiconnect` service — **not** the `Postgres`
 plugin sitting in the same Railway project (`superb-encouragement`), which is
-an unused/empty leftover and easy to check by mistake.
+an unused/empty leftover and easy to check by mistake. (In the `staging`
+environment it's the opposite: that environment's own `Postgres` service
+*is* staging's database.)
 
-Railway's `checkSuites` deploy-trigger flag is **on**: a push to `main` now
-waits for the `Backend CI` GitHub check suite (`Lint + test` +
-`Migration chain (Postgres)`, `.github/workflows/ci.yml`) to go green before
-Railway even attempts `alembic upgrade head` against production. The
-migration-chain CI job catches a broken `down_revision` link, a duplicate
-head, or bad migration SQL — it does **not** catch a migration that was run
-directly against prod without ever being committed (that's what caused the
-2026-08-30 incident: `alembic_version` was stamped to a revision, `0045_
-vendor_specializations`, that existed nowhere in git — fix was restamping to
-the real current head).
+**Deploys run from CI, not from Railway's GitHub trigger** (since
+2026-09-28). On a push to `main`, once `Lint + test` and `Migration chain
+(Postgres)` pass, `Deploy to staging` and then `Deploy to production` (which
+waits for approval in the `production` GitHub environment) each call
+`.github/scripts/deploy-railway.sh`, which asks Railway to deploy that exact
+SHA from the GitHub source to one environment and waits for SUCCESS (the job
+fails if the deploy does). Each job reads `RAILWAY_TOKEN` — a Railway
+*project* token scoped to that environment — from its own GitHub
+environment's secrets. Railway's own "wait for CI" trigger hung on most merges because
+its own `railway-app` check suite never leaves `queued`; its automatic
+deploys should stay **off**, or it will race or hang alongside CI. If a
+deploy job fails, re-run it from the Actions tab rather than redeploying by
+hand, so the deployed commit stays the one CI tested.
+
+The migration-chain CI job catches a broken
+`down_revision` link, a duplicate head, or bad migration SQL — it does
+**not** catch a migration that was run directly against prod without ever
+being committed (that's what caused the 2026-08-30 incident:
+`alembic_version` was stamped to a revision, `0045_vendor_specializations`,
+that existed nowhere in git — fix was restamping to the real current head).
+
+That specific gap is now covered at deploy time instead:
+`server/scripts/check_migration_state.py` runs immediately before
+`alembic upgrade head` and refuses to deploy if `alembic_version` isn't a
+revision this repo's migration chain actually knows about, so a repeat of
+the 2026-08-30 scenario fails loudly in the Railway deploy log instead of
+upgrading blind from a git-invisible starting point.
+
+**2026-09-20 incident:** at the time, `preDeployCommand` chained these as a
+single shell string — `python -m scripts.check_migration_state && alembic
+upgrade head`. A deploy went out where the guard ran and printed its
+"known revision — proceeding" line, then the container started — with
+*zero* output from `alembic upgrade head` in between, success or failure.
+The app went live five migrations behind its own schema, 500ing on every
+endpoint touching a new column, until someone ran `alembic upgrade head`
+by hand against production. Root cause was never conclusively pinned down
+(most likely Railway's preDeployCommand doesn't reliably run `&&` the way
+a real shell does), so the fix doesn't depend on understanding it:
+`server/scripts/predeploy.py` now runs the guard and `alembic upgrade
+head` (via `alembic.command.upgrade`, the same API the CLI wraps) in one
+Python process, with nothing for a shell to silently drop. `railway.toml`'s
+`preDeployCommand` is just `python -m scripts.predeploy` — don't
+reintroduce a `&&` chain here.
 
 ```bash
 railway login                                  # first time in a fresh session; opens a browser
@@ -129,8 +175,27 @@ venv/bin/alembic upgrade head                 # apply migrations (server/alembic
 CI (`.github/workflows/ci.yml`, job `Backend CI`) runs two jobs on every PR
 into `main`: `Lint + test` (ruff + pytest, sqlite-backed) and
 `Migration chain (Postgres)` (applies the full Alembic chain to a clean
-Postgres 16 container). Railway waits for both to pass before deploying —
-see "Diagnosing a failed Railway deploy" above.
+Postgres 16 container). On a push to `main`, `Deploy to staging` and then
+`Deploy to production` (after approval) deploy the commit once both pass —
+see "Diagnosing a failed Railway deploy" above and docs/STAGING.md.
+
+## Issue & work tracking
+
+Work across all three repos is tracked in one place: the org's GitHub
+Project, ["Jorna Dev Board"](https://github.com/orgs/jornaevents/projects/1)
+(Status: Backlog → Todo → In Progress → In Review → Done, linked to all
+three repos). Open issues with `.github/ISSUE_TEMPLATE/bug_report.md` or
+`feature_request.md` — both have a "cross-repo impact" section, since a
+backend change here usually needs a matching client-side issue/PR in
+`jorna-ios` and/or `jorna-website`.
+
+This repo is **not** on the board's native auto-add workflow — GitHub Free
+caps that at one source repo per project, and `jorna-website` has it
+instead. Add an issue to the board by hand: `gh project item-add 1 --owner
+jornaevents --url <issue-url>`, or via the issue's own "Projects" sidebar
+field. When doing real dev work here, keep the board current as you go
+(create/find the issue, add it, move its status) rather than leaving that
+to whoever opened the issue.
 
 ## Keeping this doc layer current
 

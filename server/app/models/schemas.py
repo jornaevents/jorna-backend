@@ -9,6 +9,60 @@ class BookingStatus(str, Enum):
     PAYMENT_CONFIRMED = "payment_confirmed"
 
 
+class RejectionReason(str, Enum):
+    """Why a booking's status became REJECTED — that one status value covers
+    several different real events, and nothing recorded which. A client-
+    initiated cancellation isn't a member here: it already has its own
+    marker (`Booking.cancelled_at`), set by the same code path that would
+    otherwise need to write CLIENT_CANCELLED here too.
+    """
+
+    VENDOR_DECLINED = "vendor_declined"
+    VENDOR_WITHDREW = "vendor_withdrew"
+    RESCHEDULE_FAILED = "reschedule_failed"
+    CLIENT_DECLINED = "client_declined"  # a contract client turned the offer down
+
+
+class PaymentStatus(str, Enum):
+    """Where a booking's money is — independent of `BookingStatus`, which
+    tracks the request itself (see docs/BOOKING_FLOW.md: "any UI showing
+    booking state needs two pills, not one").
+
+    Was a bare `Column(String(50))` with every write and comparison site
+    typing the literal by hand. Two unrelated tracks were sharing that one
+    column: the protected/Stripe track (`unpaid` -> `processing` -> `paid`
+    -> `released`, or `refunded`/`disputed`/`cancelled` along the way) and
+    the manual/self-reported track (`unpaid` -> `marked_paid` ->
+    `confirmed_paid`, used whenever `Booking.payment_method == "manual"` —
+    Jorna never touches this money, both values are just one side attesting
+    to the other). `paid` and `marked_paid` are not points on the same
+    trust spectrum even though they're both "the client says they paid" —
+    `paid` is Stripe-verified escrow, `marked_paid` is unverifiable. This
+    enum does not yet separate the two tracks into different fields; it
+    only makes the existing 9 values a closed, typed set instead of an
+    open string column.
+    """
+
+    UNPAID = "unpaid"
+    PROCESSING = "processing"
+    PAID = "paid"
+    RELEASED = "released"
+    REFUNDED = "refunded"
+    DISPUTED = "disputed"
+    CANCELLED = "cancelled"
+    MARKED_PAID = "marked_paid"
+    CONFIRMED_PAID = "confirmed_paid"
+    # A third track's own two values, alongside the manual pair above:
+    # deposit-specific self-attestation for a contract booking with
+    # Booking.deposit_percent set. Booking.manual_payment_marked_at/
+    # manual_payment_confirmed_at (and MARKED_PAID/CONFIRMED_PAID here)
+    # keep meaning "the full/remaining balance" — these two mean
+    # "the deposit specifically." See Booking.deposit_marked_paid_at/
+    # deposit_confirmed_received_at.
+    DEPOSIT_MARKED_PAID = "deposit_marked_paid"
+    DEPOSIT_CONFIRMED_PAID = "deposit_confirmed_paid"
+
+
 class PriceUnit(str, Enum):
     """What a service's rate multiplies by.
 

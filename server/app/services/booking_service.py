@@ -4,12 +4,14 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import case, or_
+from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.utils.timeutil import utc_iso
+from app.config import ESCROW_ENABLED
 from app.db.models import Booking, Bundle, Event, User, Vendor, Service
-from app.models.schemas import BookingStatus
+from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.utils.location import calculate_distance_miles
 from app.utils.notifications import notify_booking_status_change, notify_check_in
 
@@ -35,6 +37,47 @@ LOCKED_BOOKING_STATUSES = (
     BookingStatus.APPROVED.value,
     BookingStatus.PAYMENT_CONFIRMED.value,
 )
+
+# Contract states that hold a date tentatively, until hold_expires_at.
+HOLDING_CONTRACT_STATUSES = ("sent", "viewed")
+
+
+def _contract_state(booking: Booking) -> str | None:
+    # contract_service imports this module, so it can't be imported at the top.
+    from app.services.contract_service import contract_state
+    return contract_state(booking)
+
+
+def _schedule_view(booking: Booking) -> list[dict] | None:
+    from app.services.contract_document import schedule_view
+    return schedule_view(booking)
+
+
+def commits_vendor_date(now: datetime | None = None):
+    """SQL condition: this booking takes its vendor's date away from anyone else.
+
+    A locked status is the whole answer for an ordinary booking. A contract is
+    also created approved, but it only commits the vendor once it's out with
+    the client: signed holds the date for good, sent or viewed holds it
+    tentatively until hold_expires_at, and a draft or a lapsed offer holds
+    nothing. Before this, an unsigned contract blocked its date until someone
+    remembered to void it. docs/DECISIONS.md #15.
+
+    Every availability question — double-booking, the calendar, the bundle
+    builder — asks through this, so they can't disagree about a held date.
+    """
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    return and_(
+        Booking.status.in_(LOCKED_BOOKING_STATUSES),
+        or_(
+            Booking.contract_token.is_(None),
+            Booking.signed_at.isnot(None),
+            and_(
+                Booking.contract_status.in_(HOLDING_CONTRACT_STATUSES),
+                Booking.hold_expires_at > now,
+            ),
+        ),
+    )
 
 
 def _minutes(hhmm: str | None) -> int | None:
@@ -107,8 +150,10 @@ def vendor_has_conflicting_booking(
     time_end: str | None = None,
     exclude_booking_id: str | None = None,
 ) -> Booking | None:
-    """Return an existing locked (approved/paid) booking for *vendor_id* that
-    clashes with ``[date_iso, date_end]``, or ``None`` if the vendor is free.
+    """Return an existing booking that commits *vendor_id*'s date (see
+    commits_vendor_date — approved/paid, or a contract that's signed or still
+    holding) and clashes with ``[date_iso, date_end]``, or ``None`` if the
+    vendor is free.
 
     Dates decide it, except when both bookings are single-day and fall on the
     same day — then the hours do. A photographer who shoots a morning ceremony
@@ -142,7 +187,7 @@ def vendor_has_conflicting_booking(
     )
     query = db.query(Booking).filter(
         Booking.vendor_id == vendor_id,
-        Booking.status.in_(LOCKED_BOOKING_STATUSES),
+        commits_vendor_date(),
         Booking.date_iso <= req_end,
         existing_end >= req_start,
     )
@@ -286,7 +331,19 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # the number that's still sitting there unanswered.
         "negotiation_awaiting_role": _negotiation_awaiting_role(booking, db),
         "status": booking.status,
+        # Which of the three real events "rejected" covers — null on a row
+        # written before this field existed, or on a client-initiated
+        # cancellation (see cancelled_at instead). See RejectionReason.
+        "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
+        # The single source of truth for "can anything further happen to this
+        # booking" — was being re-derived independently on the frontend
+        # (planning.ts's isDeadBooking) from a hand-mirrored copy of these
+        # same two constants. Compute it once, here, instead.
+        "is_dead": (
+            booking.status in _DEAD_BOOKING_STATUSES
+            or (booking.payment_status or PaymentStatus.UNPAID.value) in _DEAD_VENUE_PAYMENT_STATUSES
+        ),
         # "stripe" (protected) or "manual" (paid directly, Venmo/Zelle) —
         # snapshotted at send time. Null predates this feature; treated as
         # "stripe" everywhere it's read.
@@ -313,6 +370,34 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "vendor_open_to_location_negotiation": vendor.open_to_location_negotiation if vendor else False,
         "client_open_to_price_negotiation": client.open_to_price_negotiation if client else False,
         "client_flexible_on_location": client.flexible_on_location if client else False,
+        # Guest/contract booking fields (docs/DECISIONS.md #13) — present on
+        # every booking so a vendor's general list/pipeline view can derive
+        # stage without a separate per-booking fetch. All null on an
+        # ordinary authenticated booking.
+        "is_guest_booking": booking.user_id is None,
+        "guest_name": booking.guest_name,
+        "guest_email": booking.guest_email,
+        "guest_phone": booking.guest_phone,
+        "contract_token": booking.contract_token,
+        "deposit_percent": booking.deposit_percent,
+        "deposit_amount_cents": booking.deposit_amount_cents,
+        "cancellation_window_hours": booking.cancellation_window_hours,
+        "overtime_rate_cents": booking.overtime_rate_cents,
+        "addon_rate_cents": booking.addon_rate_cents,
+        "contract_terms": booking.contract_terms,
+        "signer_name": booking.signer_name,
+        "signed_at": utc_iso(booking.signed_at),
+        # Where the contract stands as an offer, "expired" derived — see
+        # contract_service.contract_state. Null on a non-contract booking.
+        "contract_status": _contract_state(booking),
+        "hold_expires_at": utc_iso(booking.hold_expires_at),
+        "viewed_at": utc_iso(booking.viewed_at),
+        "declined_at": utc_iso(booking.declined_at),
+        "decline_reason": booking.decline_reason,
+        # Installments, when the contract has a schedule (contract_document).
+        "payment_schedule": _schedule_view(booking),
+        "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
+        "deposit_confirmed_received_at": utc_iso(booking.deposit_confirmed_received_at),
     }
 
 
@@ -320,7 +405,7 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
 
 # A venue booking stops anchoring the event once it's in one of these states.
 _DEAD_BOOKING_STATUSES = ("rejected", "cancelled")
-_DEAD_VENUE_PAYMENT_STATUSES = ("refunded",)
+_DEAD_VENUE_PAYMENT_STATUSES = (PaymentStatus.REFUNDED.value,)
 
 
 def _live_venue_booking(
@@ -360,7 +445,7 @@ def _live_venue_booking(
             and s.venue_latitude is not None
             and s.venue_longitude is not None
             and b.status not in _DEAD_BOOKING_STATUSES
-            and (b.payment_status or "unpaid") not in _DEAD_VENUE_PAYMENT_STATUSES
+            and (b.payment_status or PaymentStatus.UNPAID.value) not in _DEAD_VENUE_PAYMENT_STATUSES
         ):
             return b, s
     return None
@@ -719,6 +804,10 @@ def create_booking(
     service = db.query(Service).filter(Service.service_id == service_id).first()
     if not service:
         raise BookingError(404, "Service not found")
+    # Hidden and archived packages aren't bookable from the marketplace — a
+    # hidden one is the vendor's private package, offered only by contract.
+    if (service.status or "active") != "active":
+        raise BookingError(409, "This package isn't available to book right now.")
 
     # Same guard as update_booking — see its comment. A booking created
     # straight from a service page (book/page.tsx) supplies date_iso up
@@ -806,8 +895,12 @@ def create_booking(
 
     # Snapshot the vendor's payment track now, not read live later — a vendor
     # switching tracks after this booking exists shouldn't change the deal
-    # a client already agreed to.
+    # a client already agreed to. With escrow disabled, force manual
+    # regardless of what's stored on the vendor row (see docs/DECISIONS.md
+    # #12) — this is what actually keeps new bookings off Stripe, independent
+    # of whether every vendor row has been updated yet.
     vendor = db.query(Vendor).filter(Vendor.vendor_id == service.vendor_id).first()
+    booking_payment_method = "manual" if not ESCROW_ENABLED else (vendor.payment_method if vendor else None)
 
     booking = Booking(
         booking_id=str(uuid.uuid4()),
@@ -826,7 +919,7 @@ def create_booking(
         venue_longitude=venue_longitude,
         status=BookingStatus.PENDING.value,
         bundle_id=bundle_id,
-        payment_method=vendor.payment_method if vendor else None,
+        payment_method=booking_payment_method,
     )
     # Estimate the total = rate x quantity from everything the booking carries.
     # When the quantity is still unknown (e.g. a per-person service with no guest
@@ -914,6 +1007,73 @@ def create_booking(
     }
 
 
+def check_can_accept(booking: Booking, db: Session) -> None:
+    """Everything that stops a vendor accepting a request, shared by a plain
+    accept (update_booking_status) and accepting with a written proposal
+    (contract_service.propose_from_request). Raises BookingError."""
+    if booking.status not in (BookingStatus.PENDING.value, BookingStatus.NEGOTIATION_ONGOING.value):
+        raise BookingError(400, f"Cannot change status from {booking.status} to approved")
+    parent = (
+        db.query(Bundle).filter(Bundle.bundle_id == booking.bundle_id).first()
+        if booking.bundle_id
+        else None
+    )
+    if parent is not None and parent.status == "draft":
+        raise BookingError(
+            400,
+            "This request hasn't been sent yet — the client is still putting "
+            "their plan together. You'll be asked when they send it.",
+        )
+
+    # A vendor can't approve two bookings that collide. Checked only on approval
+    # (a pending request is just a lead); checkout re-checks to catch the race
+    # between approval and payment.
+    conflict = vendor_has_conflicting_booking(
+        vendor_id=booking.vendor_id,
+        date_iso=booking.date_iso,
+        date_end=booking.date_end,
+        time_start=booking.time_start,
+        time_end=booking.time_end,
+        db=db,
+        exclude_booking_id=booking.booking_id,
+    )
+    if conflict:
+        # Name the hours that clash. "You're busy that day" is answerable
+        # with "no I'm not, that one finishes at two" — and now it might be
+        # right, so the refusal has to say which booking and when.
+        when = (
+            f" ({conflict.time_start}–{conflict.time_end})"
+            if conflict.time_start and conflict.time_end
+            else ""
+        )
+        raise BookingError(
+            409,
+            f"That clashes with a booking you've already confirmed{when}. "
+            "You can take another job the same day as long as the hours "
+            "don't overlap.",
+        )
+
+    # A vendor can't lock in the listed price while a counter-offer is still
+    # on the table — clicking plain Accept would silently discard an open
+    # Negotiation row with zero warning. Keyed off the Negotiation row itself
+    # (not booking.status): that row is the thing that would get thrown away.
+    from app.db.models import Negotiation
+
+    open_negotiation = (
+        db.query(Negotiation)
+        .filter(Negotiation.booking_id == booking.booking_id, Negotiation.status == "open")
+        .first()
+    )
+    if open_negotiation:
+        raise BookingError(
+            409,
+            "There's an open price offer on this booking. Accept, "
+            "counter, or decline it in the negotiation first — "
+            "approving here would lock in the original price and "
+            "throw away the offer.",
+        )
+
+
 def update_booking_status(
     *,
     booking_id: str,
@@ -969,7 +1129,7 @@ def update_booking_status(
         if cancelling:
             from app.services.bundle_service import _money_has_moved
 
-            if booking.payment_status == "paid":
+            if booking.payment_status == PaymentStatus.PAID.value:
                 _refund_client_on_cancel = True
             elif _money_has_moved(booking):
                 raise BookingError(
@@ -998,60 +1158,22 @@ def update_booking_status(
                 "their plan together. You'll be asked when they send it.",
             )
 
-    # A vendor can't approve two bookings that collide. Checked only on approval
-    # (a pending request is just a lead); checkout re-checks to catch the race
-    # between approval and payment.
     if status_str == BookingStatus.APPROVED.value:
-        conflict = vendor_has_conflicting_booking(
-            vendor_id=booking.vendor_id,
-            date_iso=booking.date_iso,
-            date_end=booking.date_end,
-            time_start=booking.time_start,
-            time_end=booking.time_end,
-            db=db,
-            exclude_booking_id=booking.booking_id,
-        )
-        if conflict:
-            # Name the hours that clash. "You're busy that day" is answerable
-            # with "no I'm not, that one finishes at two" — and now it might be
-            # right, so the refusal has to say which booking and when.
-            when = (
-                f" ({conflict.time_start}–{conflict.time_end})"
-                if conflict.time_start and conflict.time_end
-                else ""
-            )
-            raise BookingError(
-                409,
-                f"That clashes with a booking you've already confirmed{when}. "
-                "You can take another job the same day as long as the hours "
-                "don't overlap.",
-            )
+        check_can_accept(booking, db)
 
-    # A vendor can't lock in the listed price while a counter-offer is still
-    # on the table — that's this exact bug: clicking plain Accept here would
-    # silently discard an open Negotiation row with zero warning. Keyed off
-    # the Negotiation row itself (not booking.status) since that row is the
-    # thing that actually gets thrown away, and it's the source of truth
-    # regardless of how booking.status happens to read.
-    if status_str == BookingStatus.APPROVED.value:
-        from app.db.models import Negotiation
+    # A signed-in client's request becomes a proposal they sign, not a
+    # booking that's final the moment the vendor says yes (DECISIONS #17).
+    # A contract the vendor wrote themselves already is one.
+    proposal_vendor = None
+    if status_str == BookingStatus.APPROVED.value and booking.user_id is not None and not booking.contract_token:
+        from app.services.contract_service import ContractError, attach_proposal
 
-        open_negotiation = (
-            db.query(Negotiation)
-            .filter(
-                Negotiation.booking_id == booking.booking_id,
-                Negotiation.status == "open",
-            )
-            .first()
-        )
-        if open_negotiation:
-            raise BookingError(
-                409,
-                "There's an open price offer on this booking. Accept, "
-                "counter, or decline it in the negotiation first — "
-                "approving here would lock in the original price and "
-                "throw away the offer.",
-            )
+        try:
+            attach_proposal(booking, vendor, db)
+        except ContractError as e:
+            db.rollback()
+            raise BookingError(e.status_code, e.detail)
+        proposal_vendor = vendor
 
     booking.status = status_str
     if status_str == BookingStatus.APPROVED.value:
@@ -1059,6 +1181,22 @@ def update_booking_status(
     # A rejected venue no longer anchors the event — refresh so its cached coords
     # clear (check-in re-derives regardless, but keep the denormalized copies honest).
     if status_str == BookingStatus.REJECTED.value:
+        # `cancelling` (above) already distinguishes a vendor backing out of
+        # an approved booking from a plain decline — the only two ways this
+        # function itself produces REJECTED.
+        booking.rejected_reason = (
+            RejectionReason.VENDOR_WITHDREW.value
+            if cancelling
+            else RejectionReason.VENDOR_DECLINED.value
+        )
+        # An accepted request's proposal goes with it, so its link says
+        # withdrawn rather than still waiting for a signature.
+        if booking.contract_token and booking.signed_at is None:
+            from app.services import contract_document as doc
+
+            booking.contract_status = "voided"
+            booking.voided_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            doc.record(db, booking, "voided", "vendor")
         # Nothing is waiting on a booking that isn't happening. A live date
         # change would otherwise sit on the client's board forever, waiting on a
         # vendor who has gone — and offer them a refund on a booking that was
@@ -1076,6 +1214,11 @@ def update_booking_status(
         sync_event_venue(booking.bundle_id, db)
     db.commit()
     db.refresh(booking)
+    if proposal_vendor is not None:
+        from app.services.contract_service import send_proposal_email
+
+        send_proposal_email(booking, proposal_vendor, db)
+        db.refresh(booking)
 
     # A vendor pulling out of an accepted, paid booking always owes the
     # client every cent back — no ramp, unlike a client-initiated
@@ -1092,7 +1235,7 @@ def update_booking_status(
                 payment_intent=booking.payment_intent_id,
                 reason="requested_by_customer",
             )
-            booking.payment_status = "refunded"
+            booking.payment_status = PaymentStatus.REFUNDED.value
             db.commit()
             db.refresh(booking)
         except Exception as exc:  # noqa: BLE001 — including stripe.StripeError
@@ -1115,7 +1258,7 @@ def update_booking_status(
     # vendor directly via mark_booking_paid/confirm_payment_received instead.
     # payment_method is None for anything created before that track existed,
     # which is always Stripe.
-    if status_str == BookingStatus.APPROVED.value and booking.payment_method != "manual":
+    if ESCROW_ENABLED and status_str == BookingStatus.APPROVED.value and booking.payment_method != "manual":
         try:
             from app.services.stripe_service import CardChargeUnavailable, charge_saved_card
 
@@ -1508,7 +1651,7 @@ def check_in(
             # Both parties in, and money to move. The payment check moved here
             # from the line above: it belongs to releasing funds, not to whether
             # somebody turned up.
-            if booking.customer_confirmed_at and booking.payment_status == "paid":
+            if booking.customer_confirmed_at and booking.payment_status == PaymentStatus.PAID.value:
                 # Best-effort: a Stripe failure must not fail the check-in the
                 # vendor just made.
                 try:

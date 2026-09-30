@@ -72,6 +72,19 @@ def get_user(*, user_id: str, db: Session) -> dict:
     return _user_dict(user)
 
 
+def _contract_still_ahead(booking: Booking) -> bool:
+    """Signed, and its last day not yet over at the venue — the same "over"
+    escrow release uses (booking_service.event_confirmable_date). A contract
+    with no date yet is still ahead: nothing says it's done."""
+    from app.services.booking_service import _parse_date, venue_today
+    from app.services.bundle_service import _has_signed_contract
+
+    if not _has_signed_contract(booking):
+        return False
+    end = _parse_date(booking.date_end) or _parse_date(booking.date_iso)
+    return end is None or venue_today(booking) <= end
+
+
 def delete_user(*, user_id: str, db: Session) -> None:
     """Permanently delete a user and everything that hangs off them.
 
@@ -124,6 +137,24 @@ def delete_user(*, user_id: str, db: Session) -> None:
             "lose the record of where it went. Refund or resolve "
             f"{'that booking' if len(held) == 1 else 'those bookings'} first, then "
             "delete your account.",
+        )
+
+    # A signed contract is the record of what both sides agreed — its frozen
+    # copy, fingerprint and timeline hang off the booking row, and the other
+    # party is owed it as much as this one (DECISIONS.md #19). Until its event
+    # is over, deleting the account would take it from both of them mid-
+    # agreement; after that, the account can go.
+    ahead = [b for b in db.query(Booking).filter(or_(*sides)).all() if _contract_still_ahead(b)]
+    if ahead:
+        many = len(ahead) > 1
+        raise UserError(
+            400,
+            f"You have {len(ahead)} signed contract{'s' if many else ''} for "
+            f"{'events that haven' if many else 'an event that hasn'}'t happened yet, so your "
+            "account can't be deleted until "
+            f"{'they are' if many else 'it is'} over — "
+            f"{'they are' if many else 'it is'} the record of what you and "
+            f"{'the other parties' if many else 'the other party'} agreed.",
         )
 
     service_ids = (

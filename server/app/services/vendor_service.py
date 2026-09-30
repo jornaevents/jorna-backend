@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from app.config import ESCROW_ENABLED
 from app.db.models import Vendor, Service, User, Tag, VendorAvailability, vendor_tags
 from app.utils.location import calculate_distance_miles
 
@@ -45,6 +46,7 @@ def create_vendor(
     category: str | None = None,
     subcategory: str | None = None,
     specializations: list[dict] | None = None,
+    years_experience: int | None = None,
     db: Session,
 ) -> dict:
     """Create a vendor profile for *user_id*. Raises 400 if one already exists.
@@ -67,6 +69,7 @@ def create_vendor(
         category=category or "other",
         subcategory=subcategory,
         specializations=specializations,
+        years_experience=years_experience,
         rating=0.0,
         num_events=0,
     )
@@ -80,6 +83,7 @@ def create_vendor(
         "category": vendor.category,
         "subcategory": vendor.subcategory,
         "specializations": vendor.specializations or [],
+        "years_experience": vendor.years_experience,
         "rating": vendor.rating,
         "num_events": vendor.num_events,
         "tags": [],
@@ -125,6 +129,13 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         # venmo_handle/zelle_contact stay private until an actual booking
         # exists (see bundle_service._booking_summary).
         "payment_method": v.payment_method,
+        # Only meaningful when payment_method is "stripe": a client can still
+        # send this vendor a request while it's False, but checkout will
+        # refuse the charge until Stripe Connect onboarding finishes (see
+        # stripe_service's stripe_onboarding_complete checks) — surfaced here
+        # so that failure doesn't land only at the payment step, after a
+        # client has already gotten the vendor to approve a request.
+        "stripe_ready": v.stripe_onboarding_complete,
     }
 
 
@@ -162,6 +173,14 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "payment_method": v.payment_method,
         "venmo_handle": v.venmo_handle,
         "zelle_contact": v.zelle_contact,
+        "default_deposit_percent": v.default_deposit_percent,
+        "default_cancellation_window_hours": v.default_cancellation_window_hours,
+        "default_overtime_rate_cents": v.default_overtime_rate_cents,
+        "default_addon_rate_cents": v.default_addon_rate_cents,
+        "default_contract_terms": v.default_contract_terms,
+        "default_guest_count_mode": v.default_guest_count_mode,
+        "years_experience": v.years_experience,
+        "contract_hold_days": v.contract_hold_days,
     }
 
 
@@ -211,11 +230,32 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
     if "zelle_contact" in update_data:
         update_data["zelle_contact"] = (update_data["zelle_contact"] or "").strip() or None
 
+    # Escrow disabled → manual is the only payment track, and it needs
+    # somewhere for a client to actually send money. Only enforced when this
+    # update actually touches a payment field — an unrelated save (e.g. bio
+    # during an earlier onboarding step, before payment info is ever set)
+    # must not be blocked by a requirement it isn't trying to satisfy yet.
+    # Checked against the resulting state, not just this request's fields, so
+    # e.g. clearing venmo_handle with no zelle_contact on file still errors.
+    # See docs/DECISIONS.md #12.
+    touches_payment_fields = bool({"payment_method", "venmo_handle", "zelle_contact"} & update_data.keys())
+    if not ESCROW_ENABLED and touches_payment_fields:
+        if update_data.get("payment_method", "manual") != "manual":
+            raise VendorError(400, "payment_method must be 'manual' — Stripe escrow is currently disabled")
+        resulting_venmo = update_data.get("venmo_handle", vendor.venmo_handle)
+        resulting_zelle = update_data.get("zelle_contact", vendor.zelle_contact)
+        if not resulting_venmo and not resulting_zelle:
+            raise VendorError(400, "Add a Venmo handle or Zelle contact so clients can pay you")
+
     for field, value in update_data.items():
         if field in ["bio", "category", "subcategory", "specializations", "travel_radius_miles",
                      "open_to_long_distance", "open_to_price_negotiation",
                      "open_to_location_negotiation", "instagram_username",
-                     "payment_method", "venmo_handle", "zelle_contact"]:
+                     "payment_method", "venmo_handle", "zelle_contact",
+                     "default_deposit_percent", "default_cancellation_window_hours",
+                     "default_overtime_rate_cents", "default_addon_rate_cents",
+                     "default_contract_terms", "default_guest_count_mode",
+                     "years_experience", "contract_hold_days"]:
             setattr(vendor, field, value)
     
     db.commit()
@@ -250,7 +290,11 @@ def list_vendors(
             or_(
                 Vendor.category == category,
                 db.query(Service)
-                .filter(Service.vendor_id == Vendor.vendor_id, Service.category == category)
+                .filter(
+                    Service.vendor_id == Vendor.vendor_id,
+                    Service.category == category,
+                    Service.status == "active",
+                )
                 .exists(),
             )
         )
@@ -262,6 +306,7 @@ def list_vendors(
                 .filter(
                     Service.vendor_id == Vendor.vendor_id,
                     Service.subcategory == subcategory,
+                    Service.status == "active",
                 )
                 .exists(),
             )
@@ -290,6 +335,7 @@ def list_vendors(
             "pfp_url": u.pfp_url,
             "tags": [t.name for t in v.tags],
             "payment_method": v.payment_method,
+            "stripe_ready": v.stripe_onboarding_complete,
         }
         for v, u in rows
     ]
@@ -330,6 +376,8 @@ def search_vendors(
         db.query(Vendor, Service, User)
         .join(Service, Vendor.vendor_id == Service.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
+        # A search row is a bookable listing; hidden/archived packages aren't.
+        .filter(Service.status == "active")
     )
     if service_name:
         query = query.filter(Service.name.ilike(f"%{service_name}%"))
@@ -449,6 +497,7 @@ def search_vendors(
                 "open_to_long_distance": vendor.open_to_long_distance,
                 "tags": [t.name for t in vendor.tags],
                 "payment_method": vendor.payment_method,
+                "stripe_ready": vendor.stripe_onboarding_complete,
             }
         )
 

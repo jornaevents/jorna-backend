@@ -27,19 +27,55 @@ net under that channel (every 4 hours).
 - Production: Postgres (Railway sets `DATABASE_URL`; `app/config.py`
   rewrites the `postgres://` scheme Railway provides to `postgresql://`,
   since SQLAlchemy 2.x dropped the old alias).
-- **Migrations live in `server/alembic/`** (45 revisions) and run via
-  `railway.toml`'s `preDeployCommand = "alembic upgrade head"` — i.e.
-  **every push to `main` applies pending migrations to production Postgres
-  before the new app version deploys.** There is no separate staging
-  database this runs against first. See `CLAUDE.md` for the decoy root
-  `alembic.ini`/`migrations/` to avoid.
+- **Migrations live in `server/alembic/`** (62 revisions) and run via
+  `railway.toml`'s `preDeployCommand = "python -m scripts.predeploy"`
+  (`server/scripts/predeploy.py`, which runs the migration-state guard
+  then `alembic upgrade head` in one process) — i.e. **every push to
+  `main` applies pending migrations to staging Postgres, then — after a
+  reviewer approves — to production Postgres, before each new app version
+  deploys** (docs/STAGING.md). See `CLAUDE.md`'s "Diagnosing a failed Railway deploy" for
+  the decoy root `alembic.ini`/`migrations/` to avoid, and for why this
+  isn't a bare `alembic upgrade head`.
 - New migration: `cd server && venv/bin/alembic revision --autogenerate -m "..."`,
   then review the generated file before committing — autogenerate misses
   some changes (data migrations, some constraint changes).
 
-## Payments & escrow (Stripe Connect)
+## Payments & escrow (Stripe Connect) — currently disabled for the MVP
 
-All in `app/services/stripe_service.py`. Shape of the flow:
+`app.config.ESCROW_ENABLED` (default `true`) gates the whole flow described
+below. For the current MVP it's set `false` in the deploy environment: every
+new booking is forced onto the manual Venmo/Zelle track
+(`booking_service.create_booking`), a vendor can't select Stripe or leave
+both contact fields empty (`vendor_service.update_vendor`), and the
+Stripe-only endpoints below 403 instead of reaching Stripe
+(`routers/payments.py`'s `_require_escrow`). Nothing here was deleted — see
+`docs/DECISIONS.md` #12 for exactly what's gated vs. left always-on
+(`cancel_booking`, `cancellation-preview`, `earnings`, `mark-paid`,
+`confirm-received` already serve the manual track directly and aren't
+touched by the flag). The rest of this section describes the flow as it
+exists in code, live again if `ESCROW_ENABLED` is flipped back on.
+
+**Three independent status fields, not one.** Easy to conflate since they all
+answer some version of "how far along is this":
+
+- `Booking.status` (`BookingStatus` enum, `app/models/schemas.py`) — the
+  *request*: `pending` → (`negotiation_ongoing` ⇄ `pending`) → `approved` →
+  `payment_confirmed`, or `rejected` at various points. No separate
+  `cancelled` value — a vendor's decline and a vendor's post-approval
+  withdrawal both land on `rejected`.
+- `Booking.payment_status` (`PaymentStatus` enum, same file) — the *money*,
+  tracked separately: `unpaid` → `processing` → `paid` → `released`, or
+  `refunded`/`disputed`/`cancelled` along the way, on the protected Stripe
+  track; `unpaid` → `marked_paid` → `confirmed_paid` on the manual
+  self-reported track (`Booking.payment_method == "manual"`). A booking is
+  routinely `payment_confirmed` + `paid` at the same time — that's normal,
+  not a conflict; a UI showing booking state needs two pills, not one.
+- `Bundle.status` (plain string, `app/db/models.py`) — the *plan* as a
+  whole (`draft`/`active`/`completed`/`cancelled`), independent of both of
+  the above.
+
+Booking-level fields are what the rest of this section is about. Shape of
+the flow:
 
 1. A vendor completes Stripe Connect onboarding (`create_vendor_onboarding_url`
    → `get_vendor_stripe_status` polls completion) before they can be paid.
@@ -70,6 +106,76 @@ All in `app/services/stripe_service.py`. Shape of the flow:
 
 `StripeWebhookEvent` (in `db/models.py`) records processed webhook event IDs
 for idempotency — Stripe can and does redeliver.
+
+## Contracts — vendor-authored, no-login guest bookings
+
+For the MVP, a vendor can author a whole booking themselves ("Contracts")
+for a client who's never used Jorna and never logs in — see
+`docs/DECISIONS.md` #13 for the full rationale and accepted risk tradeoffs.
+
+- `routers/contracts.py` + `services/contract_service.py` (vendor-
+  authenticated): `POST /contracts` creates a `Booking` with `user_id=None`,
+  `status=APPROVED`, and a fresh `contract_token`; `GET`/`PATCH
+  /contracts/{booking_id}` view/edit it (PATCH 400s once `signed_at` is
+  set — a signed agreement is immutable). `GET /vendors/me/clients` groups
+  the vendor's own bookings by `user_id` when present, else by
+  `(guest_name, guest_phone)`. `Lead` CRUD (`/leads`) is a separate,
+  minimal table for informal off-platform prospects that aren't a
+  committed booking yet; `POST /leads/{id}/convert` turns one into a real
+  contract (the lead only fills contact fields the vendor left blank).
+  Create/convert/PATCH also take optional `guest_name`/`guest_email`/
+  `guest_phone`/`location`, and reject a past date or an end before the
+  start; a PATCH that moves the schedule re-runs the double-booking guard.
+  `POST /contracts/{booking_id}/void` withdraws an **unsigned** contract
+  (`status=REJECTED`, `rejected_reason=VENDOR_WITHDREW`), freeing its date —
+  before this, an abandoned link held its date forever. Signed contracts
+  can't be voided.
+- **Offer lifecycle (0064, `docs/DECISIONS.md` #15).** `Booking.
+  contract_status` is draft → sent → viewed → signed, or declined/voided;
+  "expired" is derived on read (`contract_service.contract_state`), never
+  stored. Create sends by default (`draft: true` saves without sending);
+  `POST /contracts/{id}/send` sends a draft or resends a lapsed offer,
+  restarting the hold. A sent/viewed contract holds its date until
+  `hold_expires_at` (vendor's `contract_hold_days`, default 7, or a
+  per-send `hold_days`); signed holds it for good. The one rule for "does
+  this booking take the vendor's date" is `booking_service.
+  commits_vendor_date()` — double-booking, calendar availability and the
+  bundle builder all use it.
+- **Proposals (0065, `docs/DECISIONS.md` #16).** `services/contract_document.
+  py` owns what a contract says: snapshotted `line_items` (+ `discount_cents`;
+  `amount_cents` is the total), a `payment_schedule` mirrored into the
+  single-deposit fields for older readers, `terms_clauses`, `revision`, and
+  the `signed_snapshot` + SHA-256 frozen at signing. `GET /contracts/{id}`
+  includes a `timeline` (`contract_events`). Also: `POST /contracts/{id}/
+  payments/{installment_id}/confirm`, `POST /guest-bookings/{token}/
+  payments/{installment_id}/mark-paid`, `/contract-templates` CRUD, and
+  `email_client` on create/send.
+- `routers/guest_bookings.py` + `services/guest_booking_service.py`
+  (fully public, no `Depends(get_current_user)` anywhere): the client's
+  side, reached only by `contract_token` — read, fill in contact/venue
+  details, e-sign (`POST /guest-bookings/{token}/sign`, which also emails a
+  copy of the agreement via `email_service.send_email`), and self-report
+  paying the deposit/balance. Signing and each "I've paid" also notify the
+  vendor (push + email, `utils/notifications.notify_vendor_contract_event`).
+  A voided or declined contract's link still reads (with `status`), but
+  every write returns 410; so does signing an expired offer. A draft's link
+  404s. The first read marks the contract viewed (`?preview=true` — the
+  vendor's "View as client" — doesn't). `POST /guest-bookings/{token}/
+  decline` lets the client turn it down (REJECTED + `CLIENT_DECLINED`),
+  freeing the date and notifying the vendor. Signing re-runs the
+  double-booking guard. Rate-limited more aggressively than most of
+  this app (`slowapi`, same `limiter` instance as everywhere else) since
+  there's no account behind any of these calls to throttle by identity.
+- Deposit self-attestation (`deposit_marked_paid_at`/
+  `deposit_confirmed_received_at`, `stripe_service.mark_deposit_paid`/
+  `confirm_deposit_received`) is a second pair alongside the pre-existing
+  full-balance one (`manual_payment_marked_at`/`confirmed_at`) — a booking
+  with no `deposit_percent` set never touches it.
+- A guest booking (`Booking.user_id IS NULL`) does not support messaging,
+  negotiation, change requests, or client-side GPS check-in — all of those
+  assume two authenticated `User` rows. See `docs/DECISIONS.md` #13 for
+  exactly which existing code paths needed an explicit guard for this
+  versus already failing closed on their own.
 
 ## Observability (Sentry)
 

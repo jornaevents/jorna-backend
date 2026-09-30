@@ -479,6 +479,8 @@ def _candidate_service_rows(
         # bundle can be one-click confirmed with no per-service price step. A user
         # who wants a negotiable service adds it manually via the bundle editor.
         .filter(Service.negotiable == False)  # noqa: E712 (SQL boolean compare)
+        # Only packages a client can actually book (hidden/archived excluded).
+        .filter(Service.status == "active")
     )
     if db_subcategory:
         q = q.filter(Service.subcategory == db_subcategory)
@@ -982,12 +984,12 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
     # a vendor from every other client's builder; worse, this builder writes
     # pending bookings for every option it generates, so an abandoned draft went
     # on hiding its vendors from everyone, indefinitely.
-    from app.services.booking_service import LOCKED_BOOKING_STATUSES, booking_blocks
+    from app.services.booking_service import booking_blocks, commits_vendor_date
 
     rows = (
         db.query(Booking)
         .filter(
-            Booking.status.in_(LOCKED_BOOKING_STATUSES),
+            commits_vendor_date(),
             Booking.date_iso <= req_end,
             booking_end >= req_start,
         )

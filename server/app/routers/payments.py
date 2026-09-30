@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.limiter import limiter
 from sqlalchemy.orm import Session
 
-from app.config import WEB_APP_URL
+from app.config import ESCROW_ENABLED, WEB_APP_URL
 from app.db.database import get_db
 from app.dependencies import get_current_user, get_current_admin
 from app.services.stripe_service import (
@@ -23,6 +23,8 @@ from app.services.stripe_service import (
     cancellation_preview,
     mark_booking_paid,
     confirm_payment_received,
+    mark_deposit_paid,
+    confirm_deposit_received,
     raise_dispute,
     resolve_dispute,
     create_card_setup_session,
@@ -32,6 +34,16 @@ from app.services.stripe_service import (
 )
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+
+
+def _require_escrow():
+    """Dependency for endpoints with no manual-track equivalent (Connect
+    onboarding, checkout, saved cards, disputes, event-fund release). Manual
+    and dual-purpose endpoints (mark-paid/confirm-received, cancel,
+    cancellation-preview, earnings) don't use this — they already handle both
+    tracks. See docs/DECISIONS.md #12."""
+    if not ESCROW_ENABLED:
+        raise HTTPException(status_code=403, detail="Stripe escrow is currently disabled")
 
 
 # ── Vendor onboarding ─────────────────────────────────────────────────
@@ -51,6 +63,7 @@ def stripe_onboard(
     ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Returns a Stripe-hosted onboarding URL the vendor should be redirected to.
     Creates a Connect Express account if one doesn't exist yet.
@@ -81,6 +94,7 @@ def stripe_status(
     vendor_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Returns whether the vendor has completed Stripe Connect onboarding.
     Requires authentication to prevent exposing Stripe account IDs publicly.
@@ -121,6 +135,7 @@ def pay_booking(
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Creates a Stripe PaymentIntent for a confirmed booking.
 
@@ -149,6 +164,7 @@ def create_booking_checkout_session(
     ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Creates a Stripe-hosted Checkout Session and returns its ``checkout_url``.
 
@@ -182,6 +198,7 @@ def sync_booking_payment_status(
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Safety net for a delayed/misconfigured webhook: pull the booking's payment
     status straight from Stripe and mark it paid if the charge completed. Called
@@ -204,6 +221,7 @@ def confirm_booking_event(
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Record that the customer or vendor confirms the event happened.
     The caller's role (customer vs vendor) is derived from their identity,
@@ -300,6 +318,48 @@ def confirm_payment_received_route(
 
 
 @router.post(
+    "/bookings/{booking_id}/mark-deposit-paid",
+    summary="Client: mark a contract booking's deposit as paid",
+)
+@limiter.limit("5/minute")
+def mark_deposit_paid_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """For a real-account booking with a deposit configured. A guest booking
+    has no session to call this with — see /guest-bookings/{token}/mark-deposit-paid."""
+    try:
+        return mark_deposit_paid(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/bookings/{booking_id}/confirm-deposit-received",
+    summary="Vendor: confirm receiving a contract booking's deposit",
+)
+@limiter.limit("5/minute")
+def confirm_deposit_received_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Works for a guest booking too — only checks the vendor's identity,
+    never booking.user_id."""
+    try:
+        return confirm_deposit_received(
+            booking_id=booking_id, caller_user_id=current_user.user_id, db=db
+        )
+    except StripeError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
     "/bookings/{booking_id}/reschedule-refund",
     summary="Refund a booking whose date change the vendor couldn't meet",
 )
@@ -309,6 +369,7 @@ def reschedule_refund(
     booking_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Not the ordinary 24-hour refund.
 
@@ -350,6 +411,7 @@ def dispute_booking(
     body: DisputeRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
+    _escrow=Depends(_require_escrow),
 ):
     """Customer raises a dispute, freezing funds on the platform.
     Only allowed while payment_status is 'paid'."""
@@ -373,6 +435,7 @@ def resolve_booking_dispute(
     body: ResolveDisputeRequest,
     db: Session = Depends(get_db),
     current_admin=Depends(get_current_admin),
+    _escrow=Depends(_require_escrow),
 ):
     """Admin resolves a dispute. resolution must be 'refund_customer' or 'release_vendor'."""
     try:
@@ -415,6 +478,7 @@ def card_setup_session(
     request: Request,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
+    _escrow=Depends(_require_escrow),
 ):
     """A Stripe-hosted page for entering card details, with no charge attached.
 
@@ -433,6 +497,7 @@ def card_setup_session(
 def card_on_file(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
+    _escrow=Depends(_require_escrow),
 ):
     """Brand and last four only — Stripe keeps the card itself."""
     try:
@@ -447,6 +512,7 @@ def card_sync(
     request: Request,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
+    _escrow=Depends(_require_escrow),
 ):
     """Read the customer's cards from Stripe and keep the newest.
 
@@ -463,6 +529,7 @@ def card_sync(
 def card_forget(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
+    _escrow=Depends(_require_escrow),
 ):
     """Detach it at Stripe and here. Bookings already paid are unaffected —
     that money has moved and has its own refund path."""

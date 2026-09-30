@@ -12,9 +12,10 @@ replacement.
 |---|---|---|---|
 | `Desiconnect` (this repo) | FastAPI + SQLAlchemy, Alembic, Postgres | Railway | Backend — schema/business-logic source of truth for both clients |
 | `front_end_desiconnect` | iOS SwiftUI | App Store (TestFlight/manual) | Native mobile client |
-| `jorna-website` | Next.js 16 / React 19 / TS, static export | Cloudflare Pages (`jornaevents.com`) | Web client, `/app` route (`basePath: "/app"`) |
+| `jorna-website` | Next.js 16 / React 19 / TS, static export — two apps, `apps/client` and `apps/vendor` | Cloudflare Pages: `jorna-events` (`book.jornaevents.com`) and `jorna-vendor` (`jornaevents.com`) | Web clients for hosts and vendors, `/app` route (`basePath: "/app"`); the vendor app also serves the no-login contract signing page |
 
-There is no staging environment on any of the three. All three branch per
+The backend and both web apps deploy to staging first, then to production
+after approval (docs/STAGING.md); iOS has no staging. All three branch per
 change and merge to `main` to deploy; a booking/pricing/escrow change
 usually needs coordinated PRs across the backend plus one or both clients.
 
@@ -71,8 +72,10 @@ Runs on every push/PR to `main`, two jobs:
   migration SQL gets caught before it reaches production.
 
 **Deploy:** `main` auto-deploys to **Railway** (`railway.toml`: Dockerfile
-build, `preDeployCommand = "alembic upgrade head"`, health check on `/`,
-restart on failure ×3). Railway's `checkSuites` flag makes deploy wait for
+build, `preDeployCommand = "python -m scripts.predeploy"` — runs the
+migration-state guard then `alembic upgrade head` in one Python process,
+see `CLAUDE.md`'s "Diagnosing a failed Railway deploy" — health check on
+`/`, restart on failure ×3). Railway's `checkSuites` flag makes deploy wait for
 the `Backend CI` GitHub check to go green before it even attempts the
 migration against production — **there is no staging environment and no
 manual approval gate**, so a bad migration runs directly against

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, FRONTEND_URL, PLATFORM_FEE_PERCENT
 from app.db.models import Vendor, Booking, Service, StripeWebhookEvent, User
+from app.models.schemas import PaymentStatus
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -208,24 +209,24 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
         # not the ordinary platform fee — amount_cents minus platform_fee_cents
         # would be the wrong number (and platform_fee_cents is usually unset
         # for one anyway, since it's never charged past the send/accept step).
-        if b.payment_status == "cancelled":
+        if b.payment_status == PaymentStatus.CANCELLED.value:
             return b.vendor_cancellation_cents or 0
         amount = b.amount_cents or 0
         fee = b.platform_fee_cents or 0
         return max(amount - fee, 0)
 
-    released = [b for b in bookings if b.payment_status == "released"]
-    cancelled = [b for b in bookings if b.payment_status == "cancelled"]
-    in_escrow = [b for b in bookings if b.payment_status in ("paid", "processing")]
-    disputed = [b for b in bookings if b.payment_status == "disputed"]
-    refunded = [b for b in bookings if b.payment_status == "refunded"]
+    released = [b for b in bookings if b.payment_status == PaymentStatus.RELEASED.value]
+    cancelled = [b for b in bookings if b.payment_status == PaymentStatus.CANCELLED.value]
+    in_escrow = [b for b in bookings if b.payment_status in (PaymentStatus.PAID.value, PaymentStatus.PROCESSING.value)]
+    disputed = [b for b in bookings if b.payment_status == PaymentStatus.DISPUTED.value]
+    refunded = [b for b in bookings if b.payment_status == PaymentStatus.REFUNDED.value]
     # Approved but unpaid — the client still has to pay; estimate from the
     # booking amount when set, else the service's listed price.
-    upcoming = [b for b in bookings if b.status == "approved" and b.payment_status == "unpaid"]
+    upcoming = [b for b in bookings if b.status == "approved" and b.payment_status == PaymentStatus.UNPAID.value]
     # Manual track — self-reported, never touched by Jorna, so kept out of
     # total_released_cents entirely rather than blended in as if verified.
-    self_reported = [b for b in bookings if b.payment_status == "confirmed_paid"]
-    awaiting_confirmation = [b for b in bookings if b.payment_status == "marked_paid"]
+    self_reported = [b for b in bookings if b.payment_status == PaymentStatus.CONFIRMED_PAID.value]
+    awaiting_confirmation = [b for b in bookings if b.payment_status == PaymentStatus.MARKED_PAID.value]
 
     from app.services.booking_service import resolve_total_cents
 
@@ -239,7 +240,7 @@ def get_vendor_earnings(*, vendor_id: str, caller_user_id: str, db: Session) -> 
         return round((service.price if service else 0) * 100)
 
     # Per-booking history for everything with payment activity, newest first.
-    history_bookings = [b for b in bookings if b.payment_status != "unpaid"]
+    history_bookings = [b for b in bookings if b.payment_status != PaymentStatus.UNPAID.value]
     bundle_ids = {b.bundle_id for b in history_bookings if b.bundle_id}
     bundles = {
         bu.bundle_id: bu
@@ -317,7 +318,7 @@ def create_payment_intent(*, booking_id: str, caller_user_id: str, db: Session) 
     if booking.status != "approved":
         raise StripeError(400, "Payment can only be initiated for approved bookings")
 
-    if booking.payment_status != "unpaid":
+    if booking.payment_status != PaymentStatus.UNPAID.value:
         raise StripeError(400, f"Booking payment is already '{booking.payment_status}'")
 
     # Look up the service to get the price
@@ -370,7 +371,7 @@ def create_payment_intent(*, booking_id: str, caller_user_id: str, db: Session) 
 
     # Persist intent details on the booking
     booking.payment_intent_id = intent.id
-    booking.payment_status = "processing"
+    booking.payment_status = PaymentStatus.PROCESSING.value
     booking.amount_cents = amount_cents
     booking.platform_fee_cents = platform_fee_cents
     db.commit()
@@ -411,7 +412,7 @@ def create_checkout_session(*, booking_id: str, caller_user_id: str, base_url: s
         raise StripeError(403, "You are not the customer for this booking")
     if booking.status != "approved":
         raise StripeError(400, "Payment can only be initiated for approved bookings")
-    if booking.payment_status not in ("unpaid", "processing"):
+    if booking.payment_status not in (PaymentStatus.UNPAID.value, PaymentStatus.PROCESSING.value):
         raise StripeError(400, f"Booking payment is already '{booking.payment_status}'")
 
     # Re-check availability at payment time: another booking for this vendor on an
@@ -520,7 +521,7 @@ def sync_booking_payment(*, booking_id: str, caller_user_id: str, db: Session) -
         raise StripeError(403, "You are not the customer for this booking")
 
     # Terminal / already-synced states need no Stripe round-trip.
-    if booking.payment_status in ("paid", "released", "refunded", "disputed"):
+    if booking.payment_status in (PaymentStatus.PAID.value, PaymentStatus.RELEASED.value, PaymentStatus.REFUNDED.value, PaymentStatus.DISPUTED.value):
         return {"booking_id": booking_id, "payment_status": booking.payment_status, "updated": False}
 
     paid = False
@@ -528,6 +529,9 @@ def sync_booking_payment(*, booking_id: str, caller_user_id: str, db: Session) -
     try:
         if booking.checkout_session_id:
             session = stripe.checkout.Session.retrieve(booking.checkout_session_id)
+            # This is Stripe's own Checkout Session.payment_status vocabulary
+            # ("paid"/"unpaid"/"no_payment_required"), not our PaymentStatus —
+            # they only happen to share a spelling for "paid".
             paid = _sv(session, "payment_status") == "paid"
             # `payment_intent` is a bare id string when the session isn't expanded.
             intent_id = _sv(session, "payment_intent")
@@ -598,7 +602,7 @@ def _mark_booking_paid(booking: Booking, payment_intent_id: str | None, db: Sess
     Returns True if this call actually moved the booking to 'paid'.
     """
     # Never walk back a further-along state (funds released / refunded / disputed).
-    if booking.payment_status in ("released", "refunded", "disputed"):
+    if booking.payment_status in (PaymentStatus.RELEASED.value, PaymentStatus.REFUNDED.value, PaymentStatus.DISPUTED.value):
         return False
 
     # The booking was cancelled while this payment was in flight.
@@ -620,7 +624,7 @@ def _mark_booking_paid(booking: Booking, payment_intent_id: str | None, db: Sess
         if intent:
             try:
                 stripe.Refund.create(payment_intent=intent, reason="requested_by_customer")
-                booking.payment_status = "refunded"
+                booking.payment_status = PaymentStatus.REFUNDED.value
                 booking.payment_intent_id = intent
                 db.commit()
             except Exception as exc:  # noqa: BLE001
@@ -632,13 +636,13 @@ def _mark_booking_paid(booking: Booking, payment_intent_id: str | None, db: Sess
 
     # Already paid — just backfill the PaymentIntent id if we now have one
     # (hosted Checkout doesn't set it at session-creation time; refunds need it).
-    if booking.payment_status == "paid":
+    if booking.payment_status == PaymentStatus.PAID.value:
         if payment_intent_id and not booking.payment_intent_id:
             booking.payment_intent_id = payment_intent_id
             db.commit()
         return False
 
-    booking.payment_status = "paid"
+    booking.payment_status = PaymentStatus.PAID.value
     booking.status = "payment_confirmed"
     booking.paid_at = datetime.now(timezone.utc)
     if payment_intent_id and not booking.payment_intent_id:
@@ -670,7 +674,7 @@ def _on_payment_failed(intent: dict, db: Session) -> None:
     if not booking:
         return
 
-    booking.payment_status = "unpaid"
+    booking.payment_status = PaymentStatus.UNPAID.value
     db.commit()
     logger.warning("Payment failed for booking %s (intent %s)", booking_id, _sv(intent, "id"))
 
@@ -734,13 +738,13 @@ def confirm_event(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     if not is_vendor and not is_customer:
         raise StripeError(403, "You are not a party to this booking")
 
-    if booking.payment_status == "released":
+    if booking.payment_status == PaymentStatus.RELEASED.value:
         return {
             "message": "Funds have already been released for this booking.",
             "funds_released": True,
         }
 
-    if booking.payment_status != "paid":
+    if booking.payment_status != PaymentStatus.PAID.value:
         raise StripeError(400, "Cannot confirm an event that has not been paid for")
 
     # Escrow is held until the event has taken place — neither party can confirm
@@ -867,7 +871,7 @@ def _release_funds(booking: Booking, db: Session) -> None:
             existing["id"],
         )
 
-    booking.payment_status = "released"
+    booking.payment_status = PaymentStatus.RELEASED.value
     booking.funds_released_at = datetime.now(timezone.utc)
     db.commit()
     logger.info(
@@ -927,7 +931,7 @@ def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
     settled = (
         db.query(Booking)
         .filter(
-            Booking.payment_status == "paid",
+            Booking.payment_status == PaymentStatus.PAID.value,
             Booking.vendor_confirmed_at.isnot(None),
             Booking.customer_confirmed_at.isnot(None),
         )
@@ -939,7 +943,7 @@ def auto_release_due(*, db: Session, now: datetime | None = None) -> dict:
     unanswered = (
         db.query(Booking)
         .filter(
-            Booking.payment_status == "paid",
+            Booking.payment_status == PaymentStatus.PAID.value,
             Booking.vendor_confirmed_at.isnot(None),
             Booking.customer_confirmed_at.is_(None),
             last_day.isnot(None),
@@ -1061,7 +1065,7 @@ def cancellation_preview(*, booking_id: str, caller_user_id: str, db: Session) -
     if booking.user_id != caller_user_id:
         raise StripeError(403, "You are not the customer for this booking")
 
-    if booking.payment_status != "paid":
+    if booking.payment_status != PaymentStatus.PAID.value:
         # Nothing held — either it's a manual-track booking (never reaches
         # "paid") or a Stripe one that hasn't been charged yet. Either way
         # there's no refund ramp to preview.
@@ -1182,7 +1186,7 @@ def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict
             refund_cents=0, vendor_cents=0,
         )
 
-    if booking.payment_status != "paid":
+    if booking.payment_status != PaymentStatus.PAID.value:
         raise StripeError(
             400,
             f"Booking is not eligible for cancellation (payment status: "
@@ -1204,7 +1208,7 @@ def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict
             )
         except stripe.StripeError as e:
             raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
-        booking.payment_status = "refunded"
+        booking.payment_status = PaymentStatus.REFUNDED.value
     elif vendor_cents > 0:
         vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
         if not vendor or not vendor.stripe_account_id:
@@ -1220,11 +1224,11 @@ def cancel_booking(*, booking_id: str, caller_user_id: str, db: Session) -> dict
             )
         except stripe.StripeError as e:
             raise StripeError(502, f"Stripe transfer failed: {e.user_message or str(e)}")
-        booking.payment_status = "cancelled"
+        booking.payment_status = PaymentStatus.CANCELLED.value
     else:
         # amount_cents was 0 or unset — nothing to move either way, but the
         # booking still needs to come off the books as cancelled.
-        booking.payment_status = "cancelled"
+        booking.payment_status = PaymentStatus.CANCELLED.value
 
     return _finish_cancellation(
         booking=booking, caller_user_id=caller_user_id, db=db,
@@ -1250,11 +1254,19 @@ def mark_booking_paid(*, booking_id: str, caller_user_id: str, db: Session) -> d
 
     if booking.status != BookingStatus.APPROVED.value:
         raise StripeError(400, "This booking hasn't been accepted yet")
-    if booking.payment_status != "unpaid":
+    _require_signed_contract(booking)
+    if booking.payment_schedule:
+        # "Paid in full" on a scheduled contract: everything not yet marked.
+        return _client_mark_scheduled(
+            booking, [i["id"] for i in booking.payment_schedule], db,
+            nothing="Every payment is already marked as sent",
+            reply=lambda: {"message": "Marked as paid.", "payment_status": booking.payment_status},
+        )
+    if booking.payment_status != PaymentStatus.UNPAID.value:
         raise StripeError(400, f"Already marked (payment status: '{booking.payment_status}')")
 
     now = datetime.now(timezone.utc)
-    booking.payment_status = "marked_paid"
+    booking.payment_status = PaymentStatus.MARKED_PAID.value
     booking.manual_payment_marked_at = now
     db.commit()
     db.refresh(booking)
@@ -1285,11 +1297,19 @@ def confirm_payment_received(*, booking_id: str, caller_user_id: str, db: Sessio
         raise StripeError(403, "You are not the vendor for this booking")
     if booking.payment_method != "manual":
         raise StripeError(400, "This booking is on the protected track — payment happens automatically")
-    if booking.payment_status != "marked_paid":
+    if booking.payment_schedule:
+        # A scheduled contract (contract_document): confirm every payment the
+        # client has marked sent — what "Confirm payment" meant before.
+        return _confirm_scheduled(
+            booking, [i["id"] for i in booking.payment_schedule if i.get("marked_paid_at")], db,
+            nothing="Nothing to confirm yet — no payment has been marked as sent",
+            reply=lambda: {"message": "Confirmed.", "payment_status": booking.payment_status},
+        )
+    if booking.payment_status != PaymentStatus.MARKED_PAID.value:
         raise StripeError(400, f"Nothing to confirm yet (payment status: '{booking.payment_status}')")
 
     now = datetime.now(timezone.utc)
-    booking.payment_status = "confirmed_paid"
+    booking.payment_status = PaymentStatus.CONFIRMED_PAID.value
     booking.manual_payment_confirmed_at = now
     db.commit()
     db.refresh(booking)
@@ -1306,6 +1326,140 @@ def confirm_payment_received(*, booking_id: str, caller_user_id: str, db: Sessio
         logger.warning("confirm_payment_received: couldn't post system message for %s: %s", booking_id, exc)
 
     return {"message": "Confirmed.", "payment_status": booking.payment_status}
+
+
+def mark_deposit_paid(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The client attesting they've sent the deposit. The authenticated
+    sibling of guest_booking_service's public version, for a real-account
+    booking that has a deposit configured — mirrors mark_booking_paid
+    exactly, one step earlier (deposit, not the full/remaining balance).
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+    if booking.user_id != caller_user_id:
+        raise StripeError(403, "You are not the customer for this booking")
+    if booking.payment_method != "manual":
+        raise StripeError(400, "This booking is on the protected track — payment happens automatically")
+    _require_signed_contract(booking)
+    if booking.payment_schedule and len(booking.payment_schedule) >= 2:
+        return _client_mark_scheduled(
+            booking, [booking.payment_schedule[0]["id"]], db,
+            nothing="Deposit already marked as paid",
+            reply=lambda: {
+                "message": "Deposit marked as paid.",
+                "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat(),
+            },
+        )
+    if booking.deposit_percent is None:
+        raise StripeError(400, "This booking has no deposit configured")
+    if booking.deposit_marked_paid_at is not None:
+        raise StripeError(400, "Deposit already marked as paid")
+
+    booking.deposit_marked_paid_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(booking)
+
+    try:
+        from app.services.conversation_service import post_system_message
+
+        post_system_message(
+            booking_id=booking_id, sender_user_id=caller_user_id,
+            content="The client marked the deposit as paid.",
+            meta={"kind": "deposit_marked_paid"}, db=db,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mark_deposit_paid: couldn't post system message for %s: %s", booking_id, exc)
+
+    return {"message": "Deposit marked as paid.", "deposit_marked_paid_at": booking.deposit_marked_paid_at.isoformat()}
+
+
+def _require_signed_contract(booking: Booking) -> None:
+    """An accepted request is a proposal until the client signs it
+    (DECISIONS #17) — nothing is owed before then."""
+    if booking.contract_token and booking.signed_at is None:
+        raise StripeError(400, "Sign the contract first — the link is in the email your vendor sent")
+
+
+def _client_mark_scheduled(booking: Booking, ids: list[str], db: Session, *, nothing: str, reply) -> dict:
+    from app.services import contract_document as doc
+
+    changed = doc.mark_paid(booking, ids)
+    if not changed:
+        raise StripeError(400, nothing)
+    for i in changed:
+        doc.record(db, booking, "payment_marked", "client", {
+            "installment_id": i["id"], "label": i["label"], "amount_cents": i["amount_cents"],
+        })
+    db.commit()
+    db.refresh(booking)
+    return reply()
+
+
+def _confirm_scheduled(booking: Booking, ids: list[str], db: Session, *, nothing: str, reply) -> dict:
+    from app.services import contract_document as doc
+
+    changed = doc.confirm_received(booking, ids)
+    if not changed:
+        raise StripeError(400, nothing)
+    for i in changed:
+        doc.record(db, booking, "payment_confirmed", "vendor", {
+            "installment_id": i["id"], "label": i["label"], "amount_cents": i["amount_cents"],
+        })
+    db.commit()
+    db.refresh(booking)
+    return reply()
+
+
+def confirm_deposit_received(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The vendor attesting they received the deposit. Works for a guest
+    booking too, unlike mark_deposit_paid above -- this only checks the
+    vendor's identity, never booking.user_id, so a guest booking (which has
+    no authenticated client to call mark_deposit_paid at all -- see
+    guest_booking_service's public sibling instead) still lets its vendor
+    confirm normally."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise StripeError(404, "Booking not found")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    if not vendor or vendor.user_id != caller_user_id:
+        raise StripeError(403, "You are not the vendor for this booking")
+    if booking.payment_schedule and len(booking.payment_schedule) >= 2:
+        first = booking.payment_schedule[0]
+        if not first.get("marked_paid_at"):
+            raise StripeError(400, "Nothing to confirm yet — the deposit hasn't been marked as paid")
+        return _confirm_scheduled(
+            booking, [first["id"]], db, nothing="Deposit already confirmed",
+            reply=lambda: {
+                "message": "Deposit confirmed.",
+                "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat(),
+            },
+        )
+    if booking.deposit_percent is None:
+        raise StripeError(400, "This booking has no deposit configured")
+    if booking.deposit_marked_paid_at is None:
+        raise StripeError(400, "Nothing to confirm yet — the deposit hasn't been marked as paid")
+    if booking.deposit_confirmed_received_at is not None:
+        raise StripeError(400, "Deposit already confirmed")
+
+    booking.deposit_confirmed_received_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(booking)
+
+    if booking.user_id is not None:
+        try:
+            from app.services.conversation_service import post_system_message
+
+            post_system_message(
+                booking_id=booking_id, sender_user_id=caller_user_id,
+                content="The vendor confirmed they received the deposit.",
+                meta={"kind": "deposit_confirmed"}, db=db,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("confirm_deposit_received: couldn't post system message for %s: %s", booking_id, exc)
+
+    return {"message": "Deposit confirmed.", "deposit_confirmed_received_at": booking.deposit_confirmed_received_at.isoformat()}
 
 
 # ── Refund after a reschedule falls through ───────────────────────────
@@ -1353,7 +1507,7 @@ def refund_after_failed_reschedule(
         raise StripeError(404, "Booking not found")
     if booking.user_id != caller_user_id:
         raise StripeError(403, "You are not the customer for this booking")
-    if booking.payment_status not in ("paid", "processing"):
+    if booking.payment_status not in (PaymentStatus.PAID.value, PaymentStatus.PROCESSING.value):
         raise StripeError(
             400,
             f"Booking is not eligible for a refund (payment status: "
@@ -1394,13 +1548,14 @@ def refund_after_failed_reschedule(
     except stripe.StripeError as e:
         raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
 
-    booking.payment_status = "refunded"
+    booking.payment_status = PaymentStatus.REFUNDED.value
     # Dead as well as refunded: the vendor can't make the date, so this booking
     # isn't happening. Leaving it "approved" would keep it in the plan's live
     # section and in every count derived from one.
-    from app.models.schemas import BookingStatus
+    from app.models.schemas import BookingStatus, RejectionReason
 
     booking.status = BookingStatus.REJECTED.value
+    booking.rejected_reason = RejectionReason.RESCHEDULE_FAILED.value
     try:
         from app.services.booking_service import sync_event_venue
         sync_event_venue(booking.bundle_id, db)
@@ -1444,7 +1599,7 @@ def raise_dispute(*, booking_id: str, caller_user_id: str, reason: str | None, d
         raise StripeError(404, "Booking not found")
     if booking.user_id != caller_user_id:
         raise StripeError(403, "Only the customer can raise a dispute")
-    if booking.payment_status != "paid":
+    if booking.payment_status != PaymentStatus.PAID.value:
         raise StripeError(
             400,
             f"Disputes can only be raised while payment is held on the platform "
@@ -1452,13 +1607,13 @@ def raise_dispute(*, booking_id: str, caller_user_id: str, reason: str | None, d
             "If funds were already released, contact support directly."
         )
 
-    booking.payment_status = "disputed"
+    booking.payment_status = PaymentStatus.DISPUTED.value
     db.commit()
     logger.info("Dispute raised for booking %s by user %s", booking_id, caller_user_id)
     return {
         "message": "Dispute raised. Our team will review and resolve it within 3–5 business days.",
         "booking_id": booking_id,
-        "payment_status": "disputed",
+        "payment_status": PaymentStatus.DISPUTED.value,
     }
 
 
@@ -1475,7 +1630,7 @@ def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise StripeError(404, "Booking not found")
-    if booking.payment_status != "disputed":
+    if booking.payment_status != PaymentStatus.DISPUTED.value:
         raise StripeError(400, f"Booking is not disputed (status: '{booking.payment_status}')")
     if not booking.payment_intent_id:
         raise StripeError(500, "No payment intent found for this booking")
@@ -1488,7 +1643,7 @@ def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
             )
         except stripe.StripeError as e:
             raise StripeError(502, f"Stripe refund failed: {e.user_message or str(e)}")
-        booking.payment_status = "refunded"
+        booking.payment_status = PaymentStatus.REFUNDED.value
         try:
             from app.services.booking_service import sync_event_venue
             sync_event_venue(booking.bundle_id, db)
@@ -1502,12 +1657,18 @@ def resolve_dispute(*, booking_id: str, resolution: str, db: Session) -> dict:
             remove_booking_from_calendar(booking, db)
 
         logger.info("Dispute resolved: refund issued for booking %s", booking_id)
-        return {"message": "Dispute resolved. Customer has been refunded.", "payment_status": "refunded"}
+        return {
+            "message": "Dispute resolved. Customer has been refunded.",
+            "payment_status": PaymentStatus.REFUNDED.value,
+        }
 
     # release_vendor — transfer funds to vendor
     _release_funds(booking, db)
     logger.info("Dispute resolved: funds released to vendor for booking %s", booking_id)
-    return {"message": "Dispute resolved. Funds have been released to the vendor.", "payment_status": "released"}
+    return {
+        "message": "Dispute resolved. Funds have been released to the vendor.",
+        "payment_status": PaymentStatus.RELEASED.value,
+    }
 
 
 # ── Card on file ──────────────────────────────────────────────────────
@@ -1656,7 +1817,7 @@ def charge_saved_card(*, booking_id: str, db: Session) -> dict:
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise CardChargeUnavailable("Booking not found")
-    if booking.payment_status not in ("unpaid", "processing"):
+    if booking.payment_status not in (PaymentStatus.UNPAID.value, PaymentStatus.PROCESSING.value):
         raise CardChargeUnavailable(f"Already {booking.payment_status}")
 
     user = db.query(User).filter(User.user_id == booking.user_id).first()
@@ -1706,10 +1867,10 @@ def charge_saved_card(*, booking_id: str, db: Session) -> dict:
     # mirrors it for the common case where the intent succeeds inline; both
     # paths write the same fields, and the webhook is idempotent.
     if intent.status == "succeeded":
-        booking.payment_status = "paid"
+        booking.payment_status = PaymentStatus.PAID.value
         booking.paid_at = datetime.now(timezone.utc)
     else:
-        booking.payment_status = "processing"
+        booking.payment_status = PaymentStatus.PROCESSING.value
     db.commit()
 
     logger.info(

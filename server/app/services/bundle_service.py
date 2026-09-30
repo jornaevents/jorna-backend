@@ -4,7 +4,9 @@ import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
+from app.utils.timeutil import utc_iso
 from app.db.models import Booking, Bundle, Event, Service, User, Vendor
+from app.models.schemas import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +34,28 @@ class BundleError(Exception):
 # cascade checked none at all, so a plan holding escrow could be deleted whole
 # when the same booking could not be removed singly.
 MONEY_MOVED_STATUSES = frozenset(
-    {"processing", "paid", "released", "refunded", "disputed"}
+    {
+        PaymentStatus.PROCESSING.value,
+        PaymentStatus.PAID.value,
+        PaymentStatus.RELEASED.value,
+        PaymentStatus.REFUNDED.value,
+        PaymentStatus.DISPUTED.value,
+    }
 )
 
 
 def _money_has_moved(booking: Booking) -> bool:
-    return (booking.payment_status or "unpaid") in MONEY_MOVED_STATUSES
+    return (booking.payment_status or PaymentStatus.UNPAID.value) in MONEY_MOVED_STATUSES
+
+
+def _has_signed_contract(booking: Booking) -> bool:
+    """A signed contract is the record of what both sides agreed — its frozen
+    copy, fingerprint and timeline all hang off the booking row. Tidying a
+    plan must never delete one; ending it is a cancellation, which keeps it.
+    Checked on the client's delete paths, not in _delete_booking_cascade:
+    account deletion and the duplicate cleanup go through that too, and what
+    they owe a signed contract is its own decision."""
+    return booking.signed_at is not None
 
 
 def _latest_change_requests(bookings: list[Booking], db: Session):
@@ -132,6 +150,11 @@ def _refund_preview(booking: Booking) -> dict:
     }
 
 
+def _contract_state(booking: Booking) -> str | None:
+    from app.services.contract_service import contract_state
+    return contract_state(booking)
+
+
 def _booking_summary(
     booking: Booking,
     service: Service | None,
@@ -145,7 +168,10 @@ def _booking_summary(
     Pure (no DB access) so callers can batch-load the Service/Vendor/User once
     via ``_resolve_booking_refs`` instead of issuing three queries per booking.
     """
+    from app.services.contract_document import schedule_view
     from app.services.booking_service import (
+        _DEAD_BOOKING_STATUSES,
+        _DEAD_VENUE_PAYMENT_STATUSES,
         _zone_name,
         negotiation_role_from,
         resolve_total_cents,
@@ -158,7 +184,17 @@ def _booking_summary(
     return {
         "booking_id": booking.booking_id,
         "status": booking.status,
+        # See the identical field/comment on booking_service._booking_dict.
+        "rejected_reason": booking.rejected_reason,
         "payment_status": booking.payment_status,
+        # The single source of truth for "can anything further happen to
+        # this booking" — see the identical field/comment on
+        # booking_service._booking_dict. jorna-website's planning.ts used to
+        # re-derive this from a hand-mirrored copy of the same two constants.
+        "is_dead": (
+            booking.status in _DEAD_BOOKING_STATUSES
+            or (booking.payment_status or PaymentStatus.UNPAID.value) in _DEAD_VENUE_PAYMENT_STATUSES
+        ),
         "date_iso": booking.date_iso,
         # The quantity a rate-priced service multiplies by. Exposed so a client
         # swapping one service for another can carry the quantity across —
@@ -193,32 +229,43 @@ def _booking_summary(
         "price_unit": service.price_unit if service else None,
         "price_pending_quantity": total_cents is None,
         "amount_cents": booking.amount_cents,
+        # An accepted request is a contract the client signs on the no-login
+        # link (docs/DECISIONS.md #17). The token is theirs to open it with —
+        # this dict only ever goes to the booking's own client.
+        "contract_token": booking.contract_token,
+        "contract_status": _contract_state(booking),
+        "signed_at": utc_iso(booking.signed_at),
+        "hold_expires_at": utc_iso(booking.hold_expires_at),
+        # The contract's payments, each with its due date and whether the
+        # client marked it sent / the vendor confirmed it. Null on a booking
+        # without a schedule, which pays in one go (payment_status).
+        "payment_schedule": schedule_view(booking),
         # Negotiation is now per-service (the vendor toggles it per service),
         # not vendor-wide. Key name kept for client compatibility.
         "open_to_price_negotiation": service.negotiable if service else False,
         # Vendor-approval timestamp (when the vendor accepted the request).
         # Also what the 24-hour cancellation grace window runs from — see
         # stripe_service.cancellation_split.
-        "confirmed_at": booking.confirmed_at.isoformat() if booking.confirmed_at else None,
+        "confirmed_at": utc_iso(booking.confirmed_at),
         # Escrow lifecycle. Clients need these to show the release state
         # honestly: who still has to confirm, and (via refund_preview below)
         # what cancelling would pay out right now.
-        "paid_at": booking.paid_at.isoformat() if booking.paid_at else None,
+        "paid_at": utc_iso(booking.paid_at),
         # What stripe_service.cancel_booking would pay out this instant — the
         # same numbers the UI's eligibility countdown reads, computed once
         # here rather than reimplemented in JS. Only meaningful while there's
         # something to cancel.
         "refund_preview": (
-            _refund_preview(booking) if booking.payment_status == "paid" else None
+            _refund_preview(booking) if booking.payment_status == PaymentStatus.PAID.value else None
         ),
         "customer_confirmed_at": (
-            booking.customer_confirmed_at.isoformat() if booking.customer_confirmed_at else None
+            utc_iso(booking.customer_confirmed_at)
         ),
         "vendor_confirmed_at": (
-            booking.vendor_confirmed_at.isoformat() if booking.vendor_confirmed_at else None
+            utc_iso(booking.vendor_confirmed_at)
         ),
         "funds_released_at": (
-            booking.funds_released_at.isoformat() if booking.funds_released_at else None
+            utc_iso(booking.funds_released_at)
         ),
         # GPS venue check-in timestamps (stored as ISO strings). Lets the client's
         # bundle view show whether the vendor has arrived and checked in.
@@ -748,6 +795,12 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
     # (where the record *is* the evidence the money came back).
     if _money_has_moved(booking):
         raise BundleError(400, "Can't remove a booking that's already been paid")
+    if _has_signed_contract(booking):
+        raise BundleError(
+            400,
+            "This booking has a signed contract, so it stays on your plan as the "
+            "record of what was agreed. To end it, cancel the booking instead.",
+        )
 
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     # Delete the booking outright so it also disappears from the vendor's side.
@@ -1042,6 +1095,19 @@ def delete_bundle(*, bundle_id: str, caller_user_id: str, db: Session) -> None:
             "record of where it went. Refund or resolve "
             f"{'that booking' if len(held) == 1 else 'those bookings'} first, "
             "then delete the plan.",
+        )
+
+    signed = [
+        b for b in db.query(Booking).filter(Booking.bundle_id == bundle_id).all()
+        if _has_signed_contract(b)
+    ]
+    if signed:
+        raise BundleError(
+            400,
+            f"{len(signed)} booking{'s' if len(signed) > 1 else ''} on this plan "
+            f"{'have' if len(signed) > 1 else 'has'} a signed contract, so the plan "
+            "can't be deleted — it's the record of what was agreed. Cancel "
+            f"{'those bookings' if len(signed) > 1 else 'that booking'} instead.",
         )
 
     try:
