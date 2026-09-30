@@ -14,7 +14,13 @@ merge to main ─► Lint + test ─┐
 - **Staging API:** `https://desiconnect-staging.up.railway.app` (stored as
   `STAGING_API_BASE_URL` in jorna-website's Actions variables). Both web apps' PR previews and `staging` Pages branches call it.
 - **Staging DB:** the `Postgres` service in the `staging` environment — not
-  Supabase. It starts empty; sign up test accounts through a staging web app.
+  Supabase. Seed it with test vendors and listings (no passwords,
+  `@example.test` emails, safe to re-run) from `server/`:
+  ```bash
+  railway run --service Postgres --environment staging -- sh -c \
+    'DATABASE_URL="$DATABASE_PUBLIC_URL" venv/bin/python -m scripts.seed_staging'
+  ```
+  Sign up client and vendor test accounts through the staging web apps.
 - **Approving production:** Actions tab → the run → "Review deployments" →
   `production` → Approve. Check the change on staging first.
 - **Rolling back:** revert the PR. Its merge deploys to staging, then
