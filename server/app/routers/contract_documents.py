@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.dependencies import get_current_user
 from app.limiter import limiter
+from app.services import pdf_service
 from app.services.document_service import (
+    document_pdf,
+    guest_document_pdf,
     DocumentServiceError,
     create_document,
     decline_by_token,
@@ -107,6 +110,14 @@ def send_document_route(
         raise _http(e)
 
 
+@router.get("/contract-documents/{document_id}/pdf", summary="An attached document as a PDF")
+def document_pdf_route(document_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        return pdf_service.response(document_pdf(document_id=document_id, caller_user_id=current_user.user_id, db=db))
+    except DocumentServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 @router.post("/contract-documents/{document_id}/void", summary="Withdraw an unsigned document")
 def void_document_route(document_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     try:
@@ -122,6 +133,15 @@ def get_guest_document_route(request: Request, token: str, preview: bool = False
         return get_by_token(token=token, preview=preview, db=db)
     except DocumentServiceError as e:
         raise _http(e)
+
+
+@router.get("/guest-documents/{token}/pdf", summary="The client's copy of an attached document as a PDF")
+@limiter.limit("10/minute")
+def guest_document_pdf_route(request: Request, token: str, db: Session = Depends(get_db)):
+    try:
+        return pdf_service.response(guest_document_pdf(token=token, db=db))
+    except DocumentServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.post("/guest-documents/{token}/sign", summary="The couple signs a document by typing their name")

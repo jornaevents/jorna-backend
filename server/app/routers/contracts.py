@@ -12,7 +12,9 @@ from app.db.database import get_db
 from app.db.models import Vendor
 from app.dependencies import get_current_user
 from app.services.contract_document import DocumentError
+from app.services import pdf_service
 from app.services.contract_service import (
+    contract_pdf,
     ContractError,
     confirm_installment,
     create_template,
@@ -129,6 +131,18 @@ def get_contract_route(
 ):
     try:
         return get_contract(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/contracts/{booking_id}/pdf", summary="The contract as a PDF — the signed record once signed")
+def contract_pdf_route(
+    booking_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return pdf_service.response(contract_pdf(booking_id=booking_id, caller_user_id=current_user.user_id, db=db))
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

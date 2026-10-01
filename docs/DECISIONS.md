@@ -478,3 +478,29 @@ after a booking is signed.
 - Sends and signatures go on the booking's timeline (`document_created`, `document_edited`, `document_emailed`, `document_viewed`,
   `document_sent`, `document_signed`, `document_declined`, `document_voided`).
 
+## 22. Contracts and attached documents download as PDFs, drawn server-side
+
+**Context.** Couples and vendors want a file of what they signed, to keep,
+forward or print, and the web page alone isn't one.
+
+**Decision.** Four download routes, all rendered by `pdf_service.py` with
+fpdf2:
+
+- `GET /contracts/{id}/pdf` and `GET /contract-documents/{id}/pdf` for the vendor.
+- `GET /guest-bookings/{token}/pdf` and `GET /guest-documents/{token}/pdf` for the couple, by their link.
+
+- **A signed PDF is drawn from the frozen snapshot**, not the live booking.
+  It prints the signer, the time and the SHA-256, so the file can be checked
+  against the record. An unsigned one is the current version, labelled as
+  not signed.
+- **Server-side, not the browser's print dialog.** The same file comes out
+  everywhere, and an email receipt can attach it later.
+- **fpdf2, not an HTML renderer.** It's pure Python with no system packages
+  on the Railway image.
+- **DejaVu Sans is bundled** (`app/assets/fonts`, with its licence), because
+  the built-in PDF fonts are Latin-1 only. It doesn't shape Indic scripts, so
+  a name typed in Devanagari prints with its characters unjoined. Shaping
+  would need HarfBuzz, which isn't worth it yet.
+- A draft has no public PDF, the same as its link. Downloading doesn't mark
+  anything as viewed.
+

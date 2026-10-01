@@ -165,6 +165,13 @@ def get_guest_booking(*, contract_token: str, db: Session, preview: bool = False
     return _guest_dict(booking, service, vendor, vendor_user)
 
 
+def guest_contract_pdf(*, contract_token: str, db: Session) -> tuple[bytes, str]:
+    """The client's copy, by their link. Doesn't count as opening it."""
+    from app.services import pdf_service
+
+    return pdf_service.contract_pdf(_by_token(contract_token, db), db)
+
+
 def fill_details(
     *,
     contract_token: str,

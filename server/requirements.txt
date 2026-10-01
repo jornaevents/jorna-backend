@@ -3,6 +3,9 @@ bcrypt==5.0.0
 email-validator==2.3.0
 fastapi==0.141.1
 firebase-admin==7.7.0
+# Contract and document PDFs (app/services/pdf_service.py). Pure Python —
+# nothing to install on the image; pulls in fonttools, Pillow and defusedxml.
+fpdf2==2.8.9
 google-api-python-client==2.200.0
 google-auth-httplib2==0.4.2
 google-auth-oauthlib==1.4.1
