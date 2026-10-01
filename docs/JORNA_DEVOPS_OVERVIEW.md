@@ -71,7 +71,7 @@ Runs on every push/PR to `main`, two jobs:
   place a broken `down_revision` link, duplicate/missing head, or bad
   migration SQL gets caught before it reaches production.
 
-**Deploy:** `main` auto-deploys to **Railway** (`railway.toml`: Dockerfile
+**Deploy:** `main` auto-deploys to **Railway** (service settings, docs/STAGING.md: Dockerfile
 build, `preDeployCommand = "python -m scripts.predeploy"` — runs the
 migration-state guard then `alembic upgrade head` in one Python process,
 see `CLAUDE.md`'s "Diagnosing a failed Railway deploy" — health check on
@@ -218,7 +218,7 @@ still bypasses CI** — `CLAUDE.md`'s "merge to main only when told" rule is
 convention only, not enforced, on these two.
 
 ## Sources
-- `Desiconnect/.github/workflows/ci.yml`, `railway.toml`,
+- `Desiconnect/.github/workflows/ci.yml`, docs/STAGING.md (Railway service settings),
   `server/app/observability.py`, `server/app/config.py`,
   `docs/ARCHITECTURE.md`, `CLAUDE.md`
 - `front_end_desiconnect/.github/workflows/build.yml`,

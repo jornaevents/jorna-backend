@@ -26,6 +26,35 @@ merge to main ─► Lint + test ─┐
 - **Rolling back:** revert the PR. Its merge deploys to staging, then
   production after approval. Never deploy by hand.
 
+## Service settings
+
+Railway stops reading `railway.toml` on 2026-12-01 (it's gone from this
+repo), so the `Desiconnect`
+service's build and deploy settings live on the service itself, set
+separately in **each environment** (dashboard → `Desiconnect` → Settings,
+with the environment switcher on staging, then production). Both
+environments must match:
+
+| Setting | Value |
+| --- | --- |
+| Build → Builder | Dockerfile |
+| Build → Dockerfile Path | `server/Dockerfile` |
+| Deploy → Pre-deploy Command | `python -m scripts.predeploy` |
+| Deploy → Healthcheck Path | `/` |
+| Deploy → Healthcheck Timeout | `30` |
+| Deploy → Restart Policy | On Failure, max 3 retries |
+
+The Pre-deploy Command is the one that matters: it runs the migration-state
+guard and `alembic upgrade head` before each new version starts. Without it a
+deploy goes live ahead of its own schema (the 2026-09-20 incident in
+CLAUDE.md). A healthy deploy's log shows `alembic_version '…' is a known
+revision — proceeding.` — check for it after changing anything here.
+
+Don't use `railway config migrate` / `railway config apply` for this: the
+generated file left out the pre-deploy command and the Dockerfile build, and
+applying a file that doesn't list every variable and the GitHub source
+deletes them.
+
 ## What staging doesn't do
 
 These are left unconfigured on purpose, so staging can't reach real people or
