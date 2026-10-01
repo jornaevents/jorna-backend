@@ -71,6 +71,30 @@ create bookings: `POST /bookings` (direct, single-booking bundle unless
 above. See `docs/ARCHITECTURE.md` for what happens to a booking's payment
 after it's created.
 
+## Leads pipeline (vendor)
+
+`GET /leads/pipeline` returns everything before a signed contract in one
+list (`pipeline_service.py`, DECISIONS #20): marketplace requests, unsigned
+contracts and informal leads. Each item has `stage` (`inquiry` until the
+contract link is sent, then `negotiation`), `source` (`request` | `contract`
+| `lead`), `attention` (`needs_you` | `waiting` | null) with an
+`attention_reason` (`new_request`, `new_lead`, `draft`, `counter_offer`,
+`declined`, `expired`; `sent`, `viewed`, `counter_sent`, or the lead's own
+status while waiting), `archived`, and `created_at`/`updated_at`. `counts`
+summarises the unarchived items.
+
+- `POST /bookings/{id}/archive` `{archived: bool}` hides or restores a
+  request or unsigned contract. It declines, voids and notifies nothing;
+  signed bookings 400. Leads archive via `PATCH /leads/{id}` `{archived}`.
+- `POST /conversations/{id}/lead` makes a lead for the couple in a
+  two-person thread — 201 new, 200 when the thread already has an open lead.
+- `POST /conversations/{id}/unread` counts the thread as unread for the
+  caller until they next open it (`GET …/messages` at offset 0).
+- Vendor booking payloads now carry `created_at` (null before 0066),
+  `sent_at` and `vendor_archived_at`. Copying a contract link should call
+  `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
+  sent and starts the hold.
+
 ## Vendor categories
 
 Some categories require a subcategory at vendor registration (e.g. `music_entertainment`

@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -16,8 +17,10 @@ from app.services.conversation_service import (
     send_group_message,
     get_group_messages,
     get_unread_count,
+    mark_unread,
     _assert_is_member,
 )
+from app.services.pipeline_service import PipelineError, lead_from_conversation
 from app.services.ws_manager import manager
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -113,6 +116,35 @@ def get_conversation_route(
         )
     except ConversationError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{conversation_id}/unread", summary="Mark a conversation as unread for yourself")
+def mark_unread_route(
+    conversation_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Counts the thread as unread for the caller until they next open it."""
+    try:
+        return mark_unread(conversation_id=conversation_id, caller_user_id=current_user.user_id, db=db)
+    except ConversationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{conversation_id}/lead", summary="Add the couple in this conversation to your leads")
+def lead_from_conversation_route(
+    conversation_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """201 with a new lead, or 200 with the open lead this thread already has."""
+    try:
+        lead, created = lead_from_conversation(
+            conversation_id=conversation_id, caller_user_id=current_user.user_id, db=db,
+        )
+    except PipelineError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return JSONResponse(lead, status_code=201 if created else 200)
 
 
 @router.post("/{conversation_id}/messages", summary="Send a message to a group conversation", status_code=201)

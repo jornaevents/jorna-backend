@@ -472,6 +472,14 @@ class Booking(Base):
     deposit_marked_paid_at = Column(DateTime, nullable=True)
     deposit_confirmed_received_at = Column(DateTime, nullable=True)
 
+    # When the request or contract was made (0066). Null on every booking
+    # from before the column existed — nothing on those says when.
+    created_at = Column(DateTime, nullable=True, default=datetime.utcnow)
+    # The vendor hid it from their active leads (0066). Not a status: an
+    # archived request is still pending to its client, and unarchiving puts
+    # it back exactly as it was. Only ever set on something not yet signed.
+    vendor_archived_at = Column(DateTime, nullable=True)
+
 
 class ContractTemplate(Base):
     """A vendor's reusable starting point for a contract — items, schedule
@@ -530,6 +538,12 @@ class Lead(Base):
     converted_booking_id = Column(String(36), ForeignKey("bookings.booking_id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # Hidden from the vendor's active leads (0066); see Booking.vendor_archived_at.
+    archived_at = Column(DateTime, nullable=True)
+    # Set when the lead came from a Messages thread ("Add to leads", 0066):
+    # the client it's about, and where the conversation is.
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    conversation_id = Column(String(36), ForeignKey("conversations.conversation_id"), nullable=True, index=True)
 
 
 class Bundle(Base):
@@ -689,6 +703,9 @@ class ConversationMember(Base):
     conversation_id = Column(String(36), ForeignKey("conversations.conversation_id"), nullable=False, index=True)
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     joined_at = Column(DateTime, nullable=False)
+    # "Mark as unread" (0066): the thread counts as unread for this member
+    # until they next open it, whatever their read receipts say.
+    marked_unread_at = Column(DateTime, nullable=True)
 
 
 class GroupMessage(Base):

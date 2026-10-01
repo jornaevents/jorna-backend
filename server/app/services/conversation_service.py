@@ -186,7 +186,17 @@ def _unread_by_conversation(
         .group_by(GroupMessage.conversation_id)
         .all()
     )
-    return {conv_id: count for conv_id, count in rows}
+    counts = {conv_id: count for conv_id, count in rows}
+    # "Mark as unread": a thread the reader flagged counts as unread even with
+    # every message read, until they open it again.
+    flagged = db.query(ConversationMember.conversation_id).filter(
+        ConversationMember.conversation_id.in_(conv_ids),
+        ConversationMember.user_id == caller_user_id,
+        ConversationMember.marked_unread_at.isnot(None),
+    ).all()
+    for (conv_id,) in flagged:
+        counts[conv_id] = max(counts.get(conv_id, 0), 1)
+    return counts
 
 
 def _message_dict(msg: GroupMessage, sender: User | None, read_by: list[str]) -> dict:
@@ -803,6 +813,15 @@ def get_group_messages(
 
     # Mark all fetched messages as read for this user
     now = datetime.now(timezone.utc)
+    if offset == 0:
+        # Opening the thread is reading it, so a "mark as unread" ends here.
+        # Paging back through history (offset > 0) isn't.
+        db.query(ConversationMember).filter(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id == caller_user_id,
+            ConversationMember.marked_unread_at.isnot(None),
+        ).update({ConversationMember.marked_unread_at: None}, synchronize_session=False)
+        db.commit()
     msg_ids = [m.message_id for m in messages]
     already_read = {
         r.message_id for r in db.query(GroupMessageRead).filter(
@@ -860,4 +879,28 @@ def get_unread_count(*, caller_user_id: str, db: Session) -> dict:
         ).all()
     }
     unread = len(set(all_msg_ids) - read_msg_ids)
+    # A flagged thread with nothing actually unread still counts once — the
+    # badge and the thread list must agree (see _unread_by_conversation).
+    for m in memberships:
+        if m.marked_unread_at is None:
+            continue
+        thread_msgs = {
+            r.message_id for r in db.query(GroupMessage.message_id)
+            .filter(GroupMessage.conversation_id == m.conversation_id).all()
+        }
+        if not (thread_msgs - read_msg_ids):
+            unread += 1
     return {"unread_count": unread}
+
+
+def mark_unread(*, conversation_id: str, caller_user_id: str, db: Session) -> dict:
+    """Flag a thread as unread for the caller only, until they next open it."""
+    member = db.query(ConversationMember).filter(
+        ConversationMember.conversation_id == conversation_id,
+        ConversationMember.user_id == caller_user_id,
+    ).first()
+    if not member:
+        raise ConversationError(404, "Conversation not found")
+    member.marked_unread_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    return get_conversation(conversation_id=conversation_id, caller_user_id=caller_user_id, db=db)
