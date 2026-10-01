@@ -352,6 +352,17 @@ def get_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     return result
 
 
+def contract_pdf(*, booking_id: str, caller_user_id: str, db: Session) -> tuple[bytes, str]:
+    """The vendor's copy: signed, or the current version marked unsigned."""
+    from app.services import pdf_service
+
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking or not booking.contract_token:
+        raise ContractError(404, "Contract not found")
+    _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
+    return pdf_service.contract_pdf(booking, db)
+
+
 def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:
     """Edit before it's signed. A signed agreement is immutable — the whole
     point of e-signing something is that it stops moving. Every edit bumps

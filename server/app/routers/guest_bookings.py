@@ -14,9 +14,11 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.limiter import limiter
+from app.services import pdf_service
 from app.services.guest_booking_service import (
     GuestBookingError,
     get_guest_booking,
+    guest_contract_pdf,
     fill_details,
     sign_contract,
     decline_contract,
@@ -50,6 +52,15 @@ class FillDetailsRequest(BaseModel):
     guest_phone: Optional[str] = None
     location: Optional[str] = None
     guest_count: Optional[int] = None
+
+
+@router.get("/{contract_token}/pdf", summary="The client's copy as a PDF")
+@limiter.limit("10/minute")
+def guest_contract_pdf_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    try:
+        return pdf_service.response(guest_contract_pdf(contract_token=contract_token, db=db))
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.patch("/{contract_token}", summary="Client fills in their own contact + venue details")

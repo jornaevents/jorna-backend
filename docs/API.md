@@ -116,6 +116,16 @@ Addenda and cancellations attached to an agreed booking:
   - `POST …/decline` `{reason?}`.
   - Voided or declined documents get a 410; an already-signed document gets a 400 on sign.
 
+## PDF downloads
+
+`application/pdf`, sent as an attachment with a filename built from the title and date (DECISIONS #22).
+A signed record is drawn from its snapshot and includes the SHA-256.
+
+- `GET /contracts/{booking_id}/pdf` (vendor). Another vendor gets 403.
+- `GET /contract-documents/{document_id}/pdf` (vendor). Drafts are included.
+- `GET /guest-bookings/{token}/pdf` (public, 10/minute). A draft gets 404.
+- `GET /guest-documents/{token}/pdf` (public, 10/minute). A draft gets 404.
+
 ## Vendor categories
 
 Some categories require a subcategory at vendor registration (e.g. `music_entertainment`

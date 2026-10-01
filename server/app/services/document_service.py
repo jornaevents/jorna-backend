@@ -245,6 +245,13 @@ def list_documents(*, booking_id: str, caller_user_id: str, db: Session) -> dict
     return {"items": [_dict(d, booking, db) for d in rows], "total": len(rows)}
 
 
+def document_pdf(*, document_id: str, caller_user_id: str, db: Session) -> tuple[bytes, str]:
+    from app.services import pdf_service
+
+    d, booking = _own_document(document_id, caller_user_id, db)
+    return pdf_service.document_pdf(d, booking, db, _client_name(booking, db))
+
+
 # ── The couple, by link ──────────────────────────────────────────────
 
 def _by_token(token: str, db: Session) -> tuple[ContractDocument, Booking]:
@@ -336,3 +343,10 @@ def decline_by_token(*, token: str, reason: str | None, db: Session) -> dict:
         "document_declined", db,
     )
     return _dict(d, booking, db, with_token=False)
+
+
+def guest_document_pdf(*, token: str, db: Session) -> tuple[bytes, str]:
+    from app.services import pdf_service
+
+    d, booking = _by_token(token, db)
+    return pdf_service.document_pdf(d, booking, db, _client_name(booking, db))

@@ -49,6 +49,7 @@ custom URL scheme can't be directly.
 | `users.py` | (no prefix) | `user_service.py` | User profile CRUD outside of auth |
 | `contracts.py` (leads routes) | (no prefix) | `pipeline_service.py`, `contract_service.py` | The vendor's leads pipeline (`GET /leads/pipeline`), archiving requests/contracts and leads — see DECISIONS #20 |
 | `contract_documents.py` | (no prefix) | `document_service.py` | Addenda and cancellation agreements attached to a signed booking, signed on the public link — see DECISIONS #21 |
+| (PDF routes in `contracts.py`, `guest_bookings.py`, `contract_documents.py`) | — | `pdf_service.py` | Contracts and attached documents as PDF downloads, from the signed snapshot once signed — see DECISIONS #22 |
 
 `auth_service.py` backs the `/auth/*` routes defined directly in `main.py`
 (no `auth.py` router file — this is a historical quirk, not a convention to
