@@ -4,10 +4,24 @@ import os
 # ── Database ──────────────────────────────────────────────────────────
 # Default to SQLite for local development; set DATABASE_URL to a
 # PostgreSQL connection string (e.g. Supabase) for staging/production.
-DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip() or "sqlite:///./test.db"
-# Railway (and Heroku) provide postgres:// but SQLAlchemy 2.x dropped that alias.
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+def _with_postgres_driver(url: str) -> str:
+    """Name the psycopg2 driver in a Postgres URL that doesn't name one.
+
+    Railway (and Heroku) hand out postgres://, an alias SQLAlchemy 2.x dropped.
+    And a bare postgresql:// means whichever driver SQLAlchemy defaults to —
+    psycopg2 up to 2.0, psycopg 3 from 2.1 — so a routine dependency bump would
+    leave the app unable to connect, since only psycopg2-binary is installed.
+    A URL that already names a driver (postgresql+…://) is left alone.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg2://" + url[len(prefix):]
+    return url
+
+
+DATABASE_URL: str = _with_postgres_driver(
+    os.getenv("DATABASE_URL", "").strip() or "sqlite:///./test.db"
+)
 
 # ── JWT ───────────────────────────────────────────────────────────────
 # Generate a secure value with:
