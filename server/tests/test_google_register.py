@@ -171,3 +171,46 @@ def test_lookup_still_creates_nothing(google_identity):
         assert db.query(User).filter(User.email == email).first() is None
     finally:
         db.close()
+
+
+class _FailingJwks:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def get_signing_key_from_jwt(self, token):
+        raise self.exc
+
+
+def _token_with_kid(kid: str) -> str:
+    import jwt
+
+    return jwt.encode({"sub": "x"}, "s" * 32, algorithm="HS256", headers={"kid": kid})
+
+
+def test_unknown_signing_key_is_a_401_not_a_500(monkeypatch):
+    """A token whose key id isn't in the project's JWKS used to escape as a 500
+    (PyJWKClientError isn't an InvalidTokenError), which also dropped the CORS
+    headers — the web app saw only an opaque network failure."""
+    import jwt
+
+    monkeypatch.setattr(
+        auth_service,
+        "_get_jwks_client",
+        lambda: _FailingJwks(jwt.PyJWKClientError('Unable to find a signing key that matches: "nope"')),
+    )
+    for path in ("/auth/google/register", "/auth/google/lookup"):
+        res = client.post(path, json={"access_token": _token_with_kid("nope")})
+        assert res.status_code == 401, (path, res.text)
+        assert "Invalid Supabase token" in res.json()["detail"]
+
+
+def test_unreachable_jwks_is_a_503(monkeypatch):
+    import jwt
+
+    monkeypatch.setattr(
+        auth_service,
+        "_get_jwks_client",
+        lambda: _FailingJwks(jwt.PyJWKClientConnectionError("Fail to fetch data from the url")),
+    )
+    res = client.post("/auth/google/register", json={"access_token": _token_with_kid("k")})
+    assert res.status_code == 503

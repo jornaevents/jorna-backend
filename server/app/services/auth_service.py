@@ -158,6 +158,15 @@ def _decode_supabase_access_token(access_token: str) -> dict:
         )
     except jwt.InvalidTokenError as e:
         raise AuthError(401, f"Invalid Supabase token: {e}") from e
+    # PyJWKClient's own errors aren't InvalidTokenErrors, so they used to escape
+    # as a 500 — which also skips the CORS headers, leaving the web app with an
+    # opaque network failure. Connection first: it's a subclass of the other.
+    except jwt.PyJWKClientConnectionError as e:
+        raise AuthError(503, "Couldn't reach Supabase to verify the Google sign-in. Try again.") from e
+    except jwt.PyJWKClientError as e:
+        # A key id the project's JWKS doesn't have: signed by another project,
+        # or forged. The token's fault, not the server's.
+        raise AuthError(401, f"Invalid Supabase token: {e}") from e
 
 
 def _unique_username_from_email(email: str, db: Session) -> str:

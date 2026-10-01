@@ -27,7 +27,9 @@ alone. For which router owns which resource, see `docs/MODULE_MAP.md`.
   miss must keep calling `lookup`, not switch to `register`, or it will try
   to create an account that already exists mid-flow); `register` creates the
   account on first use if one doesn't exist, for a one-tap sign-up flow with
-  no separate form.
+  no separate form. Both answer a bad Supabase token (bad signature, wrong
+  audience, or a key id the project's JWKS doesn't have) with `401`, and
+  `503` when Supabase's JWKS can't be fetched.
 - `POST /auth/forgot-password` always returns `200` regardless of whether the
   email exists — an intentional anti-enumeration measure, not a bug.
 - `POST /auth/logout` invalidates all access tokens; pass `refresh_token` in
