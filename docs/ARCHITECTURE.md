@@ -28,7 +28,7 @@ net under that channel (every 4 hours).
   rewrites the `postgres://` scheme Railway provides to `postgresql://`,
   since SQLAlchemy 2.x dropped the old alias).
 - **Migrations live in `server/alembic/`** (62 revisions) and run via
-  `railway.toml`'s `preDeployCommand = "python -m scripts.predeploy"`
+  the Railway service's Pre-deploy Command, `python -m scripts.predeploy`
   (`server/scripts/predeploy.py`, which runs the migration-state guard
   then `alembic upgrade head` in one process) — i.e. **every push to
   `main` applies pending migrations to staging Postgres, then — after a
