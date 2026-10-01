@@ -66,6 +66,13 @@ def test_only_the_vendor_and_the_link_can_download():
     assert client.get("/guest-bookings/not-a-token/pdf").status_code == 404
 
 
+def test_the_web_app_can_read_the_filename_cross_origin():
+    v = _setup_vendor()
+    c = _create_contract(v)
+    r = client.get(f"/guest-bookings/{c['contract_token']}/pdf", headers={"Origin": "https://jornaevents.com"})
+    assert "content-disposition" in r.headers.get("access-control-expose-headers", "").lower()
+
+
 def test_a_draft_has_no_public_pdf_but_the_vendor_can_preview_it():
     v = _setup_vendor()
     c = _create_contract(v, draft=True)
