@@ -216,6 +216,8 @@ class ProposalRequest(BaseModel):
     overtime_rate_cents: Optional[int] = Field(default=None, ge=0)
     hold_days: Optional[int] = Field(default=None, ge=1, le=60)
     email_client: bool = True
+    document_title: Optional[str] = Field(default=None, max_length=200)
+    document_layout: Optional[list[dict]] = Field(default=None, max_length=40)
 
 
 @router.post(

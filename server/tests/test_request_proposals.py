@@ -161,6 +161,28 @@ def test_accepting_with_a_written_proposal(world):
     assert again.status_code == 400
 
 
+def test_accepting_with_the_editors_layout(world):
+    w = world
+    req = w["request"](date_iso="2027-10-04")
+    resp = client.post(f"/bookings/{req.booking_id}/propose", json={
+        "line_items": [{"kind": "package", "service_id": w["flat"].service_id, "unit_price_cents": 100_000}],
+        "payment_schedule": [{"label": "Payment in full", "amount_cents": 100_000}],
+        "document_title": "Reception DJ agreement",
+        "document_layout": [
+            {"type": "parties"}, {"id": "meals", "type": "terms", "title": "Meals", "body": "Dinner for two."},
+            {"type": "items"}, {"type": "signature"},
+        ],
+        "email_client": False,
+    }, headers=w["vendor_h"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["document_title"] == "Reception DJ agreement"
+    assert [c["key"] for c in body["terms_clauses"]] == ["meals"]
+    guest = client.get(f"/guest-bookings/{body['contract_token']}?preview=true").json()
+    assert guest["document_title"] == "Reception DJ agreement"
+    assert guest["document_layout"][1] == {"id": "meals", "type": "terms"}
+
+
 def test_an_open_price_offer_blocks_both_ways_of_accepting(world):
     w = world
     req = w["request"](date_iso="2027-10-04")

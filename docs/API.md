@@ -97,10 +97,10 @@ summarises the unarchived items.
 
 ## Contract documents (vendor + public)
 
-Contracts (`POST/PATCH /contracts`) also take `document_title` (≤200) and
+Contracts (`POST/PATCH /contracts`, and `POST /bookings/{id}/propose`) also take `document_title` (≤200) and
 `document_layout`: up to 40 blocks `{id?, type}`, where type is `parties`,
 `event`, `items`, `schedule` or `signature` (each at most once), or `terms`
-with `title`/`body`. Terms blocks become `terms_clauses`. Templates take
+with `title`/`body`. Terms blocks become `terms_clauses`. The guest payload carries both. Templates take
 `kind` (`agreement` default, `addendum`, `cancellation`). DECISIONS #21.
 
 Addenda and cancellations attached to an agreed booking:

@@ -616,6 +616,8 @@ def attach_proposal(
     cancellation_window_hours: int | None = None,
     overtime_rate_cents: int | None = None,
     hold_days: int | None = None,
+    document_title: str | None = None,
+    document_layout: list | None = None,
 ) -> None:
     """Turn an accepted marketplace request into a sent proposal, in place —
     the same row, so its messages, bundle and event stay attached. Without a
@@ -652,9 +654,13 @@ def attach_proposal(
         else _default_schedule(total, usual["deposit_percent"])
     )
     doc.sync_legacy_payment_fields(booking)
-    booking.terms_clauses = (
-        doc.normalize_clauses(terms_clauses) if terms_clauses is not None else _default_clauses(vendor)
-    )
+    if document_layout is not None:
+        booking.document_layout, booking.terms_clauses = doc.normalize_layout(document_layout)
+    else:
+        booking.terms_clauses = (
+            doc.normalize_clauses(terms_clauses) if terms_clauses is not None else _default_clauses(vendor)
+        )
+    booking.document_title = (document_title or "").strip()[:200] or None
     booking.cancellation_window_hours = (
         cancellation_window_hours if cancellation_window_hours is not None else usual["cancellation_window_hours"]
     )
