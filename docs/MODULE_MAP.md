@@ -37,7 +37,7 @@ custom URL scheme can't be directly.
 | `negotiations.py` | `/negotiations` | `negotiation_service.py` | Price/terms back-and-forth between client and vendor before a booking is confirmed |
 | `change_requests.py` | (no prefix) | `change_request_service.py` | Post-confirmation change requests (reschedule, scope change) |
 | `payments.py` | `/payments` | `stripe_service.py` | Stripe Checkout, Connect payouts, escrow hold/release/auto-release |
-| `conversations.py` | `/conversations` | `conversation_service.py`, `message_service.py`, `ws_manager.py` | Messaging threads (booking-subject and general), WebSocket delivery |
+| `conversations.py` | `/conversations` | `conversation_service.py`, `message_service.py`, `ws_manager.py`, `pipeline_service.py` | Messaging threads (booking-subject and general), WebSocket delivery, mark-as-unread, "Add to leads" |
 | `messages.py` | `/messages` | `message_service.py` | Message CRUD/pagination within a conversation |
 | `notifications.py` | `/notifications` | `notification_service.py` | Push (FCM) + in-app notification records |
 | `reviews.py` | `/reviews` | `review_service.py` | Post-event reviews/ratings |
@@ -47,6 +47,7 @@ custom URL scheme can't be directly.
 | `moderation.py` | (no prefix) | — | Content reports, user blocks |
 | `admin.py` | `/admin` | — | Admin-only endpoints (disputes, moderation review) |
 | `users.py` | (no prefix) | `user_service.py` | User profile CRUD outside of auth |
+| `contracts.py` (leads routes) | (no prefix) | `pipeline_service.py`, `contract_service.py` | The vendor's leads pipeline (`GET /leads/pipeline`), archiving requests/contracts and leads — see DECISIONS #20 |
 
 `auth_service.py` backs the `/auth/*` routes defined directly in `main.py`
 (no `auth.py` router file — this is a historical quirk, not a convention to

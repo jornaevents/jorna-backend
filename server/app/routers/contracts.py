@@ -31,6 +31,7 @@ from app.services.contract_service import (
     delete_lead,
     convert_lead,
 )
+from app.services.pipeline_service import PipelineError, list_pipeline, set_booking_archived
 
 router = APIRouter(tags=["contracts"])
 
@@ -305,6 +306,42 @@ class LeadUpdateRequest(BaseModel):
     event_date_iso: Optional[str] = None
     note: Optional[str] = None
     status: Optional[str] = None
+    # Hide from (true) or return to (false) the vendor's active leads.
+    archived: Optional[bool] = None
+
+
+@router.get("/leads/pipeline", summary="Everything before a signed contract, in one list")
+def pipeline_route(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Marketplace requests, unsigned contracts and leads, each labelled
+    inquiry or negotiation, with why it needs the vendor (pipeline_service)."""
+    try:
+        return list_pipeline(caller_user_id=current_user.user_id, db=db)
+    except PipelineError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class ArchiveRequest(BaseModel):
+    archived: bool = True
+
+
+@router.post("/bookings/{booking_id}/archive", summary="Hide a request or unsigned contract from your active leads")
+def archive_booking_route(
+    booking_id: str,
+    body: Optional[ArchiveRequest] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """archived=false brings it back. Declines, voids and notifies nothing."""
+    try:
+        return set_booking_archived(
+            booking_id=booking_id, archived=body.archived if body else True,
+            caller_user_id=current_user.user_id, db=db,
+        )
+    except PipelineError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.post("/leads", summary="Log an informal, off-platform prospect", status_code=201)

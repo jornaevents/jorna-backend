@@ -420,3 +420,33 @@ money, so collecting it was the vendor chasing by text.
 - The check sits in those callers, not `_delete_booking_cascade`, so the
   duplicate cleanup (which already keeps the most progressed booking) can't
   be aborted halfway by one.
+
+## 20. One leads pipeline: inquiries and negotiations, archived not deleted (0066)
+
+**Context.** The vendor web app's redesign puts everything before a signed
+contract on one Leads page. That list was spread over pending marketplace
+requests, unsigned contracts and the informal `leads` table, each read by
+the client with its own idea of what "needs you" meant.
+
+**Decision.** `GET /leads/pipeline` (`pipeline_service.py`) owns the list
+and its rules, so web and iOS show the same thing:
+
+- **Inquiry** until the contract link has been sent; **Negotiation** from
+  then until it's signed (sent, viewed, countered, declined, expired).
+  Signed, voided, declined requests, converted and won/lost leads drop out.
+- **Needs you**: a new request or lead, a draft not yet sent, a couple's
+  counter, or a declined or expired offer. **Waiting**: sent or viewed, the
+  vendor's counter outstanding, or a lead marked contacted/quoted.
+- **Archive is not a status.** `bookings.vendor_archived_at` and
+  `leads.archived_at` only hide an item from the vendor; an archived
+  request is still pending to its couple, and unarchiving restores it.
+- **Copying the contract link counts as sending it** — the web app calls the
+  existing send endpoint without email, so the hold starts either way.
+- `bookings.created_at` exists from 0066 on (null before; nothing on an old
+  booking says when it was made), so "new this week" and "waiting since"
+  work for new requests.
+- "Add to leads" (`POST /conversations/{id}/lead`) links a lead to the
+  thread and the client (`leads.conversation_id`, `user_id`), and is
+  idempotent per thread. "Mark as unread" is per member
+  (`conversation_members.marked_unread_at`), cleared by opening the thread.
+

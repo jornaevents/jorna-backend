@@ -398,6 +398,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "payment_schedule": _schedule_view(booking),
         "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
         "deposit_confirmed_received_at": utc_iso(booking.deposit_confirmed_received_at),
+        # Null for a booking made before 0066, which recorded no creation time.
+        "created_at": utc_iso(booking.created_at),
+        "sent_at": utc_iso(booking.sent_at),
+        "vendor_archived_at": utc_iso(booking.vendor_archived_at),
     }
 
 

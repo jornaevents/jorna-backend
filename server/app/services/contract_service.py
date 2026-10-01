@@ -858,6 +858,9 @@ def _lead_dict(lead: Lead) -> dict:
         "converted_booking_id": lead.converted_booking_id,
         "created_at": lead.created_at.isoformat(),
         "updated_at": lead.updated_at.isoformat(),
+        "archived_at": utc_iso(lead.archived_at),
+        "user_id": lead.user_id,
+        "conversation_id": lead.conversation_id,
     }
 
 
@@ -904,6 +907,10 @@ def update_lead(*, lead_id: str, caller_user_id: str, update_data: dict, db: Ses
     for field in ("name", "phone", "email", "event_date_iso", "note", "status"):
         if field in update_data:
             setattr(lead, field, update_data[field])
+    # Archiving hides a lead from the active list; it isn't a status, so it
+    # doesn't touch `status` and unarchiving restores it as it was.
+    if "archived" in update_data:
+        lead.archived_at = _now() if update_data["archived"] else None
     lead.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(lead)
