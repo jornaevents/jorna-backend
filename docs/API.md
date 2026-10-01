@@ -95,6 +95,27 @@ summarises the unarchived items.
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
   sent and starts the hold.
 
+## Contract documents (vendor + public)
+
+Contracts (`POST/PATCH /contracts`, and `POST /bookings/{id}/propose`) also take `document_title` (≤200) and
+`document_layout`: up to 40 blocks `{id?, type}`, where type is `parties`,
+`event`, `items`, `schedule` or `signature` (each at most once), or `terms`
+with `title`/`body`. Terms blocks become `terms_clauses`. The guest payload carries both. Templates take
+`kind` (`agreement` default, `addendum`, `cancellation`). DECISIONS #21.
+
+Addenda and cancellations attached to an agreed booking:
+
+- `GET /contracts/{booking_id}/documents` → `{items, total}`.
+- `POST /contracts/{booking_id}/documents` `{kind, title?, sections:[{title, body}], send?, email_client?}` → 201.
+- `PATCH /contract-documents/{id}` `{title?, sections?}`; this is refused once signed, declined or voided.
+- `POST /contract-documents/{id}/send` `{email_client?}`.
+- `POST /contract-documents/{id}/void`; a signed document gets a 400.
+- Public routes (no auth, rate-limited):
+  - `GET /guest-documents/{token}?preview=`: a draft gets a 404, and the first open marks it viewed.
+  - `POST …/sign` `{signer_name}`.
+  - `POST …/decline` `{reason?}`.
+  - Voided or declined documents get a 410; an already-signed document gets a 400 on sign.
+
 ## Vendor categories
 
 Some categories require a subcategory at vendor registration (e.g. `music_entertainment`

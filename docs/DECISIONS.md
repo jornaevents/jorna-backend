@@ -450,3 +450,31 @@ and its rules, so web and iOS show the same thing:
   idempotent per thread. "Mark as unread" is per member
   (`conversation_members.marked_unread_at`), cleared by opening the thread.
 
+## 21. The document editor's layout; addenda and cancellations as signed attachments (0067)
+
+**Context.** The vendor web app's new contract editor reads like a written
+agreement: a title, free-text terms sections, and structured blocks (parties,
+event, line items, payment schedule, signature) in an order the vendor
+chooses. Vendors also asked for an addendum and a cancellation agreement
+after a booking is signed.
+
+**Decision.**
+
+- `bookings.document_title` and `bookings.document_layout` store the
+  editor's title and block order. A terms block's text is kept once, in
+  `terms_clauses` (key = block id); the layout holds only `{id, type}`, so
+  the signing page and iOS, which read clauses, keep working unchanged.
+  Each structured block may appear at most once. Both freeze into the signed
+  snapshot.
+- `contract_templates.kind` is `agreement` | `addendum` | `cancellation`.
+- **Addenda and cancellations are text-only documents** (`contract_documents`,
+  `document_service.py`), attached to an agreed booking: a signed contract, or
+  an approved/paid marketplace booking. They carry no price, date or hold, and
+  signing one changes nothing on the booking. Any change still goes
+  through the normal booking flows. The couple signs on the same no-login page
+  (`/booking-link?d=<token>`), with the same frozen snapshot plus SHA-256 as a
+  contract. A draft's link 404s until it's sent; a signed document can't be
+  voided; declining or voiding makes the link 410.
+- Sends and signatures go on the booking's timeline (`document_created`, `document_edited`, `document_emailed`, `document_viewed`,
+  `document_sent`, `document_signed`, `document_declined`, `document_voided`).
+

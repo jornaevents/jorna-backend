@@ -121,6 +121,8 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "discount_cents": booking.discount_cents,
         "payment_schedule": doc.schedule_view(booking),
         "terms_clauses": booking.terms_clauses,
+        "document_title": booking.document_title,
+        "document_layout": booking.document_layout,
         # Sent back with the signature: a signature is for the version the
         # client read, and sign_contract refuses a stale one.
         "revision": booking.revision,

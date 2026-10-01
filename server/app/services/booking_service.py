@@ -379,6 +379,9 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "guest_email": booking.guest_email,
         "guest_phone": booking.guest_phone,
         "contract_token": booking.contract_token,
+        # The contract editor's heading (0067) — the Contracts library names
+        # a contract by it.
+        "document_title": booking.document_title,
         "deposit_percent": booking.deposit_percent,
         "deposit_amount_cents": booking.deposit_amount_cents,
         "cancellation_window_hours": booking.cancellation_window_hours,
