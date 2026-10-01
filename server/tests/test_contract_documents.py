@@ -60,6 +60,13 @@ def test_layout_is_stored_and_its_terms_become_the_clauses():
     assert [x["body"] for x in edited["terms_clauses"]] == ["Just the DJ."]
 
 
+def test_the_vendors_booking_list_carries_the_title():
+    v = _setup_vendor()
+    c = _create_contract(v, document_title="Wedding DJ agreement")
+    rows = client.get(f"/bookings/vendor/{v['vendor_id']}", headers=v["headers"]).json()["items"]
+    assert next(b for b in rows if b["booking_id"] == c["booking_id"])["document_title"] == "Wedding DJ agreement"
+
+
 def test_layout_rejects_unknown_or_repeated_blocks():
     v = _setup_vendor()
     bad = client.post(
