@@ -480,6 +480,13 @@ class Booking(Base):
     # it back exactly as it was. Only ever set on something not yet signed.
     vendor_archived_at = Column(DateTime, nullable=True)
 
+    # The document editor's view of the agreement (0067): its title, and its
+    # blocks in order — terms sections with their text, and where the
+    # structured blocks (event, items, schedule, signature) sit. Terms are
+    # also mirrored into terms_clauses, which the signing page reads.
+    document_title = Column(String(200), nullable=True)
+    document_layout = Column(JSON, nullable=True)
+
 
 class ContractTemplate(Base):
     """A vendor's reusable starting point for a contract — items, schedule
@@ -493,6 +500,38 @@ class ContractTemplate(Base):
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     body = Column(JSON, nullable=False)
+    # agreement | addendum | cancellation (0067) — which gallery card it is.
+    kind = Column(String(20), nullable=False, default="agreement", server_default="agreement")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ContractDocument(Base):
+    """An addendum or cancellation agreement attached to a signed booking
+    (0067, docs/DECISIONS.md #21). Text only — it never changes the
+    booking's price, date or hold (that's v2) — with its own no-login link
+    and typed signature, frozen and hashed at signing like a contract."""
+
+    __tablename__ = "contract_documents"
+
+    document_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False)
+    kind = Column(String(20), nullable=False)  # addendum | cancellation
+    title = Column(String(200), nullable=False)
+    sections = Column(JSON, nullable=False)  # [{key, title, body}]
+    token = Column(String(64), unique=True, index=True, nullable=False)
+    # draft | sent | viewed | signed | declined | voided
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+    sent_at = Column(DateTime, nullable=True)
+    viewed_at = Column(DateTime, nullable=True)
+    signed_at = Column(DateTime, nullable=True)
+    signer_name = Column(String(255), nullable=True)
+    declined_at = Column(DateTime, nullable=True)
+    decline_reason = Column(String(500), nullable=True)
+    voided_at = Column(DateTime, nullable=True)
+    signed_snapshot = Column(JSON, nullable=True)
+    signed_snapshot_sha256 = Column(String(64), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 

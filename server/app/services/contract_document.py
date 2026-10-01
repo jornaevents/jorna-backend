@@ -353,6 +353,44 @@ def normalize_clauses(raw: list | None) -> list[dict] | None:
     return out
 
 
+# ── The editor's layout (0067) ───────────────────────────────────────
+
+# The structured blocks the rest of the app reads; each appears at most once.
+STRUCTURED_BLOCKS = ("parties", "event", "items", "schedule", "signature")
+MAX_LAYOUT_BLOCKS = 40
+
+
+def normalize_layout(raw: list | None) -> tuple[list[dict] | None, list[dict] | None]:
+    """The document editor's blocks, in order: terms sections (title + text)
+    and where the structured blocks sit among them. Returns (layout,
+    clauses) — the terms sections become terms_clauses too, in the same
+    order, so the signing page (which reads clauses) shows what the editor
+    shows. The structured blocks carry no content of their own here: the
+    event, items and schedule live in their own columns."""
+    if raw is None:
+        return None, None
+    if len(raw) > MAX_LAYOUT_BLOCKS:
+        raise DocumentError(f"A contract can have at most {MAX_LAYOUT_BLOCKS} blocks")
+    layout: list[dict] = []
+    seen: set[str] = set()
+    terms: list[dict] = []
+    for r in raw:
+        kind = _text(r.get("type"), 20)
+        block_id = _text(r.get("id"), 60) or _id()
+        if kind == "terms":
+            terms.append({"key": block_id, "title": r.get("title"), "body": r.get("body")})
+            layout.append({"id": block_id, "type": "terms"})
+        elif kind in STRUCTURED_BLOCKS:
+            if kind in seen:
+                raise DocumentError(f"A contract can have only one {kind} block")
+            seen.add(kind)
+            layout.append({"id": block_id, "type": kind})
+        else:
+            raise DocumentError(f"Unknown contract block: {kind or 'missing type'}")
+    clauses = normalize_clauses(terms)
+    return layout, clauses
+
+
 # ── The signed record ────────────────────────────────────────────────
 
 def agreement(booking: Booking) -> dict:
@@ -385,6 +423,8 @@ def agreement(booking: Booking) -> dict:
         "addon_rate_cents": booking.addon_rate_cents,
         "terms_clauses": booking.terms_clauses,
         "contract_terms": booking.contract_terms,
+        "document_title": booking.document_title,
+        "document_layout": booking.document_layout,
     }
 
 

@@ -111,6 +111,8 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "discount_cents": booking.discount_cents,
         "payment_schedule": doc.schedule_view(booking),
         "terms_clauses": booking.terms_clauses,
+        "document_title": booking.document_title,
+        "document_layout": booking.document_layout,
         "revision": booking.revision,
         "signed_snapshot_sha256": booking.signed_snapshot_sha256,
         "deposit_percent": booking.deposit_percent,
@@ -228,6 +230,8 @@ def create_contract(
     payment_schedule: list | None = None,
     terms_clauses: list | None = None,
     email_client: bool = False,
+    document_title: str | None = None,
+    document_layout: list | None = None,
 ) -> dict:
     """A vendor authors the whole booking for a client who hasn't shown up
     yet — no user_id, no login. location defaults to "TBD" when the vendor
@@ -262,7 +266,12 @@ def create_contract(
     schedule = doc.normalize_schedule(payment_schedule, total_cents=total) if payment_schedule else None
     if schedule is None:
         _check_deposit(deposit_percent)
-    clauses = doc.normalize_clauses(terms_clauses)
+    # The document editor sends its blocks; its terms sections are the
+    # clauses. Older builders send clauses alone.
+    if document_layout is not None:
+        layout, clauses = doc.normalize_layout(document_layout)
+    else:
+        layout, clauses = None, doc.normalize_clauses(terms_clauses)
 
     _check_dates(date_iso, date_end)
     guest_email = (guest_email or "").strip() or None
@@ -302,6 +311,8 @@ def create_contract(
         discount_cents=discount_cents or None,
         payment_schedule=schedule,
         terms_clauses=clauses,
+        document_title=(document_title or "").strip()[:200] or None,
+        document_layout=layout,
         revision=1,
         deposit_percent=None if schedule else deposit_percent,
         deposit_amount_cents=(
@@ -418,6 +429,10 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
         booking.location = (update_data["location"] or "").strip() or "TBD"
     if "terms_clauses" in update_data:
         booking.terms_clauses = doc.normalize_clauses(update_data["terms_clauses"])
+    if "document_layout" in update_data:
+        booking.document_layout, booking.terms_clauses = doc.normalize_layout(update_data["document_layout"])
+    if "document_title" in update_data:
+        booking.document_title = (update_data["document_title"] or "").strip()[:200] or None
 
     # Re-derive the snapshot rather than trust a client-supplied deposit_amount_cents.
     if not booking.payment_schedule and ("deposit_percent" in update_data or booking.amount_cents != total_before):
@@ -714,13 +729,19 @@ def _template_dict(t: ContractTemplate) -> dict:
     return {
         "template_id": t.template_id,
         "name": t.name,
+        "kind": t.kind or "agreement",
         "body": t.body,
         "created_at": _iso(t.created_at),
         "updated_at": _iso(t.updated_at),
     }
 
 
-def _check_template(name: str | None, body: dict | None) -> None:
+TEMPLATE_KINDS = ("agreement", "addendum", "cancellation")
+
+
+def _check_template(name: str | None, body: dict | None, kind: str | None = None) -> None:
+    if kind is not None and kind not in TEMPLATE_KINDS:
+        raise ContractError(400, f"A template is one of: {', '.join(TEMPLATE_KINDS)}")
     if name is not None and not name.strip():
         raise ContractError(400, "Give the template a name")
     if body is not None:
@@ -741,13 +762,17 @@ def list_templates(*, vendor_id: str, caller_user_id: str, db: Session) -> dict:
     return {"items": [_template_dict(t) for t in rows], "total": len(rows)}
 
 
-def create_template(*, vendor_id: str, caller_user_id: str, name: str, body: dict, db: Session) -> dict:
+def create_template(
+    *, vendor_id: str, caller_user_id: str, name: str, body: dict, db: Session, kind: str = "agreement",
+) -> dict:
     _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
-    _check_template(name, body)
+    _check_template(name, body, kind)
     if db.query(ContractTemplate).filter(ContractTemplate.vendor_id == vendor_id).count() >= MAX_TEMPLATES:
         raise ContractError(400, f"You can keep up to {MAX_TEMPLATES} templates — delete one first")
     now = _now()
-    t = ContractTemplate(vendor_id=vendor_id, name=name.strip()[:120], body=body, created_at=now, updated_at=now)
+    t = ContractTemplate(
+        vendor_id=vendor_id, name=name.strip()[:120], body=body, kind=kind, created_at=now, updated_at=now,
+    )
     db.add(t)
     db.commit()
     db.refresh(t)
@@ -762,9 +787,14 @@ def _own_template(template_id: str, caller_user_id: str, db: Session) -> Contrac
     return t
 
 
-def update_template(*, template_id: str, caller_user_id: str, name: str | None, body: dict | None, db: Session) -> dict:
+def update_template(
+    *, template_id: str, caller_user_id: str, name: str | None, body: dict | None, db: Session,
+    kind: str | None = None,
+) -> dict:
     t = _own_template(template_id, caller_user_id, db)
-    _check_template(name, body)
+    _check_template(name, body, kind)
+    if kind is not None:
+        t.kind = kind
     if name is not None:
         t.name = name.strip()[:120]
     if body is not None:

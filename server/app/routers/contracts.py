@@ -74,6 +74,10 @@ class ContractTermsRequest(BaseModel):
     terms_clauses: Optional[list[dict]] = Field(default=None, max_length=30)
     # Also email the client their link (ignored for a draft).
     email_client: bool = False
+    # The document editor (0067): its title and blocks; terms sections in
+    # the blocks become terms_clauses.
+    document_title: Optional[str] = Field(default=None, max_length=200)
+    document_layout: Optional[list[dict]] = Field(default=None, max_length=40)
 
 
 class ContractUpdateRequest(BaseModel):
@@ -96,6 +100,8 @@ class ContractUpdateRequest(BaseModel):
     discount_cents: Optional[int] = Field(default=None, ge=0)
     payment_schedule: Optional[list[dict]] = Field(default=None, max_length=12)
     terms_clauses: Optional[list[dict]] = Field(default=None, max_length=30)
+    document_title: Optional[str] = Field(default=None, max_length=200)
+    document_layout: Optional[list[dict]] = Field(default=None, max_length=40)
 
 
 @router.post("/contracts", summary="Author a guest booking/contract", status_code=201)
@@ -235,11 +241,14 @@ def propose_from_request_route(
 class TemplateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     body: dict
+    # agreement | addendum | cancellation (0067).
+    kind: str = "agreement"
 
 
 class TemplateUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     body: Optional[dict] = None
+    kind: Optional[str] = None
 
 
 @router.get("/contract-templates", summary="The vendor's saved contract templates")
@@ -259,7 +268,7 @@ def create_template_route(
     try:
         return create_template(
             vendor_id=_my_vendor_id(current_user, db), caller_user_id=current_user.user_id,
-            name=body.name, body=body.body, db=db,
+            name=body.name, body=body.body, kind=body.kind, db=db,
         )
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -273,7 +282,7 @@ def update_template_route(
     try:
         return update_template(
             template_id=template_id, caller_user_id=current_user.user_id,
-            name=body.name, body=body.body, db=db,
+            name=body.name, body=body.body, kind=body.kind, db=db,
         )
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
