@@ -137,7 +137,16 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "voided_at": _iso(booking.voided_at),
         "contract_token": booking.contract_token,
         "vendor_display_name": _vendor_name(vendor_user),
+        # The latest change proposal's status (docs/DECISIONS.md #23). "open"
+        # means the client is waiting on an answer: GET …/proposals.
+        "proposal_status": _latest_proposal_status(booking, db),
     }
+
+
+def _latest_proposal_status(booking: Booking, db: Session) -> str | None:
+    from app.services.proposal_service import latest_status
+
+    return latest_status(db, booking)
 
 
 def _vendor_name(vendor_user: User | None) -> str | None:
@@ -330,6 +339,7 @@ def create_contract(
         _start_hold(booking, vendor, hold_days)
     db.add(booking)
     db.flush()
+    doc.snapshot_revision(db, booking)
     doc.record(db, booking, "created", "vendor", {"draft": draft})
     if not draft:
         doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
@@ -363,21 +373,52 @@ def contract_pdf(*, booking_id: str, caller_user_id: str, db: Session) -> tuple[
     return pdf_service.contract_pdf(booking, db)
 
 
-def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:
+def update_contract(
+    *, booking_id: str, caller_user_id: str, update_data: dict, db: Session, proposal_id: str | None = None,
+) -> dict:
     """Edit before it's signed. A signed agreement is immutable — the whole
     point of e-signing something is that it stops moving. Every edit bumps
     revision, so a client who opened the old version can't sign it
-    (guest_booking_service.sign_contract)."""
+    (guest_booking_service.sign_contract).
+
+    With proposal_id this is the vendor's Revise answer to the client's
+    change proposal (docs/DECISIONS.md #23): the edit is their new version,
+    sent to the client with the hold restarted. Without it, an edit made
+    while a proposal is open leaves that proposal answering a version that
+    no longer exists, so it's closed as superseded."""
+    from app.services import proposal_service
+
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise ContractError(404, "Contract not found")
     vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
+    proposal = proposal_service.open_for_vendor(booking, proposal_id, db) if proposal_id else None
+    apply_update(booking, vendor, update_data, db)
+    if proposal is not None:
+        proposal_service.mark_revised(booking, vendor, proposal, db)
+    else:
+        proposal_service.close_open(db, booking, "superseded", "vendor")
+    db.commit()
+    db.refresh(booking)
+    if proposal is not None:
+        proposal_service.email_reply(booking, vendor, proposal, db)
+    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
+    return _contract_dict(booking, service, vendor, db)
+
+
+def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Session) -> None:
+    """update_contract's checks and changes, without committing — shared
+    with accepting a change proposal, which applies the client's terms the
+    same way and has to fail as a whole."""
     if booking.signed_at is not None:
         raise ContractError(400, "This contract has already been signed and can no longer be edited")
     if booking.contract_status == "declined":
         raise ContractError(400, "Your client declined this contract, so it can no longer be edited")
     if booking.status == BookingStatus.REJECTED.value:
         raise ContractError(400, "This contract was voided and can no longer be edited")
+    # Keep the version the client is reading, before anything changes, if
+    # nothing has yet (a contract from before 0068).
+    doc.snapshot_revision(db, booking)
 
     _check_deposit(update_data.get("deposit_percent"))
     if "amount_cents" in update_data and update_data["amount_cents"] <= 0:
@@ -440,6 +481,10 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
         booking.location = (update_data["location"] or "").strip() or "TBD"
     if "terms_clauses" in update_data:
         booking.terms_clauses = doc.normalize_clauses(update_data["terms_clauses"])
+        if "document_layout" not in update_data:
+            # Clauses edited on their own (a change proposal): keep the
+            # editor's layout in step, or its terms blocks point at nothing.
+            booking.document_layout, booking.terms_clauses = doc.relayout(booking.document_layout, booking.terms_clauses)
     if "document_layout" in update_data:
         booking.document_layout, booking.terms_clauses = doc.normalize_layout(update_data["document_layout"])
     if "document_title" in update_data:
@@ -454,11 +499,16 @@ def update_contract(*, booking_id: str, caller_user_id: str, update_data: dict, 
         )
 
     booking.revision = (booking.revision or 1) + 1
+    doc.snapshot_revision(db, booking)
     doc.record(db, booking, "edited", "vendor", {"revision": booking.revision, "fields": sorted(update_data)})
-    db.commit()
-    db.refresh(booking)
-    service = db.query(Service).filter(Service.service_id == booking.service_id).first()
-    return _contract_dict(booking, service, vendor, db)
+
+
+def resend(booking: Booking, vendor: Vendor, db: Session) -> None:
+    """Put a new version back in front of the client: the hold restarts from
+    now, as a resend does. The caller has already checked the date (an edit
+    that moves it runs the overlap check)."""
+    _start_hold(booking, vendor, None)
+    doc.record(db, booking, "resent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
 
 
 def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
@@ -482,11 +532,14 @@ def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     if booking.status == BookingStatus.REJECTED.value:
         return _contract_dict(booking, service, vendor, db)
 
+    from app.services.proposal_service import close_open
+
     booking.status = BookingStatus.REJECTED.value
     booking.rejected_reason = RejectionReason.VENDOR_WITHDREW.value
     booking.contract_status = "voided"
     booking.voided_at = _now()
     doc.record(db, booking, "voided", "vendor")
+    close_open(db, booking, "superseded", "vendor")
     db.commit()
     db.refresh(booking)
     result = _contract_dict(booking, service, vendor, db)
@@ -692,6 +745,7 @@ def attach_proposal(
     booking.status = BookingStatus.APPROVED.value
     booking.confirmed_at = datetime.now(timezone.utc)
     _start_hold(booking, vendor, hold_days)
+    doc.snapshot_revision(db, booking)
     doc.record(db, booking, "created", "vendor", {"from_request": True})
     doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
 

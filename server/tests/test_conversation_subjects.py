@@ -339,6 +339,14 @@ class TestInbox:
 
 
 class TestOfferMessages:
+    @pytest.fixture(autouse=True)
+    def _old_price_offers(self, monkeypatch):
+        """Retired for new requests (docs/DECISIONS.md #23); these cover
+        the thread messages of the counters that still exist."""
+        from app.services import negotiation_service
+
+        monkeypatch.setattr(negotiation_service, "NEW_NEGOTIATIONS_OPEN", True)
+
     def _offer(self, world, cents=180000, message=None):
         return client.post("/negotiations", json={
             "booking_id": world["booking"].booking_id,

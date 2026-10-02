@@ -78,9 +78,9 @@ list (`pipeline_service.py`, DECISIONS #20): marketplace requests, unsigned
 contracts and informal leads. Each item has `stage` (`inquiry` until the
 contract link is sent, then `negotiation`), `source` (`request` | `contract`
 | `lead`), `attention` (`needs_you` | `waiting` | null) with an
-`attention_reason` (`new_request`, `new_lead`, `draft`, `counter_offer`,
-`declined`, `expired`; `sent`, `viewed`, `counter_sent`, or the lead's own
-status while waiting), `archived`, and `created_at`/`updated_at`. `counts`
+`attention_reason` (`changes_proposed`, `new_request`, `new_lead`, `draft`,
+`counter_offer`, `declined`, `expired`; `sent`, `viewed`, `revised`,
+`counter_sent`, or the lead's own status while waiting), `archived`, and `created_at`/`updated_at`. `counts`
 summarises the unarchived items.
 
 - `POST /bookings/{id}/archive` `{archived: bool}` hides or restores a
@@ -115,6 +115,64 @@ Addenda and cancellations attached to an agreed booking:
   - `POST …/sign` `{signer_name}`.
   - `POST …/decline` `{reason?}`.
   - Voided or declined documents get a 410; an already-signed document gets a 400 on sign.
+
+## Change proposals (vendor + public)
+
+The client suggests edits to an unsigned contract; the vendor accepts,
+declines or revises (DECISIONS #23). Each list endpoint returns
+`{current_revision, open_proposal, proposals[], revisions[]}`:
+
+- A **proposal** is `{proposal_id, base_revision, status, message,
+  response_note, result_revision, created_at, responded_at, proposed}`.
+  `proposed` is the whole set of proposed terms. `status` is `open`,
+  `accepted`, `declined`, `revised`, `superseded` or `withdrawn`.
+- A **revision** is `{revision, created_at, terms}`.
+- `terms` and `proposed` share one shape: `date_iso`, `date_end`,
+  `time_start`, `time_end`, `location`, `guest_count`, `line_items`,
+  `discount_cents`, `amount_cents`, `payment_schedule` (without payment
+  marks), `terms_clauses`, `cancellation_window_hours` and
+  `overtime_rate_cents`.
+
+Public routes, by the contract's token:
+
+- `GET /guest-bookings/{token}/proposals` (30/minute).
+- `POST /guest-bookings/{token}/proposals` `{base_revision, changes, message?}` → 201 (10/minute).
+  - `changes` holds any of the terms fields except `amount_cents`, which is
+    derived. Anything left out stays as it is.
+  - Errors:
+    - 400 if it changes nothing, fails a check, or names an unknown field.
+    - 400 if there's no `guest_email` yet, or the contract is signed.
+    - 409 if `base_revision` isn't the current one.
+    - 410 if the contract is expired, voided or declined.
+  - It replaces the client's open proposal, and the vendor gets a push and
+    an email.
+- `POST /guest-bookings/{token}/proposals/{id}/withdraw`. A 400 once it's
+  been answered.
+
+Vendor routes, which return 403 for another vendor's contract:
+
+- `GET /contracts/{booking_id}/proposals`.
+- `POST /contracts/{booking_id}/proposals/{id}/accept` `{note?}` → the contract.
+  - The proposed terms become the next revision, and the contract is resent
+    with its hold restarted.
+  - 409 if the new date overlaps another booking (the proposal stays open)
+    or the proposal is no longer open.
+- `POST /contracts/{booking_id}/proposals/{id}/decline` `{note?}` → the
+  contract, unchanged.
+- `PATCH /contracts/{booking_id}` with `proposal_id` revises: the edit is
+  the answer, and it's resent like Accept. A `PATCH` without `proposal_id`
+  while a proposal is open marks it `superseded`.
+
+The client hears about Accept, Decline and Revise by email.
+
+Contract payloads (`GET /contracts/{id}`, the guest payload, the vendor's
+booking list and bundle bookings) carry `proposal_status`: the latest
+proposal's status on an unsigned contract, or null. Pipeline items carry it
+too, with the attention reasons `changes_proposed` (needs you) and
+`revised` (waiting).
+
+`POST /negotiations` (starting a price counter) now returns 410. Open
+counters can still be answered.
 
 ## PDF downloads
 

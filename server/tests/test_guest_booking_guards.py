@@ -104,7 +104,12 @@ def test_send_message_refused_for_a_guest_booking():
         db.close()
 
 
-def test_start_negotiation_refused_for_a_guest_booking():
+def test_start_negotiation_refused_for_a_guest_booking(monkeypatch):
+    # New counters are retired outright (docs/DECISIONS.md #23); this checks
+    # the guest guard underneath, which still holds if they come back.
+    from app.services import negotiation_service
+
+    monkeypatch.setattr(negotiation_service, "NEW_NEGOTIATIONS_OPEN", True)
     db = TestingSessionLocal()
     s = _setup_guest_booking(db, status="pending")
     try:

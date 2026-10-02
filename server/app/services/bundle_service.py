@@ -369,6 +369,9 @@ def _bundle_dict(
         change_requests = _latest_change_requests(bookings, db)
     if negotiations is None:
         negotiations = _open_negotiations(bookings, db)
+    from app.services.proposal_service import latest_for
+
+    proposals = latest_for(db, [b.booking_id for b in bookings if b.contract_token and b.signed_at is None])
 
     booking_summaries = []
     for b in bookings:
@@ -392,6 +395,10 @@ def _bundle_dict(
         # update_booking enforces, so a field the client can still edit is one
         # the server will still accept.
         summary["locked_fields"] = locked_fields_for(b, reached=bundle.status != "draft")
+        # The latest change proposal on an unsigned contract (docs/DECISIONS.md
+        # #23), so the plan can say "Changes proposed" / "New version to review".
+        proposal = proposals.get(b.booking_id)
+        summary["proposal_status"] = proposal.status if proposal else None
         summary["checkin_reminded_at"] = (
             last_reminded.isoformat() if last_reminded else None
         )

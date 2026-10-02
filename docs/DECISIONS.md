@@ -504,3 +504,52 @@ fpdf2:
 - A draft has no public PDF, the same as its link. Downloading doesn't mark
   anything as viewed.
 
+## 23. The client proposes changes to the contract; the vendor accepts, declines or revises (0068)
+
+**Context.** A client's request becomes an inquiry, and the vendor's
+contract makes it a negotiation. Until now the only thing a client could
+push back on was price, through a separate counter-offer on the request
+(the Negotiation tables). Everything else meant messaging the vendor and
+waiting for them to edit. The user wanted one place to negotiate: the
+contract itself.
+
+**Decision.**
+
+- **The client suggests edits to any term**, by their link: event details,
+  line items (quantity, price, removing one, asking for something extra),
+  the payment schedule, the cancellation window and overtime rate, and the
+  clause text. A proposal gets the same checks as a vendor's edit: the
+  payments add up to the total, and every clause has a title and text.
+- **The contract is always the vendor's position.** The vendor answers:
+  - **Accept**: the client's terms become the next revision.
+  - **Decline**: the current version stands, with a note.
+  - **Revise**: `PATCH /contracts/{id}` with `proposal_id`; the vendor's own
+    edit is the answer.
+
+  Accept and Revise send the new version back with the hold restarted, as a
+  resend does. Decline leaves the hold as it was. There is no counter-proposal
+  object; the client always signs a version the vendor sent.
+- **One open proposal per contract.** A new one replaces it (superseded).
+  So does any change to the version it was based on: a vendor edit that
+  doesn't answer it, or voiding. Signing withdraws it, because the client
+  signed the version on the table. Declining the contract withdraws it too.
+- **The date hold keeps running while a proposal is open.** Proposing
+  isn't a way to hold a date indefinitely, and the vendor's answer restarts
+  it anyway.
+- **A changed date is checked for overlaps on Accept**, through the same
+  edit path (`contract_service.apply_update`) as a vendor's edit. A clash is
+  a 409, and the proposal stays open.
+- **Every version is kept** in `contract_revisions` (from 0068 on, plus the
+  version a client was reading when a proposal or edit first touches an
+  older contract), so either side can see what changed between two.
+- **Price-only counters are retired** (`negotiation_service.NEW_NEGOTIATIONS_OPEN`).
+  Starting one is a 410. A counter already open can still be answered, and
+  the endpoints stay, so older iOS builds keep working.
+- **Leads pipeline:** an open proposal is `needs_you` / `changes_proposed`,
+  ahead of everything else. A version sent back in answer is `waiting` /
+  `revised`.
+
+**Out of scope.** Changing a signed contract still goes through an
+addendum or cancellation agreement (#21). iOS doesn't show or send
+proposals yet.
+

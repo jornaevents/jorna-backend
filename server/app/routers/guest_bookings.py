@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.limiter import limiter
-from app.services import pdf_service
+from app.services import pdf_service, proposal_service
+from app.services.contract_document import DocumentError
+from app.services.contract_service import ContractError
 from app.services.guest_booking_service import (
     GuestBookingError,
     get_guest_booking,
@@ -162,3 +164,45 @@ def mark_installment_paid_route(
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
+
+
+# ── Change proposals (docs/DECISIONS.md #23) ─────────────────────────
+
+
+class ProposeRequest(BaseModel):
+    # The revision the client was reading; refused if the vendor has edited since.
+    base_revision: int
+    # Any of the contract's terms (contract_document.TERMS_FIELDS); what's
+    # left out stays as it is.
+    changes: dict
+    message: Optional[str] = None
+
+
+@router.get("/{contract_token}/proposals", summary="The client's change proposals and the versions they compare")
+@limiter.limit("30/minute")
+def list_proposals_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    try:
+        return proposal_service.guest_history(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{contract_token}/proposals", summary="Client proposes changes to an unsigned contract", status_code=201)
+@limiter.limit("10/minute")
+def propose_route(request: Request, contract_token: str, body: ProposeRequest, db: Session = Depends(get_db)):
+    try:
+        return proposal_service.propose(
+            contract_token=contract_token, base_revision=body.base_revision,
+            changes=body.changes, message=body.message, db=db,
+        )
+    except (GuestBookingError, ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{contract_token}/proposals/{proposal_id}/withdraw", summary="Client takes back an open proposal")
+@limiter.limit("10/minute")
+def withdraw_proposal_route(request: Request, contract_token: str, proposal_id: str, db: Session = Depends(get_db)):
+    try:
+        return proposal_service.withdraw(contract_token=contract_token, proposal_id=proposal_id, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)

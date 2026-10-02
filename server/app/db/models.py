@@ -536,6 +536,46 @@ class ContractDocument(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class ContractRevision(Base):
+    """One version of a contract's terms (0068): what the booking said at
+    that revision number, so a change proposal or a revision can be shown
+    side by side with the version before it. Written whenever the revision
+    changes; contracts from before 0068 have rows only from then on."""
+
+    __tablename__ = "contract_revisions"
+    __table_args__ = (UniqueConstraint("booking_id", "revision", name="uq_contract_revisions_booking_revision"),)
+
+    revision_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    revision = Column(Integer, nullable=False)
+    terms = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ContractProposal(Base):
+    """A client's suggested edits to an unsigned contract (0068,
+    docs/DECISIONS.md #23): the whole proposed terms, based on one revision.
+    The vendor accepts (the terms become the next revision), declines (the
+    current one stands) or revises (they send their own next revision). The
+    contract is always the vendor's position — there's no counter-proposal.
+
+    status: open | accepted | declined | revised | superseded | withdrawn.
+    At most one is open per contract."""
+
+    __tablename__ = "contract_proposals"
+
+    proposal_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    base_revision = Column(Integer, nullable=False)
+    proposed = Column(JSON, nullable=False)
+    message = Column(String(2000), nullable=True)
+    status = Column(String(20), nullable=False, default="open", server_default="open")
+    response_note = Column(String(1000), nullable=True)
+    result_revision = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    responded_at = Column(DateTime, nullable=True)
+
+
 class ContractEvent(Base):
     """One line of a contract's timeline — sent, viewed, edited, signed, a
     payment marked or confirmed. Append-only. Contracts from before 0065 have
