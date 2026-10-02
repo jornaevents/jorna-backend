@@ -107,6 +107,8 @@ class ContractUpdateRequest(BaseModel):
     # Revise: this edit answers the client's open change proposal and goes
     # back to them as the next version (docs/DECISIONS.md #23).
     proposal_id: Optional[str] = None
+    # With proposal_id: a note to the client sent with the new version.
+    proposal_note: Optional[str] = Field(default=None, max_length=1000)
 
 
 @router.post("/contracts", summary="Author a guest booking/contract", status_code=201)
@@ -160,9 +162,10 @@ def update_contract_route(
     try:
         update_data = {k: v for k, v in body.model_dump().items() if v is not None}
         proposal_id = update_data.pop("proposal_id", None)
+        proposal_note = update_data.pop("proposal_note", None)
         return update_contract(
             booking_id=booking_id, caller_user_id=current_user.user_id,
-            update_data=update_data, db=db, proposal_id=proposal_id,
+            update_data=update_data, db=db, proposal_id=proposal_id, proposal_note=proposal_note,
         )
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

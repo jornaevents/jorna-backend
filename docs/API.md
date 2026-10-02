@@ -159,7 +159,8 @@ Vendor routes, which return 403 for another vendor's contract:
     or the proposal is no longer open.
 - `POST /contracts/{booking_id}/proposals/{id}/decline` `{note?}` → the
   contract, unchanged.
-- `PATCH /contracts/{booking_id}` with `proposal_id` revises: the edit is
+- `PATCH /contracts/{booking_id}` with `proposal_id` (and an optional
+  `proposal_note` for the client) revises: the edit is
   the answer, and it's resent like Accept. A `PATCH` without `proposal_id`
   while a proposal is open marks it `superseded`.
 

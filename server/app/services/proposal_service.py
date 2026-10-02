@@ -393,10 +393,10 @@ def decline(*, booking_id: str, proposal_id: str, caller_user_id: str, db: Sessi
     return get_contract(booking_id=booking_id, caller_user_id=caller_user_id, db=db)
 
 
-def mark_revised(booking: Booking, vendor: Vendor, p: ContractProposal, db: Session) -> None:
+def mark_revised(booking: Booking, vendor: Vendor, p: ContractProposal, db: Session, note: str | None = None) -> None:
     """Revise: the vendor's edit (already applied) answers the proposal and
-    goes to the client as the next version."""
-    _answer(booking, p, "revised", None, db)
+    goes to the client as the next version, with their note if any."""
+    _answer(booking, p, "revised", note, db)
     resend(booking, vendor, db)
 
 

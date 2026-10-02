@@ -310,7 +310,7 @@ def test_revise_answers_with_the_vendors_own_version():
     pid = _open_id(c)
     r = client.patch(
         f"/contracts/{c['booking_id']}",
-        json={"proposal_id": pid, "terms_clauses": [
+        json={"proposal_id": pid, "proposal_note": "Meet you at 40?", "terms_clauses": [
             {"key": "scope", "title": "Scope", "body": "DJ and MC for the reception."},
             {"key": "travel", "title": "Travel", "body": "40 miles included."},
         ]},
@@ -320,7 +320,7 @@ def test_revise_answers_with_the_vendors_own_version():
     assert r.json()["revision"] == 2
     assert r.json()["proposal_status"] == "revised"
     p = client.get(f"/guest-bookings/{c['contract_token']}/proposals").json()["proposals"][0]
-    assert (p["status"], p["result_revision"]) == ("revised", 2)
+    assert (p["status"], p["result_revision"], p["response_note"]) == ("revised", 2, "Meet you at 40?")
     timeline = client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["timeline"]
     kinds = [e["kind"] for e in timeline]
     assert "proposal_revised" in kinds and "resent" in kinds
