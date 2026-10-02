@@ -206,3 +206,30 @@ def withdraw_proposal_route(request: Request, contract_token: str, proposal_id: 
         return proposal_service.withdraw(contract_token=contract_token, proposal_id=proposal_id, db=db)
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class DraftRequest(BaseModel):
+    base_revision: int
+    changes: dict
+    message: Optional[str] = None
+
+
+@router.put("/{contract_token}/proposals/draft", summary="Save the client's unsent proposal")
+@limiter.limit("60/minute")
+def save_draft_route(request: Request, contract_token: str, body: DraftRequest, db: Session = Depends(get_db)):
+    try:
+        return proposal_service.guest_save_draft(
+            contract_token=contract_token, base_revision=body.base_revision,
+            changes=body.changes, message=body.message, db=db,
+        )
+    except (GuestBookingError, ContractError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/{contract_token}/proposals/draft", summary="Discard the client's unsent proposal", status_code=204)
+@limiter.limit("30/minute")
+def drop_draft_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    try:
+        proposal_service.guest_drop_draft(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)

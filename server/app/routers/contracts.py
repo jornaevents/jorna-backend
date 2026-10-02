@@ -275,6 +275,39 @@ def decline_proposal_route(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+class DraftRequest(BaseModel):
+    # The revision the draft was made against, so it can be flagged once stale.
+    base_revision: int
+    # Any of the contract's terms, as typed so far.
+    changes: dict
+    message: Optional[str] = Field(default=None, max_length=2000)
+    # The open proposal this draft answers, if any.
+    proposal_id: Optional[str] = None
+
+
+@router.put("/contracts/{booking_id}/proposals/draft", summary="Save the vendor's unsent revision")
+def save_vendor_draft_route(
+    booking_id: str, body: DraftRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        return proposal_service.vendor_save_draft(
+            booking_id=booking_id, caller_user_id=current_user.user_id, base_revision=body.base_revision,
+            changes=body.changes, message=body.message, proposal_id=body.proposal_id, db=db,
+        )
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/contracts/{booking_id}/proposals/draft", summary="Discard the vendor's unsent revision", status_code=204)
+def drop_vendor_draft_route(
+    booking_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        proposal_service.vendor_drop_draft(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 class ProposalRequest(BaseModel):
     """Accepting a marketplace request with a proposal the vendor wrote. All
     optional: whatever's left out comes from the request and the vendor's

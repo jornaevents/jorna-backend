@@ -17,13 +17,17 @@ it was based on (a vendor edit, signing, voiding).
 
 The client side is reached by the contract's token, like signing; the
 vendor side by an authenticated vendor who owns the contract.
+
+Either side can save a draft of what they're about to send (0069,
+DECISIONS #24) — one per side, dropped once that side sends something.
 """
+import json
 import re
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Booking, ContractProposal, ContractRevision, Service, User, Vendor
+from app.db.models import Booking, ContractDraft, ContractProposal, ContractRevision, Service, User, Vendor
 from app.services import contract_document as doc
 from app.services.contract_service import (
     ContractError,
@@ -42,6 +46,8 @@ OPEN = "open"
 MAX_MESSAGE = 2000
 MAX_NOTE = 1000
 MAX_LISTED = 20
+MAX_DRAFT_BYTES = 100_000
+PARTIES = ("vendor", "client")
 _TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -198,9 +204,10 @@ def normalize(booking: Booking, changes: dict, db: Session) -> dict:
 
 # ── The client, by their link ────────────────────────────────────────
 
-def _history(booking: Booking, db: Session) -> dict:
+def _history(booking: Booking, db: Session, party: str) -> dict:
     """Everything either side needs to compare versions: the proposals,
-    newest first, and the versions they were made against."""
+    newest first, the versions they were made against, and that side's
+    own saved draft."""
     proposals = (
         db.query(ContractProposal)
         .filter(ContractProposal.booking_id == booking.booking_id)
@@ -223,13 +230,14 @@ def _history(booking: Booking, db: Session) -> dict:
         "revisions": [
             {"revision": r.revision, "created_at": utc_iso(r.created_at), "terms": r.terms} for r in revisions
         ],
+        "draft": _draft_dict(booking, _draft(db, booking.booking_id, party)),
     }
 
 
 def guest_history(*, contract_token: str, db: Session) -> dict:
     from app.services.guest_booking_service import _by_token
 
-    return _history(_by_token(contract_token, db), db)
+    return _history(_by_token(contract_token, db), db, "client")
 
 
 def propose(*, contract_token: str, base_revision: int, changes: dict, message: str | None, db: Session) -> dict:
@@ -275,6 +283,7 @@ def propose(*, contract_token: str, base_revision: int, changes: dict, message: 
     )
     db.add(p)
     db.flush()
+    drop_draft(db, booking, "client")
     doc.record(db, booking, "proposal_sent", "client", {
         "proposal_id": p.proposal_id, "fields": fields,
         "replaced": replaced.proposal_id if replaced else None,
@@ -290,7 +299,7 @@ def propose(*, contract_token: str, base_revision: int, changes: dict, message: 
         f"{_pretty_date(booking.date_iso)}. Review them on the contract's page.",
         "contract_changes_proposed", db,
     )
-    return _history(booking, db)
+    return _history(booking, db, "client")
 
 
 def withdraw(*, contract_token: str, proposal_id: str, db: Session) -> dict:
@@ -308,7 +317,7 @@ def withdraw(*, contract_token: str, proposal_id: str, db: Session) -> dict:
     p.responded_at = _now()
     doc.record(db, booking, "proposal_withdrawn", "client", {"proposal_id": p.proposal_id})
     db.commit()
-    return _history(booking, db)
+    return _history(booking, db, "client")
 
 
 # ── The vendor ───────────────────────────────────────────────────────
@@ -322,7 +331,7 @@ def _own_booking(booking_id: str, caller_user_id: str, db: Session) -> tuple[Boo
 
 def vendor_history(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     booking, _ = _own_booking(booking_id, caller_user_id, db)
-    return _history(booking, db)
+    return _history(booking, db, "vendor")
 
 
 _ANSWERED = {
@@ -351,6 +360,7 @@ def _answer(booking: Booking, p: ContractProposal, status: str, note: str | None
     p.status = status
     p.responded_at = _now()
     p.response_note = _text(note, MAX_NOTE)
+    drop_draft(db, booking, "vendor")
     if status in ("accepted", "revised"):
         p.result_revision = booking.revision
     doc.record(db, booking, f"proposal_{status}", "vendor", {
@@ -408,3 +418,98 @@ def email_reply(booking: Booking, vendor: Vendor, p: ContractProposal, db: Sessi
         subject = f"{who} kept your contract as it was"
         lead = "<p>They'd rather keep the current version. You can still sign it, or propose something else.</p>"
     send_email(to=booking.guest_email, subject=subject, html=lead + note + link)
+
+
+# ── Drafts (0069, DECISIONS #24) ─────────────────────────────────────
+
+def _draft(db: Session, booking_id: str, party: str) -> ContractDraft | None:
+    return db.query(ContractDraft).filter(
+        ContractDraft.booking_id == booking_id, ContractDraft.party == party,
+    ).first()
+
+
+def _draft_dict(booking: Booking, d: ContractDraft | None) -> dict | None:
+    if d is None:
+        return None
+    return {
+        "base_revision": d.base_revision,
+        "changes": d.changes,
+        "message": d.message,
+        "proposal_id": d.proposal_id,
+        "updated_at": utc_iso(d.updated_at),
+        # Made against a version that's since been replaced: the workspace
+        # says so rather than laying old values over new terms unannounced.
+        "stale": d.base_revision != (booking.revision or 1),
+    }
+
+
+def drop_draft(db: Session, booking: Booking, party: str) -> None:
+    """That side sent something (a proposal, an answer, an edit), so what
+    they'd saved is spent. Not committed here — part of the caller's change."""
+    db.query(ContractDraft).filter(
+        ContractDraft.booking_id == booking.booking_id, ContractDraft.party == party,
+    ).delete(synchronize_session=False)
+
+
+def save_draft(
+    db: Session, booking: Booking, party: str, *,
+    base_revision: int, changes: dict, message: str | None, proposal_id: str | None = None,
+) -> dict:
+    """Keep what one side has typed so far. Only the shape is checked —
+    which terms, and how big — since a draft is allowed to be half done;
+    sending it runs the real checks."""
+    if party not in PARTIES:
+        raise ProposalError(400, "Unknown party")
+    if not booking.contract_token or booking.signed_at is not None:
+        raise ProposalError(400, "This contract is signed, so it can't be changed now")
+    if not isinstance(changes, dict):
+        raise ProposalError(400, "Send the changes as an object")
+    unknown = set(changes) - set(doc.TERMS_FIELDS)
+    if unknown:
+        raise ProposalError(400, f"Can't save a change to {', '.join(sorted(unknown))}")
+    if len(json.dumps(changes, default=str)) > MAX_DRAFT_BYTES:
+        raise ProposalError(413, "This draft is too large to save")
+    d = _draft(db, booking.booking_id, party)
+    if d is None:
+        d = ContractDraft(booking_id=booking.booking_id, party=party)
+        db.add(d)
+    d.base_revision = base_revision
+    d.changes = changes
+    d.message = _text(message, MAX_MESSAGE)
+    d.proposal_id = proposal_id if party == "vendor" else None
+    d.updated_at = _now()
+    db.commit()
+    return _draft_dict(booking, d)
+
+
+def guest_save_draft(*, contract_token: str, base_revision: int, changes: dict, message: str | None, db: Session) -> dict:
+    from app.services.guest_booking_service import _by_token, _require_live
+
+    booking = _by_token(contract_token, db)
+    _require_live(booking)
+    return save_draft(db, booking, "client", base_revision=base_revision, changes=changes, message=message)
+
+
+def guest_drop_draft(*, contract_token: str, db: Session) -> None:
+    from app.services.guest_booking_service import _by_token
+
+    booking = _by_token(contract_token, db)
+    drop_draft(db, booking, "client")
+    db.commit()
+
+
+def vendor_save_draft(
+    *, booking_id: str, caller_user_id: str, base_revision: int, changes: dict,
+    message: str | None, proposal_id: str | None, db: Session,
+) -> dict:
+    booking, _ = _own_booking(booking_id, caller_user_id, db)
+    return save_draft(
+        db, booking, "vendor", base_revision=base_revision, changes=changes,
+        message=message, proposal_id=proposal_id,
+    )
+
+
+def vendor_drop_draft(*, booking_id: str, caller_user_id: str, db: Session) -> None:
+    booking, _ = _own_booking(booking_id, caller_user_id, db)
+    drop_draft(db, booking, "vendor")
+    db.commit()

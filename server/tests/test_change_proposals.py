@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.db.models import Booking, ContractProposal, ContractRevision
+from app.db.models import Booking, ContractDraft, ContractProposal, ContractRevision
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -30,7 +30,7 @@ def _clean_proposals():
     yield
     db = TestingSessionLocal()
     if _created["bookings"]:
-        for model in (ContractProposal, ContractRevision):
+        for model in (ContractDraft, ContractProposal, ContractRevision):
             db.query(model).filter(model.booking_id.in_(_created["bookings"])).delete(synchronize_session=False)
         db.commit()
     db.close()
@@ -350,3 +350,117 @@ def test_only_the_contracts_vendor_can_see_or_answer():
     assert client.patch(
         f"/contracts/{c['booking_id']}", json={"guest_count": 10, "proposal_id": pid}, headers=other["headers"],
     ).status_code == 403
+
+
+# ── Drafts (0069, DECISIONS #24) ─────────────────────────────────────
+
+def _guest_history(c) -> dict:
+    return client.get(f"/guest-bookings/{c['contract_token']}/proposals").json()
+
+
+def _vendor_history(c, v) -> dict:
+    return client.get(f"/contracts/{c['booking_id']}/proposals", headers=v["headers"]).json()
+
+
+def test_the_client_saves_a_draft_and_sending_spends_it():
+    v = _setup_vendor()
+    c = _contract(v)
+    half_done = {"guest_count": 0, "location": ""}  # not valid to send, fine to keep
+    r = client.put(
+        f"/guest-bookings/{c['contract_token']}/proposals/draft",
+        json={"base_revision": 1, "changes": half_done, "message": "Still thinking"},
+    )
+    assert r.status_code == 200, r.text
+    assert (r.json()["changes"], r.json()["message"], r.json()["stale"]) == (half_done, "Still thinking", False)
+    assert _guest_history(c)["draft"]["changes"] == half_done
+    # Each side sees only its own.
+    assert _vendor_history(c, v)["draft"] is None
+
+    # Saving again replaces it.
+    client.put(
+        f"/guest-bookings/{c['contract_token']}/proposals/draft",
+        json={"base_revision": 1, "changes": {"guest_count": 120}},
+    )
+    assert _guest_history(c)["draft"]["changes"] == {"guest_count": 120}
+
+    assert _propose(c, v).status_code == 201
+    assert _guest_history(c)["draft"] is None
+
+
+def test_a_client_draft_can_be_discarded_and_goes_stale_after_a_vendor_edit():
+    v = _setup_vendor()
+    c = _contract(v)
+    client.put(
+        f"/guest-bookings/{c['contract_token']}/proposals/draft",
+        json={"base_revision": 1, "changes": {"guest_count": 120}},
+    )
+    client.patch(f"/contracts/{c['booking_id']}", json={"guest_count": 150}, headers=v["headers"])
+    assert _guest_history(c)["draft"]["stale"] is True
+    assert client.delete(f"/guest-bookings/{c['contract_token']}/proposals/draft").status_code == 204
+    assert _guest_history(c)["draft"] is None
+
+
+def test_the_vendor_saves_a_revision_draft_and_answering_spends_it():
+    v = _setup_vendor()
+    c = _contract(v)
+    _propose(c, v)
+    pid = _open_id(c)
+    url = f"/contracts/{c['booking_id']}/proposals/draft"
+    r = client.put(
+        url, json={"base_revision": 1, "changes": {"overtime_rate_cents": 30_000}, "proposal_id": pid},
+        headers=v["headers"],
+    )
+    assert r.status_code == 200, r.text
+    draft = _vendor_history(c, v)["draft"]
+    assert (draft["proposal_id"], draft["changes"]) == (pid, {"overtime_rate_cents": 30_000})
+    assert _guest_history(c)["draft"] is None
+
+    client.post(f"/contracts/{c['booking_id']}/proposals/{pid}/decline", headers=v["headers"])
+    assert _vendor_history(c, v)["draft"] is None
+
+
+@pytest.mark.parametrize("answer", ["accept", "revise", "edit"])
+def test_every_vendor_send_spends_their_draft(answer):
+    v = _setup_vendor()
+    c = _contract(v)
+    _propose(c, v)
+    pid = _open_id(c)
+    client.put(
+        f"/contracts/{c['booking_id']}/proposals/draft",
+        json={"base_revision": 1, "changes": {"guest_count": 90}, "proposal_id": pid}, headers=v["headers"],
+    )
+    if answer == "accept":
+        r = client.post(f"/contracts/{c['booking_id']}/proposals/{pid}/accept", headers=v["headers"])
+    else:
+        body = {"guest_count": 90, **({"proposal_id": pid} if answer == "revise" else {})}
+        r = client.patch(f"/contracts/{c['booking_id']}", json=body, headers=v["headers"])
+    assert r.status_code == 200, r.text
+    assert _vendor_history(c, v)["draft"] is None
+
+
+def test_drafts_are_checked_for_shape_and_owner():
+    v = _setup_vendor()
+    other = _setup_vendor()
+    c = _contract(v)
+    token_url = f"/guest-bookings/{c['contract_token']}/proposals/draft"
+    assert client.put(token_url, json={"base_revision": 1, "changes": {"vendor_id": "x"}}).status_code == 400
+    big = {"terms_clauses": [{"key": "k", "title": "t", "body": "x" * 200_000}]}
+    assert client.put(token_url, json={"base_revision": 1, "changes": big}).status_code == 413
+    url = f"/contracts/{c['booking_id']}/proposals/draft"
+    assert client.put(url, json={"base_revision": 1, "changes": {}}, headers=other["headers"]).status_code in (403, 404)
+    assert client.delete(url, headers=other["headers"]).status_code in (403, 404)
+
+
+def test_no_drafts_once_signed():
+    v = _setup_vendor()
+    c = _contract(v)
+    db = TestingSessionLocal()
+    b = db.query(Booking).filter(Booking.booking_id == c["booking_id"]).first()
+    b.signed_at = datetime.utcnow()
+    db.commit()
+    db.close()
+    r = client.put(
+        f"/guest-bookings/{c['contract_token']}/proposals/draft", json={"base_revision": 1, "changes": {}},
+    )
+    assert r.status_code == 400
+

@@ -398,6 +398,7 @@ def update_contract(
         proposal_service.mark_revised(booking, vendor, proposal, db)
     else:
         proposal_service.close_open(db, booking, "superseded", "vendor")
+        proposal_service.drop_draft(db, booking, "vendor")
     db.commit()
     db.refresh(booking)
     if proposal is not None:
