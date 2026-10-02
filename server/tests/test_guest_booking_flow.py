@@ -232,3 +232,38 @@ def test_vendor_cannot_read_own_authenticated_booking_via_guest_endpoint():
 
     resp = client.get(f"/guest-bookings/{booking_id}")
     assert resp.status_code == 404, resp.text
+
+
+# ── Telling the vendor whether the email went ───────────────────────
+
+def test_email_sent_reports_whether_the_client_was_actually_emailed():
+    from unittest.mock import patch
+
+    v = _setup_vendor()
+    # Not asked to email: null, so the app doesn't claim either way.
+    assert _create_contract(v)["email_sent"] is None
+
+    with patch("app.services.contract_service.send_email", return_value={"success": True, "id": "e1"}):
+        sent = _create_contract(v, date_iso="2027-11-14", guest_email="meera@example.com", email_client=True)
+    assert sent["email_sent"] is True
+    timeline = client.get(f"/contracts/{sent['booking_id']}", headers=v["headers"]).json()["timeline"]
+    assert any(e["kind"] == "emailed" for e in timeline)
+
+    with patch("app.services.contract_service.send_email", return_value={"success": False, "error": "Email not configured"}):
+        failed = _create_contract(v, date_iso="2027-11-15", guest_email="meera@example.com", email_client=True)
+    assert failed["email_sent"] is False
+    kinds = [e["kind"] for e in client.get(f"/contracts/{failed['booking_id']}", headers=v["headers"]).json()["timeline"]]
+    assert "email_failed" in kinds and "emailed" not in kinds
+
+
+def test_send_reports_email_sent_too():
+    from unittest.mock import patch
+
+    v = _setup_vendor()
+    draft = _create_contract(v, guest_email="meera@example.com", draft=True)
+    with patch("app.services.contract_service.send_email", return_value={"success": False, "error": "boom"}):
+        r = client.post(f"/contracts/{draft['booking_id']}/send", json={"email_client": True}, headers=v["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json()["email_sent"] is False
+    r = client.post(f"/contracts/{draft['booking_id']}/send", json={}, headers=v["headers"])
+    assert r.json()["email_sent"] is None

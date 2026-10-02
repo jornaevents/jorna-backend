@@ -80,7 +80,10 @@ def _accept(w, booking):
 def test_a_plain_accept_sends_a_proposal_built_from_the_vendors_usual_terms(world):
     w = world
     req = w["request"]()
-    assert _accept(w, req).status_code == 200
+    r = _accept(w, req)
+    assert r.status_code == 200
+    # The app is told the email went, so it can say so.
+    assert r.json()["email_sent"] is True
 
     w["db"].refresh(req)
     assert req.status == "approved"

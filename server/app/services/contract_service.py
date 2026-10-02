@@ -190,16 +190,18 @@ def _link(booking: Booking) -> str:
     return f"{WEB_APP_URL}/booking-link?t={booking.contract_token}"
 
 
-def _email_client(booking: Booking, vendor: Vendor, db: Session) -> None:
+def _email_client(booking: Booking, vendor: Vendor, db: Session) -> bool:
     """Send the client their link. Best effort, like every other email here:
-    the contract is already sent (and holding) whether or not this lands."""
+    the contract is already sent (and holding) whether or not this lands.
+    Returns whether the email provider took it, so the vendor is told the
+    truth ("We emailed …" only when we did)."""
     vendor_name = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first()) or "Your vendor"
     held = (
         f" {vendor_name} is holding the date for you until "
         f"{booking.hold_expires_at.strftime('%B')} {booking.hold_expires_at.day}."
         if booking.hold_expires_at else ""
     )
-    send_email(
+    result = send_email(
         to=booking.guest_email,
         subject=f"{vendor_name} sent you a booking to review",
         html=(
@@ -208,7 +210,15 @@ def _email_client(booking: Booking, vendor: Vendor, db: Session) -> None:
             "<p>You'll pay them directly; Jorna doesn't handle the money.</p>"
         ),
     )
-    doc.record(db, booking, "emailed", "vendor", {"to": booking.guest_email})
+    sent = bool(result.get("success"))
+    doc.record(db, booking, "emailed" if sent else "email_failed", "vendor", {"to": booking.guest_email})
+    return sent
+
+
+def _with_email(contract: dict, sent: bool | None) -> dict:
+    """email_sent on a create/send response: true or false when the vendor
+    asked us to email the client, null when they didn't."""
+    return {**contract, "email_sent": sent}
 
 
 def create_contract(
@@ -341,14 +351,15 @@ def create_contract(
     db.flush()
     doc.snapshot_revision(db, booking)
     doc.record(db, booking, "created", "vendor", {"draft": draft})
+    sent = None
     if not draft:
         doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
         if email_client:
-            _email_client(booking, vendor, db)
+            sent = _email_client(booking, vendor, db)
     db.commit()
     db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
-    return _contract_dict(booking, service, vendor, db)
+    return _with_email(_contract_dict(booking, service, vendor, db), sent)
 
 
 def get_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
@@ -599,12 +610,11 @@ def send_contract(
     resend = booking.sent_at is not None
     _start_hold(booking, vendor, hold_days)
     doc.record(db, booking, "resent" if resend else "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
-    if email_client:
-        _email_client(booking, vendor, db)
+    sent = _email_client(booking, vendor, db) if email_client else None
     db.commit()
     db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
-    return _contract_dict(booking, service, vendor, db)
+    return _with_email(_contract_dict(booking, service, vendor, db), sent)
 
 
 def confirm_installment(*, booking_id: str, installment_id: str, caller_user_id: str, db: Session) -> dict:
@@ -752,12 +762,14 @@ def attach_proposal(
     doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
 
 
-def send_proposal_email(booking: Booking, vendor: Vendor, db: Session) -> None:
+def send_proposal_email(booking: Booking, vendor: Vendor, db: Session) -> bool:
     """After the acceptance commits: the client's link, to their account's
     email. Records the event, so it commits its own row."""
-    if booking.guest_email:
-        _email_client(booking, vendor, db)
-        db.commit()
+    if not booking.guest_email:
+        return False
+    sent = _email_client(booking, vendor, db)
+    db.commit()
+    return sent
 
 
 def propose_from_request(
@@ -781,15 +793,16 @@ def propose_from_request(
     attach_proposal(booking, vendor, db, **document)
     db.commit()
     db.refresh(booking)
+    sent = None
     if email_client:
-        send_proposal_email(booking, vendor, db)
+        sent = send_proposal_email(booking, vendor, db)
         db.refresh(booking)
 
     from app.services.calendar_service import sync_booking_to_calendar
 
     sync_booking_to_calendar(booking, db)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
-    return _contract_dict(booking, service, vendor, db)
+    return _with_email(_contract_dict(booking, service, vendor, db), sent)
 
 
 # ── Templates ────────────────────────────────────────────────────────

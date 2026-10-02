@@ -1230,10 +1230,14 @@ def update_booking_status(
         sync_event_venue(booking.bundle_id, db)
     db.commit()
     db.refresh(booking)
+    # Whether accepting with the usual terms actually emailed the client
+    # their link (null when nothing was to be emailed) — so the vendor app
+    # only says "we've emailed them" when it did.
+    email_sent = None
     if proposal_vendor is not None:
         from app.services.contract_service import send_proposal_email
 
-        send_proposal_email(booking, proposal_vendor, db)
+        email_sent = send_proposal_email(booking, proposal_vendor, db)
         db.refresh(booking)
 
     # A vendor pulling out of an accepted, paid booking always owes the
@@ -1315,6 +1319,7 @@ def update_booking_status(
         "message": f"Booking successfully updated to {status_str}",
         "booking_id": booking.booking_id,
         "notification": notification,
+        "email_sent": email_sent,
     }
 
 

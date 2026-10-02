@@ -116,6 +116,15 @@ Addenda and cancellations attached to an agreed booking:
   - `POST …/decline` `{reason?}`.
   - Voided or declined documents get a 410; an already-signed document gets a 400 on sign.
 
+## Emailing the client their link
+
+`POST /contracts`, `POST /leads/{lead_id}/convert`, `POST /contracts/{id}/send` and
+`POST /bookings/{id}/propose` (accepting a request with a proposal) return the contract plus
+`email_sent`: `true` when the email provider accepted the client's link email, `false` when it
+didn't (no email configured, provider error), and `null` when the vendor didn't ask us to email.
+Accepting a request with the vendor's usual terms (`PUT /bookings/{id}/status` to `approved`) returns `email_sent` the same way. The timeline records `emailed` or `email_failed`. The vendor app says "We emailed the link" only
+on `true`.
+
 ## Change proposals (vendor + public)
 
 The client suggests edits to an unsigned contract; the vendor accepts,
