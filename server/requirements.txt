@@ -1,22 +1,22 @@
 alembic==1.20.0
 bcrypt==5.0.0
 email-validator==2.3.0
-fastapi==0.141.1
+fastapi==0.142.0
 firebase-admin==7.7.0
 # Contract and document PDFs (app/services/pdf_service.py). Pure Python —
 # nothing to install on the image; pulls in fonttools, Pillow and defusedxml.
 fpdf2==2.8.9
 google-api-python-client==2.200.0
-google-auth-httplib2==0.4.2
-google-auth-oauthlib==1.4.1
+google-auth-httplib2==0.4.3
+google-auth-oauthlib==1.5.0
 httpx==0.28.1
 psycopg2-binary==2.9.13
 pytest==9.1.1
-pytest-mock==3.15.1
+pytest-mock==3.16.0
 python-dotenv==1.2.3
 python-multipart==0.0.32
-pyjwt==2.15.0
-sentry-sdk==2.70.0
+pyjwt==2.15.1
+sentry-sdk==2.71.0
 slowapi==0.1.10
 sqlalchemy==2.1.1
 stripe==15.6.1
