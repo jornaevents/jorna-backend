@@ -553,3 +553,27 @@ contract itself.
 addendum or cancellation agreement (#21). iOS doesn't show or send
 proposals yet.
 
+## 24. The negotiation workspace saves drafts on the server (0069)
+
+**Context.** The vendor app's negotiation workspace (from the Figma Make
+design) shows the contract with the other side's changes in red, and lets
+each side type the values they want to send back. It has a Save draft
+button for both sides. A draft kept in the browser would be lost on another
+device, and the user wants real data everywhere.
+
+**Decision.**
+
+- **One draft per contract per side**, in `contract_drafts` (`party` is
+  `vendor` or `client`). Saving replaces it. Each side reads only its own,
+  in the `draft` field of its proposals list.
+- **A draft is checked for shape only.** It may name only terms fields and
+  must stay under 100 KB. The real checks run when it's sent, as a proposal
+  or as the vendor's revision.
+- **Sending spends it.** A client's proposal drops the client's draft. A
+  vendor's Accept, Decline, Revise or plain edit drops the vendor's.
+- **A stale draft is kept and flagged**, not deleted, when the contract moves
+  past the revision it was made against. The workspace asks the person to
+  look again instead of laying old values over new terms.
+- **The vendor's draft remembers the proposal it answers**
+  (`proposal_id`), so Send knows whether it's a Revise.
+

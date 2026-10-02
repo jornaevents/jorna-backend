@@ -159,11 +159,28 @@ Vendor routes, which return 403 for another vendor's contract:
     or the proposal is no longer open.
 - `POST /contracts/{booking_id}/proposals/{id}/decline` `{note?}` → the
   contract, unchanged.
-- `PATCH /contracts/{booking_id}` with `proposal_id` revises: the edit is
+- `PATCH /contracts/{booking_id}` with `proposal_id` (and an optional
+  `proposal_note` for the client) revises: the edit is
   the answer, and it's resent like Accept. A `PATCH` without `proposal_id`
   while a proposal is open marks it `superseded`.
 
 The client hears about Accept, Decline and Revise by email.
+
+**Drafts** (DECISIONS #24). Each side can save what it's about to send.
+Each list endpoint also returns `draft`, the caller's side's draft or null:
+`{base_revision, changes, message, proposal_id, updated_at, stale}`.
+`stale` is true once the contract has moved past `base_revision`.
+
+- `PUT /guest-bookings/{token}/proposals/draft` `{base_revision, changes, message?}` (60/minute).
+- `DELETE /guest-bookings/{token}/proposals/draft` → 204 (30/minute).
+- `PUT /contracts/{booking_id}/proposals/draft` `{base_revision, changes, message?, proposal_id?}`.
+- `DELETE /contracts/{booking_id}/proposals/draft` → 204.
+
+A draft isn't validated beyond its shape, since it can be half done:
+`changes` may hold only terms fields (400 otherwise) and must stay under
+100 KB (413). Saving is refused once the contract is signed (400), or on a
+voided or declined link (410). Proposing drops the client's draft. Any
+vendor answer or edit drops the vendor's.
 
 Contract payloads (`GET /contracts/{id}`, the guest payload, the vendor's
 booking list and bundle bookings) carry `proposal_status`: the latest

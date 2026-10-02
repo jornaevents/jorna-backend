@@ -576,6 +576,29 @@ class ContractProposal(Base):
     responded_at = Column(DateTime, nullable=True)
 
 
+class ContractDraft(Base):
+    """One side's unsent changes to an unsigned contract (0069,
+    docs/DECISIONS.md #24): the client's proposal before they send it, or
+    the vendor's revised values before they answer. Saved as typed — only
+    checked properly when sent. One per contract per party; dropped when
+    that party sends something.
+
+    party: vendor | client. proposal_id: the open proposal a vendor's
+    draft answers, if any."""
+
+    __tablename__ = "contract_drafts"
+    __table_args__ = (UniqueConstraint("booking_id", "party", name="uq_contract_drafts_booking_party"),)
+
+    draft_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    party = Column(String(10), nullable=False)
+    base_revision = Column(Integer, nullable=False)
+    changes = Column(JSON, nullable=False)
+    message = Column(String(2000), nullable=True)
+    proposal_id = Column(String(36), nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ContractEvent(Base):
     """One line of a contract's timeline — sent, viewed, edited, signed, a
     payment marked or confirmed. Append-only. Contracts from before 0065 have

@@ -375,6 +375,7 @@ def contract_pdf(*, booking_id: str, caller_user_id: str, db: Session) -> tuple[
 
 def update_contract(
     *, booking_id: str, caller_user_id: str, update_data: dict, db: Session, proposal_id: str | None = None,
+    proposal_note: str | None = None,
 ) -> dict:
     """Edit before it's signed. A signed agreement is immutable — the whole
     point of e-signing something is that it stops moving. Every edit bumps
@@ -395,9 +396,10 @@ def update_contract(
     proposal = proposal_service.open_for_vendor(booking, proposal_id, db) if proposal_id else None
     apply_update(booking, vendor, update_data, db)
     if proposal is not None:
-        proposal_service.mark_revised(booking, vendor, proposal, db)
+        proposal_service.mark_revised(booking, vendor, proposal, db, note=proposal_note)
     else:
         proposal_service.close_open(db, booking, "superseded", "vendor")
+        proposal_service.drop_draft(db, booking, "vendor")
     db.commit()
     db.refresh(booking)
     if proposal is not None:

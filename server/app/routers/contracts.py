@@ -107,6 +107,8 @@ class ContractUpdateRequest(BaseModel):
     # Revise: this edit answers the client's open change proposal and goes
     # back to them as the next version (docs/DECISIONS.md #23).
     proposal_id: Optional[str] = None
+    # With proposal_id: a note to the client sent with the new version.
+    proposal_note: Optional[str] = Field(default=None, max_length=1000)
 
 
 @router.post("/contracts", summary="Author a guest booking/contract", status_code=201)
@@ -160,9 +162,10 @@ def update_contract_route(
     try:
         update_data = {k: v for k, v in body.model_dump().items() if v is not None}
         proposal_id = update_data.pop("proposal_id", None)
+        proposal_note = update_data.pop("proposal_note", None)
         return update_contract(
             booking_id=booking_id, caller_user_id=current_user.user_id,
-            update_data=update_data, db=db, proposal_id=proposal_id,
+            update_data=update_data, db=db, proposal_id=proposal_id, proposal_note=proposal_note,
         )
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -271,6 +274,39 @@ def decline_proposal_route(
             booking_id=booking_id, proposal_id=proposal_id, caller_user_id=current_user.user_id,
             note=body.note if body else None, db=db,
         )
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class DraftRequest(BaseModel):
+    # The revision the draft was made against, so it can be flagged once stale.
+    base_revision: int
+    # Any of the contract's terms, as typed so far.
+    changes: dict
+    message: Optional[str] = Field(default=None, max_length=2000)
+    # The open proposal this draft answers, if any.
+    proposal_id: Optional[str] = None
+
+
+@router.put("/contracts/{booking_id}/proposals/draft", summary="Save the vendor's unsent revision")
+def save_vendor_draft_route(
+    booking_id: str, body: DraftRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        return proposal_service.vendor_save_draft(
+            booking_id=booking_id, caller_user_id=current_user.user_id, base_revision=body.base_revision,
+            changes=body.changes, message=body.message, proposal_id=body.proposal_id, db=db,
+        )
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/contracts/{booking_id}/proposals/draft", summary="Discard the vendor's unsent revision", status_code=204)
+def drop_vendor_draft_route(
+    booking_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        proposal_service.vendor_drop_draft(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
