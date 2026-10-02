@@ -10,6 +10,14 @@ from app.models.schemas import PaymentStatus
 logger = logging.getLogger(__name__)
 
 
+# Price-only haggling on a request is retired (docs/DECISIONS.md #23): the
+# client proposes changes to the contract itself instead, where price is one
+# term among the rest. A counter already open can still be answered — and
+# the endpoints stay, so older iOS builds keep working — but no new one
+# starts. Tests of the old flow switch this back on.
+NEW_NEGOTIATIONS_OPEN = False
+
+
 class NegotiationError(Exception):
     def __init__(self, status_code: int, detail: str):
         self.status_code = status_code
@@ -138,6 +146,12 @@ def start_negotiation(
     *, booking_id: str, amount_cents: int, message: str | None, caller_user_id: str, db: Session
 ) -> dict:
     """Open a price negotiation on a booking. Either party can initiate."""
+    if not NEW_NEGOTIATIONS_OPEN:
+        raise NegotiationError(
+            410,
+            "Price offers have moved into the contract — once the vendor sends one, "
+            "you can propose changes to any of its terms, price included.",
+        )
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise NegotiationError(404, "Booking not found")

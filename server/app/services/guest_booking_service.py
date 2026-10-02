@@ -144,7 +144,20 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "payment_status": booking.payment_status,
         "deposit_marked_paid_at": utc_iso(booking.deposit_marked_paid_at),
         "deposit_confirmed_received_at": utc_iso(booking.deposit_confirmed_received_at),
+        # The latest change proposal's status (docs/DECISIONS.md #23): open,
+        # accepted, declined, revised… Null on a contract with none, or once
+        # signed. GET …/proposals has the detail.
+        "proposal_status": _proposal_status(booking),
     }
+
+
+def _proposal_status(booking: Booking) -> str | None:
+    from sqlalchemy.orm import object_session
+
+    from app.services.proposal_service import latest_status
+
+    db = object_session(booking)
+    return latest_status(db, booking) if db is not None else None
 
 
 def get_guest_booking(*, contract_token: str, db: Session, preview: bool = False) -> dict:
@@ -238,9 +251,14 @@ def sign_contract(*, contract_token: str, signer_name: str, db: Session, revisio
     ):
         raise GuestBookingError(409, "Your vendor is no longer free on this date — contact them directly")
 
+    from app.services.proposal_service import close_open
+
     booking.signer_name = signer_name.strip()
     booking.signed_at = datetime.now(timezone.utc)
     booking.contract_status = "signed"
+    # Signing takes the version on the table; a proposal still open was
+    # asking for a different one (docs/DECISIONS.md #23).
+    close_open(db, booking, "withdrawn", "client")
     doc.freeze(booking)
     doc.record(db, booking, "signed", "client", {
         "signer_name": booking.signer_name, "revision": booking.revision,
@@ -284,6 +302,9 @@ def decline_contract(*, contract_token: str, reason: str | None, db: Session) ->
     booking.declined_at = _now()
     booking.decline_reason = (reason or "").strip()[:500] or None
     doc.record(db, booking, "declined", "client", {"reason": booking.decline_reason})
+    from app.services.proposal_service import close_open
+
+    close_open(db, booking, "withdrawn", "client")
     db.commit()
     db.refresh(booking)
 

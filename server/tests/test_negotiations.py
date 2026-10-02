@@ -9,6 +9,15 @@ from app.db.models import Booking, Bundle, Service, User, Vendor
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
+@pytest.fixture(autouse=True)
+def _old_price_offers(monkeypatch):
+    """These tests cover the retired price negotiation, which only answers
+    open counters now (docs/DECISIONS.md #23) — switch new ones back on."""
+    from app.services import negotiation_service
+
+    monkeypatch.setattr(negotiation_service, "NEW_NEGOTIATIONS_OPEN", True)
+
+
 @pytest.fixture
 def seeded_db():
     db = TestingSessionLocal()
@@ -448,3 +457,14 @@ def test_negotiation_awaiting_role_flips_with_each_offer(seeded_db):
     assert accept.status_code == 200
     assert awaiting_role_via_bundle() is None
     assert awaiting_role_via_vendor_list() is None
+
+
+def test_new_price_offers_are_retired(seeded_db, monkeypatch):
+    from app.services import negotiation_service
+
+    monkeypatch.setattr(negotiation_service, "NEW_NEGOTIATIONS_OPEN", False)
+    resp = client.post("/negotiations", json={
+        "booking_id": seeded_db["booking"].booking_id, "amount_cents": 90_000,
+    }, headers=make_auth_headers(seeded_db["client_user"]))
+    assert resp.status_code == 410
+    assert "contract" in resp.json()["detail"]

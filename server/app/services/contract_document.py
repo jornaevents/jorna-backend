@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Booking, ContractEvent, Service
+from app.db.models import Booking, ContractEvent, ContractRevision, Service
 from app.models.schemas import PaymentStatus
 from app.utils.timeutil import utc_iso
 
@@ -389,6 +389,66 @@ def normalize_layout(raw: list | None) -> tuple[list[dict] | None, list[dict] | 
             raise DocumentError(f"Unknown contract block: {kind or 'missing type'}")
     clauses = normalize_clauses(terms)
     return layout, clauses
+
+
+def relayout(layout: list[dict] | None, clauses: list[dict] | None) -> tuple[list[dict] | None, list[dict] | None]:
+    """Fit an editor layout to a new set of clauses (a change proposal edits
+    the clauses, not the blocks). Kept clauses stay where they were; removed
+    ones leave; new ones go just before the signature, or at the end. The
+    clauses come back in the layout's order, which is the order both the
+    editor and the signing page show."""
+    if layout is None:
+        return None, clauses
+    by_key = {c["key"]: c for c in clauses or []}
+    out = [b for b in layout if b["type"] != "terms" or b["id"] in by_key]
+    placed = {b["id"] for b in out if b["type"] == "terms"}
+    new = [{"id": c["key"], "type": "terms"} for c in clauses or [] if c["key"] not in placed]
+    at = next((i for i, b in enumerate(out) if b["type"] == "signature"), len(out))
+    out[at:at] = new
+    ordered = [by_key[b["id"]] for b in out if b["type"] == "terms"]
+    return out, ordered or None
+
+
+# ── Versions (0068) ──────────────────────────────────────────────────
+
+# What a change proposal can change, and what a version records. Who the
+# client is isn't here: the client fills that in on the link, and it isn't
+# the vendor's to accept.
+TERMS_FIELDS = (
+    "date_iso", "date_end", "time_start", "time_end", "location", "guest_count",
+    "line_items", "discount_cents", "amount_cents", "payment_schedule", "terms_clauses",
+    "cancellation_window_hours", "overtime_rate_cents",
+)
+
+SCHEDULE_KEYS = ("id", "label", "amount_cents", "due_type", "due_date", "due_days")
+
+
+def bare_schedule(schedule: list[dict] | None) -> list[dict] | None:
+    """A schedule's terms without its payment marks — what was agreed, not
+    what's been paid."""
+    return [{k: i.get(k) for k in SCHEDULE_KEYS} for i in schedule] if schedule else None
+
+
+def terms(booking: Booking) -> dict:
+    """The booking's terms as one version — for contract_revisions, and the
+    base a change proposal is compared against."""
+    out = {f: getattr(booking, f) for f in TERMS_FIELDS}
+    out["payment_schedule"] = bare_schedule(booking.payment_schedule)
+    return out
+
+
+def snapshot_revision(db: Session, booking: Booking) -> None:
+    """Keep this revision's terms, once. Called wherever the revision number
+    is set; a second call for the same number is a no-op, so the first
+    version of a revision is the one kept."""
+    exists = db.query(ContractRevision).filter(
+        ContractRevision.booking_id == booking.booking_id,
+        ContractRevision.revision == booking.revision,
+    ).first()
+    if exists is None and booking.revision is not None:
+        db.add(ContractRevision(
+            booking_id=booking.booking_id, revision=booking.revision, terms=terms(booking), created_at=_now(),
+        ))
 
 
 # ── The signed record ────────────────────────────────────────────────

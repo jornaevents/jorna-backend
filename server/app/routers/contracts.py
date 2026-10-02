@@ -12,7 +12,7 @@ from app.db.database import get_db
 from app.db.models import Vendor
 from app.dependencies import get_current_user
 from app.services.contract_document import DocumentError
-from app.services import pdf_service
+from app.services import pdf_service, proposal_service
 from app.services.contract_service import (
     contract_pdf,
     ContractError,
@@ -104,6 +104,9 @@ class ContractUpdateRequest(BaseModel):
     terms_clauses: Optional[list[dict]] = Field(default=None, max_length=30)
     document_title: Optional[str] = Field(default=None, max_length=200)
     document_layout: Optional[list[dict]] = Field(default=None, max_length=40)
+    # Revise: this edit answers the client's open change proposal and goes
+    # back to them as the next version (docs/DECISIONS.md #23).
+    proposal_id: Optional[str] = None
 
 
 @router.post("/contracts", summary="Author a guest booking/contract", status_code=201)
@@ -156,9 +159,10 @@ def update_contract_route(
 ):
     try:
         update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+        proposal_id = update_data.pop("proposal_id", None)
         return update_contract(
             booking_id=booking_id, caller_user_id=current_user.user_id,
-            update_data=update_data, db=db,
+            update_data=update_data, db=db, proposal_id=proposal_id,
         )
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -214,6 +218,60 @@ def confirm_installment_route(
             caller_user_id=current_user.user_id, db=db,
         )
     except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+class ProposalAnswer(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+@router.get("/contracts/{booking_id}/proposals", summary="The client's change proposals on a contract")
+def list_contract_proposals_route(
+    booking_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        return proposal_service.vendor_history(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/contracts/{booking_id}/proposals/{proposal_id}/accept",
+    summary="Accept the client's changes: they become the next version, sent back to sign",
+)
+def accept_proposal_route(
+    booking_id: str,
+    proposal_id: str,
+    body: Optional[ProposalAnswer] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return proposal_service.accept(
+            booking_id=booking_id, proposal_id=proposal_id, caller_user_id=current_user.user_id,
+            note=body.note if body else None, db=db,
+        )
+    except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/contracts/{booking_id}/proposals/{proposal_id}/decline",
+    summary="Decline the client's changes; the current version stands",
+)
+def decline_proposal_route(
+    booking_id: str,
+    proposal_id: str,
+    body: Optional[ProposalAnswer] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return proposal_service.decline(
+            booking_id=booking_id, proposal_id=proposal_id, caller_user_id=current_user.user_id,
+            note=body.note if body else None, db=db,
+        )
+    except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 

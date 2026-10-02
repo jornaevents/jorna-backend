@@ -64,13 +64,13 @@ def seeded_db():
         user_id=user.user_id, vendor_id=vendor.vendor_id,
         service_id=service.service_id,
         time_start="18:00", time_end="23:00", location="12 Maple Ave, Evanston, IL 60201",
-        date_iso="2026-10-01", status="approved",
+        date_iso="2030-10-01", status="approved",
     )
     booking2 = Booking(
         user_id=user.user_id, vendor_id=vendor.vendor_id,
         service_id=service.service_id,
         time_start="12:00", time_end="16:00", location="12 Maple Ave, Evanston, IL 60201",
-        date_iso="2026-10-01", status="pending",
+        date_iso="2030-10-01", status="pending",
     )
     db.add_all([booking1, booking2])
     db.commit()
@@ -79,7 +79,7 @@ def seeded_db():
 
     event = Event(
         user_id=user.user_id, name="Raj's Wedding",
-        date_iso="2026-10-01", location="12 Maple Ave, Evanston, IL 60201",
+        date_iso="2030-10-01", location="12 Maple Ave, Evanston, IL 60201",
         event_type="wedding", guest_count=200,
     )
     db.add(event)
@@ -169,7 +169,7 @@ def test_list_bundles_query_count_is_constant(seeded_db):
             bk = Booking(
                 user_id=user.user_id, vendor_id=vendor.vendor_id,
                 service_id=service.service_id, time_start="10:00",
-                time_end="12:00", location="12 Maple Ave, Evanston, IL 60201", date_iso="2026-10-01",
+                time_end="12:00", location="12 Maple Ave, Evanston, IL 60201", date_iso="2030-10-01",
                 status="pending",
             )
             db.add(bk); db.commit(); db.refresh(bk)
@@ -507,12 +507,12 @@ class TestLegacyDataCleanup:
 
         orphan = Event(
             user_id=user.user_id, name="AI Orphan",
-            date_iso="2026-11-01", location="12 Maple Ave, Evanston, IL 60201",
+            date_iso="2030-11-01", location="12 Maple Ave, Evanston, IL 60201",
             description="Bundle from jornAI",
         )
         linked = Event(
             user_id=user.user_id, name="AI Linked",
-            date_iso="2026-11-02", location="12 Maple Ave, Evanston, IL 60201",
+            date_iso="2030-11-02", location="12 Maple Ave, Evanston, IL 60201",
             description="Bundle from jornAI",
         )
         db.add_all([orphan, linked])
@@ -548,11 +548,11 @@ class TestLegacyDataCleanup:
         # Same vendor+service+date twice — the select+confirm double-create bug.
         dup_a = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
                         service_id=service.service_id, time_start="18:00", time_end="23:00",
-                        location="TBD", date_iso="2026-12-01", status="pending",
+                        location="TBD", date_iso="2030-12-01", status="pending",
                         bundle_id=bundle.bundle_id)
         dup_b = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
                         service_id=service.service_id, time_start="18:00", time_end="23:00",
-                        location="Edison Hall", date_iso="2026-12-01", status="pending",
+                        location="Edison Hall", date_iso="2030-12-01", status="pending",
                         bundle_id=bundle.bundle_id)
         db.add_all([dup_a, dup_b])
         db.commit()
@@ -582,11 +582,11 @@ class TestLegacyDataCleanup:
         db.flush()
         paid = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
                        service_id=service.service_id, time_start="10:00", time_end="14:00",
-                       location="TBD", date_iso="2026-12-05", status="approved",
+                       location="TBD", date_iso="2030-12-05", status="approved",
                        payment_status="paid", bundle_id=bundle.bundle_id)
         unpaid = Booking(user_id=user.user_id, vendor_id=vendor.vendor_id,
                          service_id=service.service_id, time_start="10:00", time_end="14:00",
-                         location="Edison Hall", date_iso="2026-12-05", status="pending",
+                         location="Edison Hall", date_iso="2030-12-05", status="pending",
                          bundle_id=bundle.bundle_id)
         db.add_all([paid, unpaid])
         db.commit()

@@ -42,6 +42,12 @@ LOCKED_BOOKING_STATUSES = (
 HOLDING_CONTRACT_STATUSES = ("sent", "viewed")
 
 
+def _proposal_status(booking: Booking, db: Session) -> str | None:
+    from app.services.proposal_service import latest_status
+
+    return latest_status(db, booking)
+
+
 def _contract_state(booking: Booking) -> str | None:
     # contract_service imports this module, so it can't be imported at the top.
     from app.services.contract_service import contract_state
@@ -330,6 +336,9 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # party who can actually act on it, instead of for whoever last sent
         # the number that's still sitting there unanswered.
         "negotiation_awaiting_role": _negotiation_awaiting_role(booking, db),
+        # The latest change proposal on an unsigned contract — "open" while
+        # the vendor owes an answer (docs/DECISIONS.md #23). Null otherwise.
+        "proposal_status": _proposal_status(booking, db),
         "status": booking.status,
         # Which of the three real events "rejected" covers — null on a row
         # written before this field existed, or on a client-initiated

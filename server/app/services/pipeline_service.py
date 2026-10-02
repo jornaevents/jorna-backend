@@ -9,7 +9,7 @@ and iOS can't disagree:
 - **Inquiry**: nothing sent yet. A marketplace request, a lead (typed in, or
   added from a Messages thread), or a contract still in draft.
 - **Negotiation**: the contract link has gone to the couple — sent, viewed,
-  countered, declined or expired — and it isn't signed.
+  countered, changes proposed, declined or expired — and it isn't signed.
 
 Signed contracts are bookings, not leads, and leave this list. Dead ones
 (declined requests, voided contracts, converted or lost leads) leave it too.
@@ -64,7 +64,11 @@ def _is_live_unsigned(b: Booking) -> bool:
 
 def _attention(source: str, stage: str, d: dict) -> tuple[str | None, str | None]:
     """(needs_you | waiting | None, why). The order is the order a vendor
-    should act in: a couple's counter beats the contract's own state."""
+    should act in: a couple's proposed changes, then a counter, beat the
+    contract's own state."""
+    proposal = d.get("proposal_status")
+    if proposal == "open":
+        return "needs_you", "changes_proposed"
     if d.get("negotiation_awaiting_role") == "vendor":
         return "needs_you", "counter_offer"
     if d.get("negotiation_awaiting_role") == "client":
@@ -79,6 +83,9 @@ def _attention(source: str, stage: str, d: dict) -> tuple[str | None, str | None
     if status == "draft":
         return "needs_you", "draft"
     if status in ("sent", "viewed"):
+        # A version the vendor sent back in answer to proposed changes.
+        if proposal in ("accepted", "revised"):
+            return "waiting", "revised"
         return "waiting", status
     return None, None
 
@@ -112,6 +119,7 @@ def _booking_item(b: Booking, d: dict, conversation_id: str | None) -> dict:
         "estimated_value_cents": round(price * 100) if price is not None else None,
         "contract_status": d.get("contract_status"),
         "hold_expires_at": d.get("hold_expires_at"),
+        "proposal_status": d.get("proposal_status"),
         "attention": attention,
         "attention_reason": reason,
         "archived": archived,
