@@ -12,8 +12,11 @@ subcategory (see _backfill_subcategory).
 
     # locally (SQLite)
     venv/bin/python -m scripts.seed_staging
-    # against staging, from server/
-    railway run --service Desiconnect --environment staging -- venv/bin/python -m scripts.seed_staging
+    # against staging, from server/. Through the Postgres service's public URL:
+    # the app service's DATABASE_URL is a private host (postgres.railway.internal)
+    # that only resolves inside Railway. Same as docs/STAGING.md.
+    railway run --service Postgres --environment staging -- sh -c \
+      'DATABASE_URL="$DATABASE_PUBLIC_URL" venv/bin/python -m scripts.seed_staging'
 
 Refuses to run against anything that looks like production: a Supabase host,
 or a Railway environment other than `staging`.
