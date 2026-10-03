@@ -7,7 +7,8 @@ Venmo handle so bookings take the manual (off-platform) payment track.
 
 Seeded users have no password and an @example.test email, so nobody can sign
 in as them — they exist to be found and booked. Re-running is safe: a vendor
-whose email already exists is left alone.
+whose email already exists is left alone, apart from filling in a missing
+subcategory (see _backfill_subcategory).
 
     # locally (SQLite)
     venv/bin/python -m scripts.seed_staging
@@ -34,6 +35,7 @@ VENDORS = [
         "slug": "dj",
         "name": ("E2E", "Test DJ"),
         "category": "music_entertainment",
+        "subcategory": "dj",
         "bio": "Test vendor for end-to-end testing on staging. Not a real business.",
         "services": [
             ("Sangeet DJ set", 1500.0, "event", "Four-hour DJ set with lighting."),
@@ -73,6 +75,7 @@ VENDORS = [
         "slug": "mehndi",
         "name": ("E2E", "Test Mehndi Artist"),
         "category": "beauty",
+        "subcategory": "mehndi_artist",
         "bio": "Test vendor for end-to-end testing on staging. Not a real business.",
         "services": [
             ("Bridal mehndi", 600.0, "event", "Full bridal hands and feet."),
@@ -92,15 +95,44 @@ def _refuse_production() -> None:
         sys.exit("Refusing to seed: not on Railway staging and not a local SQLite database.")
 
 
+def _backfill_subcategory(db, user: User, v: dict) -> bool:
+    """Give an already-seeded vendor the subcategory it was first seeded without.
+
+    The builder's DJ, dhol, mehndi and makeup slots match on subcategory, so a
+    music or beauty vendor without one never fills them. That's how staging's
+    only DJ read as "No available DJ" (backend #83). Returns whether anything
+    changed.
+    """
+    sub = v.get("subcategory")
+    vendor = db.query(Vendor).filter(Vendor.user_id == user.user_id).first()
+    if not sub or vendor is None:
+        return False
+    changed = False
+    if vendor.subcategory is None:
+        vendor.subcategory = sub
+        vendor.specializations = [{"category": v["category"], "subcategory": sub}]
+        changed = True
+    for service in db.query(Service).filter(
+        Service.vendor_id == vendor.vendor_id, Service.subcategory.is_(None)
+    ):
+        service.subcategory = sub
+        changed = True
+    return changed
+
+
 def seed() -> None:
     _refuse_production()
     db = SessionLocal()
-    created = skipped = 0
+    created = skipped = fixed = 0
     try:
         for v in VENDORS:
             email = f"e2e-{v['slug']}@example.test"
-            if db.query(User).filter(User.email == email).first():
-                skipped += 1
+            existing = db.query(User).filter(User.email == email).first()
+            if existing:
+                if _backfill_subcategory(db, existing, v):
+                    fixed += 1
+                else:
+                    skipped += 1
                 continue
             user = User(
                 username=f"e2e_{v['slug']}",
@@ -120,7 +152,8 @@ def seed() -> None:
                 user_id=user.user_id,
                 bio=v["bio"],
                 category=v["category"],
-                specializations=[{"category": v["category"], "subcategory": None}],
+                subcategory=v.get("subcategory"),
+                specializations=[{"category": v["category"], "subcategory": v.get("subcategory")}],
                 rating=4.8,
                 num_events=0,
                 travel_radius_miles=100,
@@ -138,6 +171,7 @@ def seed() -> None:
                         price=price,
                         price_unit=unit,
                         category=v["category"],
+                        subcategory=v.get("subcategory"),
                         experience="Test listing — not a real service.",
                         description=desc,
                     )
@@ -146,7 +180,10 @@ def seed() -> None:
         db.commit()
     finally:
         db.close()
-    print(f"Seeded {created} vendor(s); {skipped} already existed.")
+    print(
+        f"Seeded {created} vendor(s); gave {fixed} existing one(s) their "
+        f"subcategory; {skipped} already up to date."
+    )
 
 
 if __name__ == "__main__":
