@@ -364,6 +364,28 @@ def _settle(booking: Booking, vendor: Vendor, settled: dict, db: Session) -> Non
 
 # ── Reading ──────────────────────────────────────────────────────────
 
+def packages_for(booking: Booking, side: str, db: Session) -> list[dict]:
+    """What this side may add as a new item: the vendor's packages and their
+    add-ons. The client sees only the public ones — a private package is the
+    vendor's to offer, not the client's to ask for; the vendor sees every one
+    that isn't archived."""
+    q = db.query(Service).filter(Service.vendor_id == booking.vendor_id)
+    q = q.filter(Service.status == "active") if side == "client" else q.filter(Service.status != "archived")
+    return [
+        {
+            "service_id": s.service_id,
+            "name": s.name,
+            "price_cents": round((s.price or 0) * 100),
+            "price_unit": s.price_unit,
+            "add_ons": [
+                {"id": a.get("id"), "name": a.get("name"), "price_cents": round((a.get("price") or 0) * 100)}
+                for a in (s.add_ons or []) if a.get("id")
+            ],
+        }
+        for s in q.order_by(Service.sort_order.is_(None), Service.sort_order, Service.name).all()
+    ]
+
+
 def _rows(db: Session, booking: Booking) -> list[NegotiationField]:
     return db.query(NegotiationField).filter(NegotiationField.booking_id == booking.booking_id).all()
 
@@ -451,6 +473,7 @@ def state(booking: Booking, side: str, db: Session) -> dict:
             "round": last.round, "side": last.side, "message": last.message,
             "answers": last.answers, "sent_at": utc_iso(last.sent_at),
         } if last else None,
+        "packages": packages_for(booking, side, db) if _turn(booking) == side else [],
         "draft": {
             "round": draft.base_revision, "answers": (draft.changes or {}).get("answers", []),
             "message": draft.message, "updated_at": utc_iso(draft.updated_at),
@@ -544,6 +567,12 @@ def send(
             raise FieldNegotiationError(400, "That item or section isn't in the contract")
         if not _may_change(side, key, locks):
             raise FieldNegotiationError(403, f"{label(key, terms)} can't be changed")
+        if side == "client" and key.startswith("line:new:"):
+            offered = {p["service_id"]: p for p in packages_for(booking, "client", db)}
+            ask = a.get("value") if isinstance(a.get("value"), dict) else {}
+            pkg = offered.get(ask.get("service_id"))
+            if pkg is None or (ask.get("addon_id") and ask["addon_id"] not in {x["id"] for x in pkg["add_ons"]}):
+                raise FieldNegotiationError(400, "You can only add one of the vendor's listed packages or add-ons")
         if side == "client" and key.startswith("line:new:") and "prices" in locks:
             a = {**a, "value": {k: v for k, v in (a.get("value") or {}).items() if k != "unit_price_cents"}}
         value = validate(key, a.get("value"), terms, booking.vendor_id, db)

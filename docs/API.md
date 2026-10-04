@@ -218,7 +218,11 @@ with 409, and these routes refuse the others with 409.
 **State** (`GET`, and every `send`):
 `{mode, side, round, turn, revision, locks[], nudge, can_sign,
 waiting_count, terms, previous_terms, original_terms, fields[], last_send,
-draft}`. Each field is `{key, group, label, value, state, proposed,
+packages[], draft}`. `packages` is what the reader may add as a new item on
+their turn (`[{service_id, name, price_cents, price_unit, add_ons:[{id, name,
+price_cents}]}]`): the vendor's public packages for the client, every
+non-archived one for the vendor, and empty on the other side's turn. A
+client's `line:new` must name one of them (400 otherwise). Each field is `{key, group, label, value, state, proposed,
 proposed_by, round, note, locked, can_change}`; `state` is `agreed`,
 `waiting_vendor`, `waiting_client` or `settled`. `nudge` is true from
 round 6.
