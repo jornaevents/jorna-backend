@@ -1,6 +1,6 @@
 """Thin router for vendor profile endpoints — delegates to vendor_service."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -95,6 +95,14 @@ class CreateVendorRequest(BaseModel):
         return v
 
 
+class PaymentPlan(BaseModel):
+    """A vendor's usual payment schedule (Vendor.default_payment_plan)."""
+
+    preset: Literal["full", "deposit_balance", "three"]
+    # When the final balance is due, in days before the event.
+    balance_days_before: int = Field(default=14, ge=0, le=365)
+
+
 class UpdateVendorRequest(BaseModel):
     bio: Optional[str] = None
     category: Optional[VendorCategory] = None
@@ -114,6 +122,7 @@ class UpdateVendorRequest(BaseModel):
     default_addon_rate_cents: Optional[int] = None
     default_contract_terms: Optional[dict] = None
     default_guest_count_mode: Optional[str] = None
+    default_payment_plan: Optional[PaymentPlan] = None
     years_experience: Optional[int] = Field(default=None, ge=0, le=99)
     contract_hold_days: Optional[int] = Field(default=None, ge=1, le=60)
 

@@ -183,6 +183,11 @@ class Vendor(Base):
     default_contract_terms = Column(JSON, nullable=True)
     # "required" | "optional" | "not_applicable"
     default_guest_count_mode = Column(String(20), nullable=True)
+    # The payment schedule they usually offer (0070): {"preset": "full" |
+    # "deposit_balance" | "three", "balance_days_before": int}. Unlike the
+    # seeds above, the backend reads it: "Send with my usual terms" builds
+    # its schedule from it (contract_service._default_schedule).
+    default_payment_plan = Column(JSON, nullable=True)
 
     # Years in business — a fact about the vendor, not about any one package.
     # Service.experience (free text, required) predates this and is kept for

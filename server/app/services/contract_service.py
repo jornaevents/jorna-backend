@@ -666,14 +666,34 @@ def _default_clauses(vendor: Vendor) -> list[dict] | None:
     return doc.normalize_clauses(raw)
 
 
-def _default_schedule(total: int, deposit_percent: int | None) -> list[dict]:
-    """Deposit on signing and the rest two weeks out when the vendor takes a
-    deposit; otherwise the whole amount on signing."""
-    if deposit_percent and 0 < deposit_percent < 100:
-        deposit = round(total * deposit_percent / 100)
+def _default_schedule(total: int, deposit_percent: int | None, plan: dict | None = None) -> list[dict]:
+    """The schedule "Send with my usual terms" sends.
+
+    The vendor's usual plan (Vendor.default_payment_plan) when they've set
+    one, with their usual deposit (else half) and their balance timing.
+    Without one, the old rule: deposit on signing and the rest two weeks out
+    when they take a deposit, otherwise the whole amount on signing. Same
+    shapes as the builder's presets (web lib/contractDraft presetSchedule).
+    """
+    preset = (plan or {}).get("preset")
+    balance_days = (plan or {}).get("balance_days_before", 14)
+    if preset is None:
+        preset = "deposit_balance" if deposit_percent and 0 < deposit_percent < 100 else "full"
+    pct = deposit_percent if deposit_percent and 0 < deposit_percent < 100 else 50
+
+    if preset == "deposit_balance":
+        deposit = round(total * pct / 100)
         raw = [
             {"label": "Deposit", "amount_cents": deposit, "due_type": "on_signing"},
-            {"label": "Final balance", "amount_cents": total - deposit, "due_type": "before_event", "due_days": 14},
+            {"label": "Final balance", "amount_cents": total - deposit, "due_type": "before_event", "due_days": balance_days},
+        ]
+    elif preset == "three":
+        third = round(total / 3)
+        raw = [
+            {"label": "Deposit", "amount_cents": third, "due_type": "on_signing"},
+            # Halfway-ish: never on or after the final balance.
+            {"label": "Second payment", "amount_cents": third, "due_type": "before_event", "due_days": max(60, balance_days + 30)},
+            {"label": "Final balance", "amount_cents": total - 2 * third, "due_type": "before_event", "due_days": balance_days},
         ]
     else:
         raw = [{"label": "Payment in full", "amount_cents": total, "due_type": "on_signing"}]
@@ -727,7 +747,7 @@ def attach_proposal(
     booking.payment_schedule = (
         doc.normalize_schedule(payment_schedule, total_cents=total)
         if payment_schedule
-        else _default_schedule(total, usual["deposit_percent"])
+        else _default_schedule(total, usual["deposit_percent"], vendor.default_payment_plan)
     )
     doc.sync_legacy_payment_fields(booking)
     if document_layout is not None:
