@@ -229,3 +229,26 @@ def test_years_experience_can_be_set_when_becoming_a_vendor():
     assert resp.status_code in (200, 201), resp.text
     _created["vendors"].append(resp.json()["vendor_id"])
     assert resp.json()["years_experience"] == 7
+
+
+def test_one_package_at_a_time_is_most_popular():
+    v = _setup_vendor()
+    a = _package(v, name="Sangeet set", is_popular=True)
+    b = _package(v, name="Reception set")
+    assert a["is_popular"] is True and b["is_popular"] is False
+
+    # Marking another moves the badge rather than adding a second one.
+    r = client.patch(f"/services/{b['service_id']}", json={"is_popular": True}, headers=v["headers"])
+    assert r.status_code == 200 and r.json()["is_popular"] is True
+    popular = {p["name"]: p["is_popular"] for p in _own_list(v)}
+    assert sum(popular.values()) == 1 and popular["Reception set"] is True
+
+    # A new package marked popular takes it too; an explicit null changes nothing.
+    c = _package(v, name="Baraat set", is_popular=True)
+    client.patch(f"/services/{c['service_id']}", json={"is_popular": None}, headers=v["headers"])
+    popular = {p["name"]: p["is_popular"] for p in _own_list(v)}
+    assert sum(popular.values()) == 1 and popular["Baraat set"] is True
+
+    # And it can be taken off.
+    client.patch(f"/services/{c['service_id']}", json={"is_popular": False}, headers=v["headers"])
+    assert not any(p["is_popular"] for p in _own_list(v))

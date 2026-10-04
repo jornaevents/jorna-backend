@@ -1,7 +1,7 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint, false
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -280,6 +280,9 @@ class Service(Base):
     overtime_rate_cents = Column(Integer, nullable=True)
     # The vendor's own ordering of their packages; null sorts last.
     sort_order = Column(Integer, nullable=True)
+    # "Most popular" badge on the public listing (0071). At most one per
+    # vendor; service_service clears the others when one is marked.
+    is_popular = Column(Boolean, nullable=False, default=False, server_default=false())
 
 
 class Booking(Base):

@@ -95,6 +95,8 @@ class PackageDetails(BaseModel):
     cancellation_window_hours: Optional[int] = Field(default=None, ge=0)
     overtime_rate_cents: Optional[int] = Field(default=None, ge=0)
     sort_order: Optional[int] = None
+    # "Most popular" — marking one package clears it from the vendor's others.
+    is_popular: Optional[bool] = None
 
     @field_validator("inclusions")
     @classmethod
@@ -228,6 +230,7 @@ def create_service_route(
             cancellation_window_hours=body.cancellation_window_hours,
             overtime_rate_cents=body.overtime_rate_cents,
             sort_order=body.sort_order,
+            is_popular=bool(body.is_popular),
             db=db,
         )
     except ServiceError as e:
