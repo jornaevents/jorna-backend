@@ -189,13 +189,19 @@ three repos). Open issues with `.github/ISSUE_TEMPLATE/bug_report.md` or
 backend change here usually needs a matching client-side issue/PR in
 `jorna-ios` and/or `jorna-website`.
 
-This repo is **not** on the board's native auto-add workflow — GitHub Free
-caps that at one source repo per project, and `jorna-website` has it
-instead. Add an issue to the board by hand: `gh project item-add 1 --owner
-jornaevents --url <issue-url>`, or via the issue's own "Projects" sidebar
-field. When doing real dev work here, keep the board current as you go
-(create/find the issue, add it, move its status) rather than leaving that
-to whoever opened the issue.
+New issues here are added to the board by
+`.github/workflows/add-to-board.yml` (GitHub Free allows the board's own
+auto-add for one repo, `jorna-website`); it needs the `ADD_TO_PROJECT_PAT`
+secret. The board's workflows keep Status in step with the
+repos:
+
+- added → **Todo**; a PR that links the issue → **In Review**; the PR merged
+  or the issue closed → **Done**; reopened → **Todo**. Moving a card to Done
+  closes the issue.
+- **Link every PR to its issue** in the description — `Closes #123`, or
+  `Closes jornaevents/jorna-backend#123` for an issue in another repo (the PR
+  template has the line). Without that link nothing moves.
+- **In Progress is the one manual step:** move the card when you start.
 
 ## Keeping this doc layer current
 
