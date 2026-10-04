@@ -48,6 +48,7 @@ def _service_dict(service: Service) -> dict:
         "cancellation_window_hours": service.cancellation_window_hours,
         "overtime_rate_cents": service.overtime_rate_cents,
         "sort_order": service.sort_order,
+        "is_popular": bool(service.is_popular),
     }
 
 
@@ -119,6 +120,7 @@ def create_service(
     cancellation_window_hours: Optional[int] = None,
     overtime_rate_cents: Optional[int] = None,
     sort_order: Optional[int] = None,
+    is_popular: bool = False,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -163,8 +165,12 @@ def create_service(
         cancellation_window_hours=cancellation_window_hours,
         overtime_rate_cents=overtime_rate_cents,
         sort_order=sort_order,
+        is_popular=is_popular,
     )
     db.add(service)
+    db.flush()
+    if is_popular:
+        _only_popular(db, vendor.vendor_id, service.service_id)
     db.commit()
     db.refresh(service)
     return _service_dict(service)
@@ -240,6 +246,13 @@ def list_services(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+def _only_popular(db: Session, vendor_id: str, keep_id: str) -> None:
+    """One "Most popular" per vendor: a badge on every package means none."""
+    db.query(Service).filter(
+        Service.vendor_id == vendor_id, Service.service_id != keep_id, Service.is_popular.is_(True)
+    ).update({Service.is_popular: False}, synchronize_session=False)
+
+
 def update_service(*, user_id: str, service_id: str, update_data: dict, db: Session) -> dict:
     """Partially update a service. Raises 404 if not found, 403 if not the owner."""
     service = db.query(Service).filter(Service.service_id == service_id).first()
@@ -257,11 +270,15 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
         _merged("category"), _merged("location"),
         _merged("venue_latitude"), _merged("venue_longitude"),
     )
-    # status is NOT NULL: an explicit null means "no change", not "clear".
-    if update_data.get("status", "unset") is None:
-        update_data = {k: v for k, v in update_data.items() if k != "status"}
+    # status and is_popular are NOT NULL: an explicit null means "no
+    # change", not "clear".
+    update_data = {
+        k: v for k, v in update_data.items() if not (k in ("status", "is_popular") and v is None)
+    }
     for field, value in update_data.items():
         setattr(service, field, value)
+    if update_data.get("is_popular"):
+        _only_popular(db, vendor.vendor_id, service.service_id)
     db.commit()
     db.refresh(service)
     return _service_dict(service)
