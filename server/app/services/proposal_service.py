@@ -257,6 +257,8 @@ def propose(*, contract_token: str, base_revision: int, changes: dict, message: 
 
     booking = _by_token(contract_token, db)
     _require_live(booking)
+    if booking.negotiation_mode == "fields":
+        raise GuestBookingError(409, "This contract is negotiated field by field — use its negotiation instead")
     if booking.signed_at is not None:
         raise GuestBookingError(400, "This contract is signed, so it can't be changed now")
     _require_open_offer(booking)
@@ -344,6 +346,8 @@ _ANSWERED = {
 
 
 def open_for_vendor(booking: Booking, proposal_id: str, db: Session) -> ContractProposal:
+    if booking.negotiation_mode == "fields":
+        raise ProposalError(409, "This contract is negotiated field by field — use its negotiation instead")
     p = db.query(ContractProposal).filter(
         ContractProposal.proposal_id == proposal_id, ContractProposal.booking_id == booking.booking_id,
     ).first()

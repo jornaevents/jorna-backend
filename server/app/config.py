@@ -75,6 +75,11 @@ INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 # payment_method (see booking_service.create_booking) and Stripe-only
 # endpoints/boot checks are skipped. See docs/DECISIONS.md #12.
 ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
+
+# New contracts negotiate field by field (docs/DECISIONS.md #26) instead of
+# by whole proposal (#23). Off until the web workspace for it ships; turning
+# it on only affects contracts created afterwards.
+FIELD_NEGOTIATION: bool = os.getenv("FIELD_NEGOTIATION", "false").strip().lower() == "true"
 STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")

@@ -123,6 +123,10 @@ class UpdateVendorRequest(BaseModel):
     default_contract_terms: Optional[dict] = None
     default_guest_count_mode: Optional[str] = None
     default_payment_plan: Optional[PaymentPlan] = None
+    # Groups clients can't ask to change on a contract (DECISIONS #26).
+    negotiation_locks: Optional[list[Literal["prices", "event", "policies", "clauses"]]] = Field(
+        default=None, max_length=4,
+    )
     years_experience: Optional[int] = Field(default=None, ge=0, le=99)
     contract_hold_days: Optional[int] = Field(default=None, ge=1, le=60)
 

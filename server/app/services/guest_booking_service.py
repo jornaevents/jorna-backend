@@ -221,7 +221,9 @@ def fill_details(
     return _guest_dict(booking, service, vendor, vendor_user)
 
 
-def sign_contract(*, contract_token: str, signer_name: str, db: Session, revision: int | None = None) -> dict:
+def sign_contract(
+    *, contract_token: str, signer_name: str, db: Session, revision: int | None = None, as_is: bool = False,
+) -> dict:
     """The client's e-signature — a typed full legal name, nothing more.
     Not a verified identity: the token is the only credential this whole
     flow has (see docs/DECISIONS.md #13's accepted-risk note). Requires an
@@ -251,8 +253,12 @@ def sign_contract(*, contract_token: str, signer_name: str, db: Session, revisio
     ):
         raise GuestBookingError(409, "Your vendor is no longer free on this date — contact them directly")
 
+    from app.services.field_negotiation_service import before_signing
     from app.services.proposal_service import close_open
 
+    # Field-by-field negotiation (DECISIONS #26): nothing may be waiting,
+    # unless the client signs the contract as it is.
+    before_signing(booking, as_is=as_is, db=db)
     booking.signer_name = signer_name.strip()
     booking.signed_at = datetime.now(timezone.utc)
     booking.contract_status = "signed"

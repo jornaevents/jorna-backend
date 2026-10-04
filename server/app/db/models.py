@@ -188,6 +188,10 @@ class Vendor(Base):
     # seeds above, the backend reads it: "Send with my usual terms" builds
     # its schedule from it (contract_service._default_schedule).
     default_payment_plan = Column(JSON, nullable=True)
+    # Groups of contract fields clients can't ask to change (0072): any of
+    # "prices", "event", "policies", "clauses". Copied onto each contract
+    # when it's first sent (Booking.negotiation_locks).
+    negotiation_locks = Column(JSON, nullable=True)
 
     # Years in business — a fact about the vendor, not about any one package.
     # Service.experience (free text, required) predates this and is kept for
@@ -468,6 +472,14 @@ class Booking(Base):
     # Bumped by every edit to a contract that's already been sent, so a
     # signature can say which version it was for (sign 409s on a mismatch).
     revision = Column(Integer, nullable=True)
+    # Field-by-field negotiation (0072, docs/DECISIONS.md #26). mode
+    # "fields" opts this contract in; null keeps the 0068 proposal flow.
+    # round counts sends (1 = the vendor's contract); turn is whose move it
+    # is. locks: the vendor's not-negotiable groups as of the first send.
+    negotiation_mode = Column(String(10), nullable=True)
+    negotiation_round = Column(Integer, nullable=True)
+    negotiation_turn = Column(String(10), nullable=True)
+    negotiation_locks = Column(JSON, nullable=True)
     # Exactly what was signed, frozen at signing, and its SHA-256.
     signed_snapshot = Column(JSON, nullable=True)
     signed_snapshot_sha256 = Column(String(64), nullable=True)
@@ -605,6 +617,44 @@ class ContractDraft(Base):
     message = Column(String(2000), nullable=True)
     proposal_id = Column(String(36), nullable=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class NegotiationField(Base):
+    """One contract field that isn't plainly agreed (0072, DECISIONS #26).
+
+    state: waiting_vendor | waiting_client | settled. agreed_value is the
+    contract's value when the field opened; proposed_value is what the side
+    in proposed_by wants. A settled field's value is in the contract itself
+    and only the vendor can reopen it."""
+
+    __tablename__ = "negotiation_fields"
+    __table_args__ = (UniqueConstraint("booking_id", "field_key", name="uq_negotiation_fields_booking_key"),)
+
+    field_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    field_key = Column(String(120), nullable=False)
+    state = Column(String(20), nullable=False)
+    agreed_value = Column(JSON, nullable=True)
+    proposed_value = Column(JSON, nullable=True)
+    proposed_by = Column(String(10), nullable=True)
+    round = Column(Integer, nullable=False)
+    note = Column(String(1000), nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class NegotiationSend(Base):
+    """One side's send in a field-by-field negotiation (0072): the round it
+    made, and each answer — {key, action, value?, note?}. Append-only."""
+
+    __tablename__ = "negotiation_sends"
+
+    send_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    round = Column(Integer, nullable=False)
+    side = Column(String(10), nullable=False)
+    message = Column(String(2000), nullable=True)
+    answers = Column(JSON, nullable=False)
+    sent_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class ContractEvent(Base):

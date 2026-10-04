@@ -200,6 +200,67 @@ too, with the attention reasons `changes_proposed` (needs you) and
 `POST /negotiations` (starting a price counter) now returns 410. Open
 counters can still be answered.
 
+
+## Field-by-field negotiation (vendor + public)
+
+Contracts with `negotiation_mode: "fields"` negotiate one field at a time,
+in strict turns (DECISIONS #26). New contracts get it when
+`FIELD_NEGOTIATION=true`; the proposal routes above refuse these contracts
+with 409, and these routes refuse the others with 409.
+
+**Field keys:** `event.date` `{date_iso, date_end}`, `event.time`
+`{time_start, time_end}`, `event.location`, `event.guests`,
+`line:<id>.quantity`, `line:<id>.price` (cents), `line:<id>.included`,
+`line:new:<tag>` `{service_id, addon_id?, quantity, unit_price_cents?}`,
+`discount` (cents), `policy.cancellation` (hours), `policy.overtime`
+(cents), `clause:<key>.included`, `schedule` (vendor only).
+
+**State** (`GET`, and every `send`):
+`{mode, side, round, turn, revision, locks[], nudge, can_sign,
+waiting_count, terms, previous_terms, original_terms, fields[], last_send,
+draft}`. Each field is `{key, group, label, value, state, proposed,
+proposed_by, round, note, locked, can_change}`; `state` is `agreed`,
+`waiting_vendor`, `waiting_client` or `settled`. `nudge` is true from
+round 6.
+
+**Send** `{base_round, answers: [{key, action, value?, note?}], message?}`:
+
+| `action` | On | Result |
+| --- | --- | --- |
+| `accept` | a field waiting on you | settled; written into the contract |
+| `counter` | a field waiting on you | waiting on the other side at `value` |
+| `keep` | a field waiting on you | waiting on the other side at the agreed value |
+| `change` | an agreed field you may change | waiting on the other side at `value` |
+| `reopen` | a settled field (vendor only) | waiting on the client at `value` |
+
+- 409: not your turn, or `base_round` isn't the current round; a settled
+  date that overlaps another booking.
+- 403: the client changing `schedule` or a group in `locks`; a client
+  `reopen`.
+- 400: an answer missing for a field waiting on you, an unknown key, a value
+  that fails its check, or a change to a field already being negotiated.
+- Settling writes a new revision; when the total moves, the payment
+  schedule is rescaled to it. A vendor send restarts the hold.
+
+Public routes, by the contract's token:
+
+- `GET /guest-bookings/{token}/negotiation` (30/minute).
+- `POST /guest-bookings/{token}/negotiation/send` (10/minute). 400 without
+  a `guest_email`; 410 once expired, voided or declined.
+- `PUT|DELETE /guest-bookings/{token}/negotiation/draft` `{answers, message?}`.
+- `POST /guest-bookings/{token}/sign` takes `as_is`: with fields still
+  waiting it's a 409 unless `as_is` is true, which takes the vendor's open
+  changes and drops the client's.
+
+Vendor routes (403 for another vendor's contract):
+
+- `GET /contracts/{booking_id}/negotiation`.
+- `POST /contracts/{booking_id}/negotiation/send`.
+- `PUT|DELETE /contracts/{booking_id}/negotiation/draft`.
+- `PATCH /contracts/{booking_id}` is a 409 while any field is waiting.
+- `PATCH /vendors/me` `{negotiation_locks: ["prices"|"event"|"policies"|"clauses"]}`;
+  copied onto each contract when it's first sent.
+
 ## PDF downloads
 
 `application/pdf`, sent as an attachment with a filename built from the title and date (DECISIONS #22).

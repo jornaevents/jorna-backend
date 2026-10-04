@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.limiter import limiter
-from app.services import pdf_service, proposal_service
+from app.services import field_negotiation_service, pdf_service, proposal_service
 from app.services.contract_document import DocumentError
 from app.services.contract_service import ContractError
 from app.services.guest_booking_service import (
@@ -84,6 +84,9 @@ class SignRequest(BaseModel):
     # The revision the client read (GET returns it). Refused if the vendor
     # has edited since. Optional so older pages keep working.
     revision: Optional[int] = None
+    # Field-by-field contracts (DECISIONS #26): sign while changes are still
+    # waiting, taking the vendor's and dropping your own.
+    as_is: bool = False
 
 
 @router.post("/{contract_token}/sign", summary="Client e-signs by typing their full legal name")
@@ -96,9 +99,10 @@ def sign_contract_route(
 ):
     try:
         return sign_contract(
-            contract_token=contract_token, signer_name=body.signer_name, revision=body.revision, db=db,
+            contract_token=contract_token, signer_name=body.signer_name, revision=body.revision,
+            as_is=body.as_is, db=db,
         )
-    except GuestBookingError as e:
+    except (GuestBookingError, ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
@@ -232,4 +236,64 @@ def drop_draft_route(request: Request, contract_token: str, db: Session = Depend
     try:
         proposal_service.guest_drop_draft(contract_token=contract_token, db=db)
     except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# ── Field-by-field negotiation (docs/DECISIONS.md #26) ───────────────
+
+
+class NegotiationSendRequest(BaseModel):
+    base_round: int
+    # [{key, action: accept|counter|keep|change, value?, note?}]
+    answers: list[dict]
+    message: Optional[str] = None
+
+
+class NegotiationDraftRequest(BaseModel):
+    answers: list[dict] = []
+    message: Optional[str] = None
+
+
+@router.get("/{contract_token}/negotiation", summary="Where each field of the contract stands, for the client")
+@limiter.limit("30/minute")
+def get_negotiation_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    try:
+        return field_negotiation_service.client_state(contract_token=contract_token, db=db)
+    except (GuestBookingError, ContractError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{contract_token}/negotiation/send", summary="The client's turn: answer and propose, field by field")
+@limiter.limit("10/minute")
+def send_negotiation_route(
+    request: Request, contract_token: str, body: NegotiationSendRequest, db: Session = Depends(get_db),
+):
+    try:
+        return field_negotiation_service.client_send(
+            contract_token=contract_token, base_round=body.base_round, answers=body.answers,
+            message=body.message, db=db,
+        )
+    except (GuestBookingError, ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.put("/{contract_token}/negotiation/draft", summary="Save the client's unsent answers")
+@limiter.limit("60/minute")
+def save_negotiation_draft_route(
+    request: Request, contract_token: str, body: NegotiationDraftRequest, db: Session = Depends(get_db),
+):
+    try:
+        return field_negotiation_service.client_save_draft(
+            contract_token=contract_token, answers=body.answers, message=body.message, db=db,
+        )
+    except (GuestBookingError, ContractError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/{contract_token}/negotiation/draft", summary="Discard the client's unsent answers", status_code=204)
+@limiter.limit("30/minute")
+def drop_negotiation_draft_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    try:
+        field_negotiation_service.client_drop_draft(contract_token=contract_token, db=db)
+    except (GuestBookingError, ContractError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

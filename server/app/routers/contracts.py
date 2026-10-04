@@ -12,7 +12,7 @@ from app.db.database import get_db
 from app.db.models import Vendor
 from app.dependencies import get_current_user
 from app.services.contract_document import DocumentError
-from app.services import pdf_service, proposal_service
+from app.services import field_negotiation_service, pdf_service, proposal_service
 from app.services.contract_service import (
     contract_pdf,
     ContractError,
@@ -307,6 +307,64 @@ def drop_vendor_draft_route(
 ):
     try:
         proposal_service.vendor_drop_draft(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# ── Field-by-field negotiation (docs/DECISIONS.md #26) ───────────────
+
+
+class NegotiationSendRequest(BaseModel):
+    # The round the sender read; refused if the other side has sent since.
+    base_round: int
+    # [{key, action: accept|counter|keep|change|reopen, value?, note?}]
+    answers: list[dict] = Field(max_length=60)
+    message: Optional[str] = Field(default=None, max_length=2000)
+
+
+class NegotiationDraftRequest(BaseModel):
+    answers: list[dict] = Field(default_factory=list, max_length=60)
+    message: Optional[str] = Field(default=None, max_length=2000)
+
+
+@router.get("/contracts/{booking_id}/negotiation", summary="Where each field of the contract stands, for the vendor")
+def get_negotiation_route(booking_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        return field_negotiation_service.vendor_state(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/contracts/{booking_id}/negotiation/send", summary="The vendor's turn: answer and propose, field by field")
+def send_negotiation_route(
+    booking_id: str, body: NegotiationSendRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        return field_negotiation_service.vendor_send(
+            booking_id=booking_id, caller_user_id=current_user.user_id, base_round=body.base_round,
+            answers=body.answers, message=body.message, db=db,
+        )
+    except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.put("/contracts/{booking_id}/negotiation/draft", summary="Save the vendor's unsent answers")
+def save_negotiation_draft_route(
+    booking_id: str, body: NegotiationDraftRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    try:
+        return field_negotiation_service.vendor_save_draft(
+            booking_id=booking_id, caller_user_id=current_user.user_id, answers=body.answers,
+            message=body.message, db=db,
+        )
+    except ContractError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.delete("/contracts/{booking_id}/negotiation/draft", summary="Discard the vendor's unsent answers", status_code=204)
+def drop_negotiation_draft_route(booking_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        field_negotiation_service.vendor_drop_draft(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

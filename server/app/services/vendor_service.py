@@ -182,6 +182,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "years_experience": v.years_experience,
         "contract_hold_days": v.contract_hold_days,
         "default_payment_plan": v.default_payment_plan,
+        "negotiation_locks": v.negotiation_locks or [],
     }
 
 
@@ -256,7 +257,8 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
                      "default_deposit_percent", "default_cancellation_window_hours",
                      "default_overtime_rate_cents", "default_addon_rate_cents",
                      "default_contract_terms", "default_guest_count_mode",
-                     "years_experience", "contract_hold_days", "default_payment_plan"]:
+                     "years_experience", "contract_hold_days", "default_payment_plan",
+                     "negotiation_locks"]:
             setattr(vendor, field, value)
     
     db.commit()
