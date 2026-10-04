@@ -301,3 +301,35 @@ def test_vendor_locks_are_validated():
     db = TestingSessionLocal()
     assert db.query(Vendor).filter(Vendor.vendor_id == v["vendor_id"]).first().negotiation_locks == ["prices", "clauses"]
     db.close()
+
+
+def test_each_side_is_offered_the_packages_it_may_add():
+    from app.db.models import Service
+
+    v = _setup_vendor()
+    db = TestingSessionLocal()
+    private = Service(name="Private after-party set", price=900.0, price_unit="event", vendor_id=v["vendor_id"],
+                      experience="e", category="music", negotiable=False, status="hidden",
+                      add_ons=[{"id": "fog", "name": "Fog machine", "price": 75, "price_unit": "event"}])
+    db.add(private)
+    db.commit()
+    private_id = private.service_id
+    db.close()
+    _created["services"].append(private_id)
+
+    c = _contract(v)
+    mine = client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()["packages"]
+    assert [p["service_id"] for p in mine] == [v["service_id"]]
+    assert mine[0]["price_cents"] == 140_000
+
+    # A private package isn't the client's to ask for, even by id.
+    r = _client_send(c, 1, [{"key": "line:new:x", "action": "change", "value": {"service_id": private_id}}])
+    assert r.status_code == 400
+    assert _client_send(c, 1, [{"key": "line:new:y", "action": "change", "value": {"service_id": v["service_id"]}}]).status_code == 200
+
+    # The vendor, on their turn, sees their private packages too.
+    theirs = client.get(f"/contracts/{c['booking_id']}/negotiation", headers=v["headers"]).json()["packages"]
+    assert {p["service_id"] for p in theirs} == {v["service_id"], private_id}
+    assert theirs[[p["service_id"] for p in theirs].index(private_id)]["add_ons"] == [{"id": "fog", "name": "Fog machine", "price_cents": 7500}]
+    # And whoever's waiting gets none.
+    assert client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()["packages"] == []
