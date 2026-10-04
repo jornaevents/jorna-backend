@@ -577,3 +577,21 @@ device, and the user wants real data everywhere.
 - **The vendor's draft remembers the proposal it answers**
   (`proposal_id`), so Send knows whether it's a Revise.
 
+
+## 25. A vendor's usual payment schedule (0070)
+
+`Vendor.default_payment_plan` is `{"preset": "full" | "deposit_balance" |
+"three", "balance_days_before": int}`, set from the web Contracts page's
+Defaults panel. The builder starts new contracts from it, and "Send with my
+usual terms" (`contract_service._default_schedule`) builds its schedule from
+it: the vendor's usual deposit (else half) for a deposit plan, thirds for
+three payments, and the final balance `balance_days_before` the event.
+
+**Why one field, not a stored schedule.** Amounts depend on each contract's
+total, so what a vendor really has is a habit (which preset, when the balance
+falls due), not a list of payments. The builder's presets already turn that
+into payments.
+
+**Null keeps the old rule.** Deposit + balance two weeks out when the vendor
+takes a deposit, otherwise pay in full on signing, so vendors who never open
+Defaults see no change.

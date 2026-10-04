@@ -275,3 +275,61 @@ def test_the_clients_plan_shows_each_payment_and_when_its_due(world):
     assert balance["marked_paid_at"] is None
     # Leave nothing owed: the reminder tests sweep this same database.
     client.post(f"/guest-bookings/{req.contract_token}/payments/{balance['id']}/mark-paid")
+
+
+# ── The vendor's usual payment plan (0070) ───────────────────────────
+
+
+def test_the_vendors_usual_plan_is_saved_and_read_back(world):
+    w = world
+    r = client.patch(
+        "/vendors/me", json={"default_payment_plan": {"preset": "three", "balance_days_before": 30}}, headers=w["vendor_h"],
+    )
+    assert r.status_code == 200
+    assert r.json()["default_payment_plan"] == {"preset": "three", "balance_days_before": 30}
+
+    bad = client.patch("/vendors/me", json={"default_payment_plan": {"preset": "weekly"}}, headers=w["vendor_h"])
+    assert bad.status_code == 422
+
+    cleared = client.patch("/vendors/me", json={"default_payment_plan": None}, headers=w["vendor_h"])
+    assert cleared.json()["default_payment_plan"] is None
+
+
+def test_send_with_usual_terms_follows_the_vendors_usual_plan(world):
+    w = world
+    client.patch(
+        "/vendors/me", json={"default_payment_plan": {"preset": "three", "balance_days_before": 30}}, headers=w["vendor_h"],
+    )
+    req = w["request"]()
+    assert _accept(w, req).status_code == 200
+
+    w["db"].refresh(req)
+    assert [(i["label"], i["amount_cents"], i.get("due_days")) for i in req.payment_schedule] == [
+        ("Deposit", 33_333, None), ("Second payment", 33_333, 60), ("Final balance", 33_334, 30),
+    ]
+
+
+def test_a_usual_deposit_plan_uses_their_deposit_and_balance_timing(world):
+    w = world
+    client.patch(
+        "/vendors/me",
+        json={"default_payment_plan": {"preset": "deposit_balance", "balance_days_before": 21}},
+        headers=w["vendor_h"],
+    )
+    req = w["request"]()
+    assert _accept(w, req).status_code == 200
+
+    w["db"].refresh(req)
+    assert [(i["label"], i["amount_cents"], i.get("due_days")) for i in req.payment_schedule] == [
+        ("Deposit", 30_000, None), ("Final balance", 70_000, 21),
+    ]
+
+
+def test_pay_in_full_as_the_usual_plan_ignores_the_deposit(world):
+    w = world
+    client.patch("/vendors/me", json={"default_payment_plan": {"preset": "full"}}, headers=w["vendor_h"])
+    req = w["request"]()
+    assert _accept(w, req).status_code == 200
+
+    w["db"].refresh(req)
+    assert [(i["label"], i["amount_cents"]) for i in req.payment_schedule] == [("Payment in full", 100_000)]
