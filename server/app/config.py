@@ -77,9 +77,9 @@ INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
 
 # New contracts negotiate field by field (docs/DECISIONS.md #26) instead of
-# by whole proposal (#23). Off until the web workspace for it ships; turning
-# it on only affects contracts created afterwards.
-FIELD_NEGOTIATION: bool = os.getenv("FIELD_NEGOTIATION", "false").strip().lower() == "true"
+# by whole proposal (#23). On by default; set FIELD_NEGOTIATION=false to go
+# back. Either way, only contracts created afterwards change.
+FIELD_NEGOTIATION: bool = os.getenv("FIELD_NEGOTIATION", "true").strip().lower() == "true"
 STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")

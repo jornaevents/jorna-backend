@@ -204,8 +204,8 @@ counters can still be answered.
 ## Field-by-field negotiation (vendor + public)
 
 Contracts with `negotiation_mode: "fields"` negotiate one field at a time,
-in strict turns (DECISIONS #26). New contracts get it when
-`FIELD_NEGOTIATION=true`; the proposal routes above refuse these contracts
+in strict turns (DECISIONS #26). New contracts get it unless
+`FIELD_NEGOTIATION=false`; the proposal routes above refuse these contracts
 with 409, and these routes refuse the others with 409.
 
 **Field keys:** `event.date` `{date_iso, date_end}`, `event.time`

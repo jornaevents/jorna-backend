@@ -598,8 +598,9 @@ Defaults see no change.
 
 ## 26. Contracts negotiate field by field, in strict turns (0072)
 
-Replaces #23's whole-proposal model for new contracts, behind
-`FIELD_NEGOTIATION` (off until the web workspace ships). Spec, with the
+Replaces #23's whole-proposal model for new contracts. On by default since
+2026-10-04 (`FIELD_NEGOTIATION=false` turns it off for contracts created
+afterwards). Spec, with the
 diagrams: "Contract Negotiation — Logic Spec" (2026-10-04).
 
 - **A field is one value** with a stable key (`event.date`,

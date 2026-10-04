@@ -26,6 +26,13 @@ LAYOUT = [
 
 
 @pytest.fixture(autouse=True)
+def _whole_proposals(monkeypatch):
+    """These contracts use the whole-proposal flow, which field negotiation
+    replaces by default; contracts created with the flag off still use it."""
+    monkeypatch.setattr("app.config.FIELD_NEGOTIATION", False)
+
+
+@pytest.fixture(autouse=True)
 def _clean_proposals():
     yield
     db = TestingSessionLocal()
