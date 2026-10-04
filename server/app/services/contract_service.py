@@ -80,6 +80,9 @@ def _start_hold(booking: Booking, vendor: Vendor, hold_days: int | None) -> None
     booking.contract_status = "viewed" if booking.viewed_at else "sent"
     booking.sent_at = now
     booking.hold_expires_at = now + timedelta(days=_hold_days(vendor, hold_days))
+    from app.services.field_negotiation_service import copy_locks
+
+    copy_locks(booking, vendor)
 
 
 def _own_vendor(*, vendor_id: str, caller_user_id: str, db: Session) -> Vendor:
@@ -345,6 +348,9 @@ def create_contract(
         contract_status="draft",
     )
     doc.sync_legacy_payment_fields(booking)
+    from app.services.field_negotiation_service import start as start_negotiation
+
+    start_negotiation(booking, vendor)
     if not draft:
         _start_hold(booking, vendor, hold_days)
     db.add(booking)
@@ -404,6 +410,12 @@ def update_contract(
     if not booking:
         raise ContractError(404, "Contract not found")
     vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
+    from app.services.field_negotiation_service import has_waiting
+
+    if has_waiting(booking, db):
+        # Mid-negotiation the contract only changes through answers, so
+        # neither side is surprised by a value that moved under an ask.
+        raise ContractError(409, "Changes are being negotiated — answer them in the negotiation instead")
     proposal = proposal_service.open_for_vendor(booking, proposal_id, db) if proposal_id else None
     apply_update(booking, vendor, update_data, db)
     if proposal is not None:
@@ -776,6 +788,9 @@ def attach_proposal(
     booking.contract_token = booking.contract_token or _token()
     booking.status = BookingStatus.APPROVED.value
     booking.confirmed_at = datetime.now(timezone.utc)
+    from app.services.field_negotiation_service import start as start_negotiation
+
+    start_negotiation(booking, vendor)
     _start_hold(booking, vendor, hold_days)
     doc.snapshot_revision(db, booking)
     doc.record(db, booking, "created", "vendor", {"from_request": True})

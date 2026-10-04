@@ -595,3 +595,45 @@ into payments.
 **Null keeps the old rule.** Deposit + balance two weeks out when the vendor
 takes a deposit, otherwise pay in full on signing, so vendors who never open
 Defaults see no change.
+
+## 26. Contracts negotiate field by field, in strict turns (0072)
+
+Replaces #23's whole-proposal model for new contracts, behind
+`FIELD_NEGOTIATION` (off until the web workspace ships). Spec, with the
+diagrams: "Contract Negotiation — Logic Spec" (2026-10-04).
+
+- **A field is one value** with a stable key (`event.date`,
+  `line:<id>.price`, `clause:<key>.included`, …), the same ids the web
+  app's `lib/negotiation` uses. `negotiation_fields` holds only fields
+  that aren't plainly agreed: waiting on the vendor, waiting on the client,
+  or settled.
+- **Each side answers each field**: accept, counter, or keep (a counter
+  with the agreed value). Keep doesn't end the discussion; the other side
+  can ask again.
+- **Strict turns.** `negotiation_turn` says whose move it is, and a send
+  must answer everything waiting on the sender. The client can't withdraw a
+  send. No round limit; the page nudges from round 6.
+- **The contract only holds agreed values.** Accepting writes the value in
+  as a new revision through the vendor-edit path (overlap check, totals),
+  so the signed copy is always one whole version. When the total moves, the
+  schedule is rescaled in proportion.
+- **What the client may change:** event details, items and prices,
+  policies, and whether a clause is included. Not clause text and not the
+  payment schedule. Nothing in a group the vendor locked
+  (`Vendor.negotiation_locks`, copied onto the contract at its first send,
+  so a later Defaults change doesn't move a live negotiation). New items
+  only from the vendor's own packages and add-ons.
+- **Settled fields lock**; only the vendor can reopen one, which starts a
+  new round.
+- **Signing** needs nothing waiting, or `as_is`, which takes the vendor's
+  open changes and drops the client's own.
+
+**Why one table of fields, not a proposal per side.** Answers are per
+field and some settle while others stay open, so the open state has to
+live per field. A send is still kept whole (`negotiation_sends`) for the
+timeline.
+
+**Rollout.** Contracts already mid-negotiation keep #23. Once none are
+open, the flag becomes the default and the proposal routes go read-only.
+iOS follows in its own release.
+
