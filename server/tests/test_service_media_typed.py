@@ -108,7 +108,7 @@ def test_scheduled_scraper_run_leaves_packages_alone(monkeypatch):
         "posts": [{"caption": "#sangeet", "displayUrl": f"https://instagram.cdn/{u}.jpg"}],
     }, None))
 
-    res = client.post("/admin/scraper/run", headers={"X-Scraper-Key": "k"})
+    res = client.post("/admin/scraper/run?wait=true", headers={"X-Scraper-Key": "k"})
 
     assert res.status_code == 200
     mine = [r for r in res.json()["results"] if r["vendor_id"] == vendor_id]

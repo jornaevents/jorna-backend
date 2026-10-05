@@ -45,7 +45,7 @@ custom URL scheme can't be directly.
 | `feed.py` | `/feed` | `feed_service.py` | Discovery/browse feed |
 | `chatbot.py` | `/chatbot` | `chatbot_service.py`, `llm_service.py`, `plan_readiness.py` | Bundle-builder conversational flow (stateless — client holds state, see `docs/API.md`) |
 | `moderation.py` | (no prefix) | — | Content reports, user blocks |
-| `admin.py` | `/admin` | — | Admin-only endpoints (disputes, moderation review) |
+| `admin.py` | `/admin` | — | Admin-only endpoints (disputes, moderation review) and `POST /admin/scraper/run`, the weekly Instagram enrichment (cron-triggered, runs in the background) |
 | `users.py` | (no prefix) | `user_service.py` | User profile CRUD outside of auth |
 | `contracts.py` (leads routes) | (no prefix) | `pipeline_service.py`, `contract_service.py` | The vendor's leads pipeline (`GET /leads/pipeline`), archiving requests/contracts and leads — see DECISIONS #20 |
 | `contract_documents.py` | (no prefix) | `document_service.py` | Addenda and cancellation agreements attached to a signed booking, signed on the public link — see DECISIONS #21 |
@@ -88,5 +88,7 @@ copy for new resources).
   are a decoy.
 - `server/tests/` — one file per feature area, mirrors the router/service
   list above almost 1:1. See `docs/TESTING.md`.
-- `ig_scraper/` — standalone Instagram scraper for sourcing vendor leads;
-  not imported by the FastAPI app.
+- `ig_scraper/` — standalone Instagram enrichment script (tags, photos and an
+  empty bio for vendors who linked a handle), for manual runs; not imported
+  by the FastAPI app. The scheduled run is the backend's own copy in
+  `routers/admin.py` (`POST /admin/scraper/run`) — see `ig_scraper/README.md`.
