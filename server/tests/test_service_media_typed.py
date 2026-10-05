@@ -16,7 +16,6 @@ from types import SimpleNamespace
 from app.db.models import Service, User, Vendor
 from app.routers.vendors import InstagramEnrichRequest, instagram_enrich
 from app.routers.services import _count_media
-from app.services.service_service import media_url
 from app.services.vendor_service import create_vendor
 from tests.test_api import TestingSessionLocal
 
@@ -64,78 +63,57 @@ def test_count_media_still_counts_a_real_bare_string_entry():
     assert _count_media(service, "image") == 1
 
 
-# ── Instagram enrichment writes the typed shape ────────────────────────
+# ── Instagram enrichment never touches packages ───────────────────────
+# It used to add post images to the vendor's first package. The vendor never
+# chose them and Instagram's CDN URLs expire within days, so they became
+# broken images; both enrichment paths now write tags (and an empty bio) only.
 
 
-def test_instagram_enrich_writes_typed_media_not_bare_strings():
+def test_instagram_enrich_ignores_images_and_leaves_the_package_alone():
     db = TestingSessionLocal()
     vendor = _vendor(db)
+    own = [{"url": "https://cdn/own.jpg", "type": "image", "thumbnail_url": None}]
+    service = _service(db, vendor, media=own)
+
+    # An older caller may still send "images" — accepted, and ignored.
+    body = InstagramEnrichRequest.model_validate(
+        {"tags": ["bhangra"], "images": ["https://instagram.cdn/post1.jpg"], "bio": None}
+    )
+    res = instagram_enrich(vendor_id=vendor.vendor_id, body=body, current_admin=None, db=db)
+
+    db.refresh(service); db.refresh(vendor)
+    assert service.media == own
+    assert vendor.instagram_tags == ["bhangra"]
+    assert res["message"] == "Enriched with 1 tags."
+    db.close()
+
+
+def test_scheduled_scraper_run_leaves_packages_alone(monkeypatch):
+    from app.routers import admin
+    from tests.test_api import client
+
+    db = TestingSessionLocal()
+    vendor = _vendor(db)
+    vendor.instagram_username = f"ig_{uuid.uuid4().hex[:8]}"
+    db.commit()
     service = _service(db, vendor)
-
-    instagram_enrich(
-        vendor_id=vendor.vendor_id,
-        body=InstagramEnrichRequest(tags=[], images=["https://instagram.cdn/post1.jpg"], bio=None),
-        current_admin=None,
-        db=db,
-    )
-
-    db.refresh(service)
-    assert service.media == [
-        {"url": "https://instagram.cdn/post1.jpg", "type": "image", "thumbnail_url": None}
-    ]
+    vendor_id, service_id = vendor.vendor_id, service.service_id
     db.close()
 
+    monkeypatch.setenv("APIFY_API_TOKEN", "apify-test")
+    monkeypatch.setenv("SCRAPER_API_KEY", "k")
+    monkeypatch.setattr(admin.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(admin, "_scrape_profile", lambda _t, u: ({
+        "biography": "",
+        "posts": [{"caption": "#sangeet", "displayUrl": f"https://instagram.cdn/{u}.jpg"}],
+    }, None))
 
-def test_instagram_enrich_dedupes_against_existing_typed_media():
-    """Comparing a scraped URL against existing entries has to read through
-    the typed shape (media_url), not compare a bare string to a dict — that
-    comparison silently never matches, which is what let duplicates pile up."""
+    res = client.post("/admin/scraper/run", headers={"X-Scraper-Key": "k"})
+
+    assert res.status_code == 200
+    mine = [r for r in res.json()["results"] if r["vendor_id"] == vendor_id]
+    assert mine and mine[0]["status"] == "enriched" and "images" not in mine[0]
     db = TestingSessionLocal()
-    vendor = _vendor(db)
-    service = _service(db, vendor, media=[
-        {"url": "https://instagram.cdn/post1.jpg", "type": "image", "thumbnail_url": None},
-    ])
-
-    instagram_enrich(
-        vendor_id=vendor.vendor_id,
-        body=InstagramEnrichRequest(
-            tags=[],
-            images=["https://instagram.cdn/post1.jpg", "https://instagram.cdn/post2.jpg"],
-            bio=None,
-        ),
-        current_admin=None,
-        db=db,
-    )
-
-    db.refresh(service)
-    assert [media_url(m) for m in service.media] == [
-        "https://instagram.cdn/post1.jpg",
-        "https://instagram.cdn/post2.jpg",
-    ]
-    db.close()
-
-
-def test_instagram_enrich_still_caps_media_at_nine():
-    db = TestingSessionLocal()
-    vendor = _vendor(db)
-    existing = [
-        {"url": f"https://cdn/existing{i}.jpg", "type": "image", "thumbnail_url": None}
-        for i in range(7)
-    ]
-    service = _service(db, vendor, media=existing)
-
-    instagram_enrich(
-        vendor_id=vendor.vendor_id,
-        body=InstagramEnrichRequest(
-            tags=[],
-            images=[f"https://instagram.cdn/post{i}.jpg" for i in range(5)],
-            bio=None,
-        ),
-        current_admin=None,
-        db=db,
-    )
-
-    db.refresh(service)
-    assert len(service.media) == 9
-    assert all(media_url(m) for m in service.media)
+    assert db.query(Service).filter(Service.service_id == service_id).first().media is None
+    assert "sangeet" in db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first().instagram_tags
     db.close()
