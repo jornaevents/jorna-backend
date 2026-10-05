@@ -1,14 +1,16 @@
 """Admin-only endpoints for user management and scraper control."""
 
+import hmac
 import logging
 import os
 import re
+import threading
 import time
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.db.database import get_db
+from app.db.database import SessionLocal, get_db
 from app.db.models import User, Vendor
 from app.dependencies import get_current_admin
 
@@ -190,15 +192,15 @@ def cleanup_bundle_event_data(
 
 def _require_scraper_auth(
     x_scraper_key: str | None = Header(None, alias="X-Scraper-Key", description="SCRAPER_API_KEY value for cron job access"),
-    api_key: str | None = Query(None, description="DEPRECATED — use the X-Scraper-Key header; query params end up in access logs"),
     credentials=Depends(__import__("fastapi.security", fromlist=["HTTPBearer"]).HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db),
 ):
-    """Accept a valid SCRAPER_API_KEY (X-Scraper-Key header preferred; legacy
-    ?api_key= query param still works) or an admin JWT token."""
+    """Accept the SCRAPER_API_KEY in the X-Scraper-Key header, or an admin JWT.
+
+    Header only: the old ?api_key= query param put the key in every access
+    log and in the cron service's run history, so it's no longer accepted."""
     scraper_key = os.getenv("SCRAPER_API_KEY")
-    supplied = x_scraper_key or api_key
-    if supplied and scraper_key and supplied == scraper_key:
+    if x_scraper_key and scraper_key and hmac.compare_digest(x_scraper_key, scraper_key):
         return  # authenticated via static API key
 
     # Try JWT admin auth
@@ -213,40 +215,33 @@ def _require_scraper_auth(
         except Exception:
             pass
 
-    raise HTTPException(status_code=401, detail="Provide a valid api_key or an admin Bearer token")
+    raise HTTPException(status_code=401, detail="Provide a valid X-Scraper-Key header or an admin Bearer token")
 
 
-@router.post("/scraper/run", summary="Run Instagram enrichment scraper (admin only)")
-def run_scraper(
-    dry_run: bool = Query(False, description="Preview without writing to the database"),
-    delay: float = Query(1.0, description="Seconds to wait between vendor scrapes"),
-    db: Session = Depends(get_db),
-    _auth=Depends(_require_scraper_auth),
-):
-    """Scrape Instagram profiles for all vendors who have linked their account
-    and enrich their profiles with tags (and a bio, if they have none). Never
-    touches their packages or photos.
+# One scrape at a time per process: each one is a paid Apify run per linked
+# vendor, and a second cron call (or an admin's manual one) while the weekly
+# run is still going would pay for every vendor twice.
+_scraper_lock = threading.Lock()
 
-    Authenticate with either a Bearer admin JWT or an api_key query param
-    matching the SCRAPER_API_KEY environment variable (for cron jobs).
+# The background run can't use the request's session — it's closed as soon as
+# the response goes out — so it opens its own. A module attribute so tests can
+# point it at their database.
+_session_factory = SessionLocal
 
-    Requires APIFY_API_TOKEN to be set as an environment variable.
-    Use dry_run=true to preview results without writing anything.
-    """
-    apify_token = os.getenv("APIFY_API_TOKEN")
-    if not apify_token:
-        raise HTTPException(status_code=400, detail="APIFY_API_TOKEN is not configured on the server")
 
-    rows = (
+def _linked_vendors(db: Session) -> list:
+    return (
         db.query(Vendor, User)
         .join(User, Vendor.user_id == User.user_id)
         .filter(Vendor.instagram_username.isnot(None))
         .all()
     )
 
-    if not rows:
-        return {"message": "No vendors have linked their Instagram account.", "results": []}
 
+def _scrape_all(db: Session, apify_token: str, *, dry_run: bool, delay: float) -> dict:
+    """Scrape every linked vendor and (unless dry_run) write tags and an empty
+    bio back — never photos. Takes up to ~2.5 minutes per vendor, all Apify."""
+    rows = _linked_vendors(db)
     results = []
 
     for i, (vendor, user) in enumerate(rows):
@@ -299,3 +294,77 @@ def run_scraper(
         "failed": failed,
         "results": results,
     }
+
+
+def _scrape_all_in_background(apify_token: str, dry_run: bool, delay: float) -> None:
+    """The scheduled run. Its outcome only reaches the logs — the caller got
+    its 202 long ago — so it logs a summary line either way, and the reason
+    for each vendor that failed."""
+    try:
+        with _session_factory() as db:
+            summary = _scrape_all(db, apify_token, dry_run=dry_run, delay=delay)
+        for r in summary["results"]:
+            if r["status"] == "failed":
+                logger.warning("Instagram scraper: @%s failed: %s", r["username"], r.get("error"))
+        logger.info(
+            "Instagram scraper finished: %d vendors, %d enriched, %d failed%s",
+            summary["total"], summary["enriched"], summary["failed"],
+            " (dry run)" if dry_run else "",
+        )
+    except Exception:
+        logger.exception("Instagram scraper run crashed")
+    finally:
+        _scraper_lock.release()
+
+
+@router.post("/scraper/run", summary="Run Instagram enrichment scraper (admin only)")
+def run_scraper(
+    background_tasks: BackgroundTasks,
+    response: Response,
+    dry_run: bool = Query(False, description="Preview without writing to the database"),
+    delay: float = Query(1.0, description="Seconds to wait between vendor scrapes"),
+    wait: bool = Query(False, description="Run inline and return per-vendor results instead of starting it in the background"),
+    db: Session = Depends(get_db),
+    _auth=Depends(_require_scraper_auth),
+):
+    """Scrape Instagram profiles for all vendors who have linked their account
+    and enrich their profiles with tags (and a bio, if they have none). Never
+    touches their packages or photos.
+
+    Authenticate with either a Bearer admin JWT or the SCRAPER_API_KEY value
+    in the X-Scraper-Key header (for cron jobs). A key in the query string is
+    rejected.
+
+    By default this starts the run in the background and answers 202 straight
+    away: each vendor is a synchronous Apify call of up to ~2.5 minutes, so
+    the weekly cron job timed out waiting for the whole run. The outcome is
+    logged ("Instagram scraper finished: …"). Pass wait=true to run inline and
+    get the per-vendor results back instead. A run already in progress
+    answers 409.
+
+    Requires APIFY_API_TOKEN to be set as an environment variable.
+    Use dry_run=true to preview results without writing anything.
+    """
+    apify_token = os.getenv("APIFY_API_TOKEN")
+    if not apify_token:
+        raise HTTPException(status_code=400, detail="APIFY_API_TOKEN is not configured on the server")
+
+    # Counted before taking the lock, so nothing between acquiring it and
+    # handing it to the background task can raise and leave it held.
+    vendors = None if wait else len(_linked_vendors(db))
+
+    if not _scraper_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A scraper run is already in progress")
+
+    if wait:
+        try:
+            summary = _scrape_all(db, apify_token, dry_run=dry_run, delay=delay)
+        finally:
+            _scraper_lock.release()
+        if not summary["results"]:
+            return {"message": "No vendors have linked their Instagram account.", "results": []}
+        return summary
+
+    background_tasks.add_task(_scrape_all_in_background, apify_token, dry_run, delay)
+    response.status_code = 202
+    return {"started": True, "dry_run": dry_run, "vendors": vendors}

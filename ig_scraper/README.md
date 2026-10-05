@@ -71,13 +71,26 @@ selects "Cultural experience" in the bundle builder.
 
 ## Automated scheduling
 
-The scraper runs automatically every **Sunday at 3am** via a cron-job.org job that calls:
+The scraper runs automatically every **Sunday at 3am** via a cron-job.org job
+(schedule `0 3 * * 0`) that calls the backend's copy of this scraper:
 
 ```
-POST https://your-railway-domain.railway.app/admin/scraper/run?api_key=<SCRAPER_API_KEY>
+POST https://your-railway-domain.railway.app/admin/scraper/run
+X-Scraper-Key: <SCRAPER_API_KEY>
 ```
 
-The `SCRAPER_API_KEY` environment variable must be set in Railway. The cron job is configured at cron-job.org with schedule `0 3 * * 0`.
+The key goes in the header only — `?api_key=` in the URL is rejected (401),
+because query strings end up in access logs and cron-job.org's run history.
+`SCRAPER_API_KEY` and `APIFY_API_TOKEN` must be set in Railway.
+
+The endpoint answers **202** straight away and scrapes in the background —
+each vendor is an Apify call of up to ~2.5 minutes, which is why the cron job
+used to time out waiting. Check the outcome in the Railway logs: a line
+`Instagram scraper finished: N vendors, N enriched, N failed`, plus
+`Instagram scraper: @handle failed: …` for each failure. A call while a run
+is still going gets **409**. For a one-off run with per-vendor results in the
+response, call it with an admin token and `?wait=true` (add `&dry_run=true`
+to preview without writing).
 
 ## Environment variables
 
