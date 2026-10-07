@@ -184,6 +184,87 @@ def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str
         )
 
 
+# ── Signing certificate (docs/DECISIONS.md #27) ──────────────────────
+
+CONTRACT_EVENTS = ("sent", "resent", "emailed", "viewed", "code_sent", "signed", "copy_sent")
+DOCUMENT_EVENTS = ("document_sent", "document_emailed", "document_viewed", "code_sent", "document_signed", "copy_sent")
+
+
+def _event_line(e: dict) -> str | None:
+    d = e.get("detail") or {}
+    ip = f" from {d['ip']}" if d.get("ip") else ""
+    kind = e.get("kind")
+    if kind in ("sent", "document_sent"):
+        return "Sent by the provider"
+    if kind == "resent":
+        return "Sent again by the provider"
+    if kind in ("emailed", "document_emailed"):
+        return "Link emailed to the client"
+    if kind in ("viewed", "document_viewed"):
+        return f"Opened by the client{ip}"
+    if kind == "code_sent":
+        return f"Signing code emailed to {d.get('email') or 'the client'}"
+    if kind in ("signed", "document_signed"):
+        return f"Signed by {d.get('signer_name') or 'the client'}{ip}"
+    if kind == "copy_sent":
+        return f"Signed copy emailed to the {d.get('to') or 'client'}"
+    return None
+
+
+def _certificate(pdf: _Pdf, title: str, signer: str, signed_at: str | None, sha: str | None,
+                 evidence: dict, events: list[dict]):
+    """The last page: how this agreement was signed, for anyone checking
+    it later. Everything above the event log is from the signed snapshot,
+    so the fingerprint covers it."""
+    pdf.add_page()
+    pdf.font(8, True, GOLD)
+    pdf.cell(0, 5, "SIGNING CERTIFICATE", new_x="LMARGIN", new_y="NEXT")
+    pdf.font(14, True)
+    pdf.multi_cell(0, 7, title, new_x="LMARGIN", new_y="NEXT")
+    pdf.rule()
+
+    def field(label: str, value: str | None):
+        pdf.font(8, True, FAINT)
+        pdf.cell(42, 5.5, label)
+        pdf.font(9.5)
+        pdf.multi_cell(0, 5.5, value or "Not recorded", align="L", new_x="LMARGIN", new_y="NEXT")
+
+    consent = evidence.get("consent") or {}
+    field("Signed by", f"{signer} (typed full legal name)")
+    field("Signed at", signed_on(signed_at))
+    field("Email", evidence.get("email"))
+    field(
+        "Email confirmed",
+        f"Yes, by a one-time code sent there, entered {signed_on(evidence['email_verified_at'])}"
+        if evidence.get("email_verified_at") else "No",
+    )
+    field("IP address", evidence.get("ip"))
+    field("Device", evidence.get("user_agent"))
+    field("E-records consent", f"Given (version {consent['version']})" if consent else "Not given")
+    if sha:
+        field("Fingerprint", f"SHA-256 {sha}")
+    if consent.get("text"):
+        pdf.eyebrow("Consent the signer agreed to")
+        pdf.text_block(f"“{consent['text']}”", size=9)
+    lines = [(e.get("at"), _event_line(e)) for e in events]
+    lines = [(at, text) for at, text in lines if text]
+    if lines:
+        pdf.eyebrow("History")
+        for at, text in lines:
+            pdf.font(8.5, color=FAINT)
+            pdf.cell(62, 5, signed_on(at))
+            pdf.font(9)
+            pdf.multi_cell(0, 5, text, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+    pdf.font(7.5, color=FAINT)
+    pdf.multi_cell(
+        0, 4,
+        "Jorna provided the software used to send and sign this agreement and is not a party to it. "
+        "Times are UTC. The fingerprint covers the agreement's text and every field above the history.",
+        new_x="LMARGIN", new_y="NEXT",
+    )
+
+
 def _ordered_blocks(layout: list | None, clauses: list) -> list[tuple[str, dict | None]]:
     """The editor's order (backend 0067), or the classic one for a contract
     written before it: every clause appears once, each structured block
@@ -211,7 +292,8 @@ def _ordered_blocks(layout: list | None, clauses: list) -> list[tuple[str, dict 
 # ── A contract ───────────────────────────────────────────────────────
 
 def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
-                    signer: str | None, signed_at: str | None, sha: str | None) -> tuple[bytes, str]:
+                    signer: str | None, signed_at: str | None, sha: str | None,
+                    events: list[dict] | None = None) -> tuple[bytes, str]:
     """`a` is contract_document.agreement()'s shape — a signed snapshot, or
     the live booking's for an unsigned one."""
     client = a.get("client") or {}
@@ -294,13 +376,16 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
 
     pdf.rule()
     _signatures(pdf, client.get("name") or "Client", vendor_name, signer, signed_at, sha)
+    if signer and a.get("evidence"):
+        _certificate(pdf, title, signer, signed_at, sha, a["evidence"], events or [])
     return bytes(pdf.output()), filename(title, a.get("date_iso"))
 
 
 # ── An addendum or cancellation agreement ────────────────────────────
 
 def render_document(d: dict, *, vendor_name: str, client_name: str | None, agreement_title: str | None,
-                    signer: str | None, signed_at: str | None, sha: str | None) -> tuple[bytes, str]:
+                    signer: str | None, signed_at: str | None, sha: str | None,
+                    events: list[dict] | None = None) -> tuple[bytes, str]:
     """`d` has kind, title, sections and date_iso — the signed snapshot, or
     the live document."""
     kind = KIND_LABEL.get(d.get("kind"), "Document")
@@ -326,6 +411,8 @@ def render_document(d: dict, *, vendor_name: str, client_name: str | None, agree
     )
     pdf.rule()
     _signatures(pdf, client_name or "Client", vendor_name, signer, signed_at, sha)
+    if signer and d.get("evidence"):
+        _certificate(pdf, title, signer, signed_at, sha, d["evidence"], events or [])
     return bytes(pdf.output()), filename(title, d.get("date_iso"))
 
 
@@ -371,10 +458,16 @@ def contract_pdf(booking, db) -> tuple[bytes, str]:
         signer=snap.get("signer_name") if snap else None,
         signed_at=snap.get("signed_at") if snap else None,
         sha=booking.signed_snapshot_sha256 if snap else None,
+        events=[
+            e for e in doc.timeline(booking, db, None)
+            if e["kind"] in CONTRACT_EVENTS and not (e.get("detail") or {}).get("document_id")
+        ] if snap else None,
     )
 
 
 def document_pdf(d, booking, db, client_name: str | None) -> tuple[bytes, str]:
+    from app.services import contract_document as doc
+
     snap = d.signed_snapshot
     live = {"kind": d.kind, "title": d.title, "sections": d.sections, "date_iso": booking.date_iso}
     agreement_title = booking.document_title or (
@@ -388,4 +481,8 @@ def document_pdf(d, booking, db, client_name: str | None) -> tuple[bytes, str]:
         signer=snap.get("signer_name") if snap else None,
         signed_at=snap.get("signed_at") if snap else None,
         sha=d.signed_snapshot_sha256 if snap else None,
+        events=[
+            e for e in doc.timeline(booking, db, None)
+            if e["kind"] in DOCUMENT_EVENTS and (e.get("detail") or {}).get("document_id") == d.document_id
+        ] if snap else None,
     )

@@ -488,14 +488,18 @@ def agreement(booking: Booking) -> dict:
     }
 
 
-def freeze(booking: Booking) -> None:
+def freeze(booking: Booking, evidence: dict | None = None) -> None:
     """At signing: keep exactly what was signed, and its fingerprint, so a
-    later dispute can be settled against the text rather than memory."""
+    later dispute can be settled against the text rather than memory. The
+    signing evidence (signing_evidence.collect) goes inside, so the
+    fingerprint covers who signed from where, too."""
     snapshot = {
         **agreement(booking),
         "signer_name": booking.signer_name,
         "signed_at": booking.signed_at.isoformat(),
     }
+    if evidence is not None:
+        snapshot["evidence"] = evidence
     booking.signed_snapshot = snapshot
     booking.signed_snapshot_sha256 = hashlib.sha256(
         json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()

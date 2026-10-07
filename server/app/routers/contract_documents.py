@@ -13,6 +13,7 @@ from app.db.database import get_db
 from app.dependencies import get_current_user
 from app.limiter import limiter
 from app.services import pdf_service
+from app.utils.request_meta import client_meta
 from app.services.document_service import (
     document_pdf,
     guest_document_pdf,
@@ -22,6 +23,7 @@ from app.services.document_service import (
     get_by_token,
     list_documents,
     send_document,
+    send_signing_code,
     sign_by_token,
     update_document,
     void_document,
@@ -50,6 +52,10 @@ class DocumentSendRequest(BaseModel):
 
 class SignRequest(BaseModel):
     signer_name: str = Field(max_length=255)
+    # DECISIONS #27, as on a contract.
+    code: Optional[str] = Field(default=None, max_length=12)
+    consent: bool = False
+    consent_version: Optional[str] = Field(default=None, max_length=40)
 
 
 class DeclineRequest(BaseModel):
@@ -130,7 +136,7 @@ def void_document_route(document_id: str, current_user=Depends(get_current_user)
 @limiter.limit("20/minute")
 def get_guest_document_route(request: Request, token: str, preview: bool = False, db: Session = Depends(get_db)):
     try:
-        return get_by_token(token=token, preview=preview, db=db)
+        return get_by_token(token=token, preview=preview, db=db, client=client_meta(request))
     except DocumentServiceError as e:
         raise _http(e)
 
@@ -144,11 +150,23 @@ def guest_document_pdf_route(request: Request, token: str, db: Session = Depends
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+@router.post("/guest-documents/{token}/signing-code", summary="Email the couple the code they sign with")
+@limiter.limit("3/minute")
+def send_document_signing_code_route(request: Request, token: str, db: Session = Depends(get_db)):
+    try:
+        return send_signing_code(token=token, db=db)
+    except DocumentServiceError as e:
+        raise _http(e)
+
+
 @router.post("/guest-documents/{token}/sign", summary="The couple signs a document by typing their name")
 @limiter.limit("5/minute")
 def sign_guest_document_route(request: Request, token: str, body: SignRequest, db: Session = Depends(get_db)):
     try:
-        return sign_by_token(token=token, signer_name=body.signer_name, db=db)
+        return sign_by_token(
+            token=token, signer_name=body.signer_name, code=body.code, consent=body.consent,
+            consent_version=body.consent_version, client=client_meta(request), db=db,
+        )
     except DocumentServiceError as e:
         raise _http(e)
 

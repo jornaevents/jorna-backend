@@ -637,3 +637,45 @@ timeline.
 open, the flag becomes the default and the proposal routes go read-only.
 iOS follows in its own release.
 
+
+## 27. A signature by link carries its own evidence (0073)
+
+A typed name on a token link is only as good as what we can show about it
+later. Each signature, of a contract or an attached document, now records:
+
+- **Where it came from.** IP address and user agent, from the request
+  (`app/utils/request_meta.py`). uvicorn trusts Railway's
+  `X-Forwarded-For` (`entrypoint.sh`); before that, every request looked
+  like Railway's edge, which also made the rate limiter count all
+  visitors as one.
+- **Consent to electronic records** (ESIGN §7001(c)). The words live once,
+  in `app/services/esign_consent.py`. The guest GETs return them
+  (`esign_consent`), and the signature stores the exact text and its
+  version. Change the words → bump the version; a page holding an older
+  version is refused (409). The wording waits on counsel.
+- **Proof of the email.** `POST …/signing-code` emails a 6-digit code to
+  the email on the contract (`signing_codes`, 0073; HMAC hash only,
+  10 minutes, 5 tries, a new code replaces the old). It's bound to that
+  address, so changing the email voids it. The code is checked after every
+  other check on the signature, so a refusal for another reason doesn't
+  spend it.
+
+All of it goes into the signed snapshot as `evidence`, so the SHA-256
+covers it. The PDF gets a last page, a signing certificate: the evidence,
+the consent text, and the history (sent, opened from, code sent, signed
+from, copies emailed). Both sides are emailed the signed PDF, and each
+send is a `copy_sent` event with its Resend id.
+
+**Rollout.** `SIGNING_REQUIRE_CODE` is off until the web page that asks
+for the code ships. While off, an older page still signs; whatever it sends
+is checked, and the evidence records what was missing
+(`email_verified_at: null`, `consent: null`). `SIGNING_TEST_CODE` lets the
+staging E2E suite sign without reading email, and is ignored when
+`RAILWAY_ENVIRONMENT_NAME` is production.
+
+**Why a code and not sign-in.** Sign-in to sign (claim-by-link) waits on
+legal. A code works on today's link, proves control of the email the
+signed copy goes to, and stays useful after sign-in ships.
+
+**The vendor sees the evidence only in the PDF.** Their app shows no client
+IPs.

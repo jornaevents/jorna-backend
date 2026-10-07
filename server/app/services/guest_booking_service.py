@@ -7,18 +7,23 @@ Nothing here accepts a `caller_user_id` — there isn't one.
 The vendor-authenticated side (create/edit a contract, confirm receiving a
 payment) lives in contract_service.py / stripe_service.py instead.
 """
+import logging
 from datetime import date, datetime, time, timezone
 
 from sqlalchemy.orm import Session
 
-from app.utils.timeutil import utc_iso
+from app import config
 from app.db.models import Booking, Service, User, Vendor
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
-from app.services.booking_service import vendor_has_conflicting_booking
 from app.services import contract_document as doc
+from app.services import esign_consent, signing_evidence
+from app.services.booking_service import vendor_has_conflicting_booking
 from app.services.contract_service import contract_state
-from app.services.email_service import send_email
+from app.services.email_service import pdf_attachment, send_email
 from app.utils.notifications import notify_vendor_contract_event
+from app.utils.timeutil import utc_iso
+
+logger = logging.getLogger(__name__)
 
 
 class GuestBookingError(Exception):
@@ -148,6 +153,10 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         # accepted, declined, revised… Null on a contract with none, or once
         # signed. GET …/proposals has the detail.
         "proposal_status": _proposal_status(booking),
+        # What the signing page asks for before it signs (DECISIONS #27):
+        # the consent words to show, and whether a code is required.
+        "esign_consent": esign_consent.view(),
+        "signing_code_required": config.SIGNING_REQUIRE_CODE,
     }
 
 
@@ -160,16 +169,17 @@ def _proposal_status(booking: Booking) -> str | None:
     return latest_status(db, booking) if db is not None else None
 
 
-def get_guest_booking(*, contract_token: str, db: Session, preview: bool = False) -> dict:
+def get_guest_booking(*, contract_token: str, db: Session, preview: bool = False, client: dict | None = None) -> dict:
     """The client opening their link. The first open marks the contract
     viewed; preview=True is the vendor's own "View as client", which
     mustn't count as the client having seen it. It's only a hint anyone
-    could send — the worst a forged one does is leave "viewed" unset."""
+    could send — the worst a forged one does is leave "viewed" unset.
+    `client` is request_meta.client_meta: where the first open came from."""
     booking = _by_token(contract_token, db)
     if not preview and booking.viewed_at is None and booking.contract_status == "sent":
         booking.contract_status = "viewed"
         booking.viewed_at = _now()
-        doc.record(db, booking, "viewed", "client")
+        doc.record(db, booking, "viewed", "client", client)
         db.commit()
         db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
@@ -221,14 +231,37 @@ def fill_details(
     return _guest_dict(booking, service, vendor, vendor_user)
 
 
+def send_signing_code(*, contract_token: str, db: Session) -> dict:
+    """Email the client the code they sign with (DECISIONS #27)."""
+    booking = _by_token(contract_token, db)
+    _require_live(booking)
+    if booking.signed_at is not None:
+        raise GuestBookingError(400, "This booking has already been signed")
+    _require_open_offer(booking)
+    try:
+        return signing_evidence.send_code(
+            db, booking, email=booking.guest_email, vendor_name=_vendor_name(booking, db), what="your contract",
+        )
+    except signing_evidence.SigningError as e:
+        raise GuestBookingError(e.status_code, e.detail)
+
+
+def _vendor_name(booking: Booking, db: Session) -> str:
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
+    return f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
+
+
 def sign_contract(
     *, contract_token: str, signer_name: str, db: Session, revision: int | None = None, as_is: bool = False,
+    code: str | None = None, consent: bool = False, consent_version: str | None = None, client: dict | None = None,
 ) -> dict:
-    """The client's e-signature — a typed full legal name, nothing more.
-    Not a verified identity: the token is the only credential this whole
-    flow has (see docs/DECISIONS.md #13's accepted-risk note). Requires an
-    email on file since signing is the moment we send the client their only
-    durable copy of the agreement -- there's no account to log back into."""
+    """The client's e-signature: a typed full legal name, plus the evidence
+    signing_evidence.collect gathers — the e-records consent they ticked,
+    the code we emailed them, and where they signed from (DECISIONS #27).
+    The token is still the only credential to open the contract (#13).
+    Requires an email on file: it's where the code goes, and where both
+    sides' signed copies are sent."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
     if booking.signed_at is not None:
@@ -256,6 +289,16 @@ def sign_contract(
     from app.services.field_negotiation_service import before_signing
     from app.services.proposal_service import close_open
 
+    # Last check before anything changes, so a refusal elsewhere doesn't
+    # spend the code — and a wrong code commits nothing but its count.
+    try:
+        evidence = signing_evidence.collect(
+            db, booking, email=booking.guest_email, client=client,
+            code=code, consent=consent, consent_version=consent_version,
+        )
+    except signing_evidence.SigningError as e:
+        raise GuestBookingError(e.status_code, e.detail)
+
     # Field-by-field negotiation (DECISIONS #26): nothing may be waiting,
     # unless the client signs the contract as it is.
     before_signing(booking, as_is=as_is, db=db)
@@ -265,10 +308,11 @@ def sign_contract(
     # Signing takes the version on the table; a proposal still open was
     # asking for a different one (docs/DECISIONS.md #23).
     close_open(db, booking, "withdrawn", "client")
-    doc.freeze(booking)
+    doc.freeze(booking, evidence)
     doc.record(db, booking, "signed", "client", {
         "signer_name": booking.signer_name, "revision": booking.revision,
-        "sha256": booking.signed_snapshot_sha256,
+        "sha256": booking.signed_snapshot_sha256, "ip": evidence["ip"],
+        "email_verified": evidence["email_verified_at"] is not None,
     })
     db.commit()
     db.refresh(booking)
@@ -278,7 +322,7 @@ def sign_contract(
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
     vendor_name = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
 
-    _send_signed_receipt(booking, service, vendor, vendor_name)
+    _send_signed_copies(booking, service, vendor, vendor_user, vendor_name, db)
     notify_vendor_contract_event(
         vendor_user=vendor_user,
         title=f"{booking.signer_name} signed your contract",
@@ -328,10 +372,47 @@ def decline_contract(*, contract_token: str, reason: str | None, db: Session) ->
     return _guest_dict(booking, service, vendor, vendor_user)
 
 
-def _send_signed_receipt(booking: Booking, service: Service | None, vendor: Vendor | None, vendor_name: str) -> None:
-    """Best-effort — a failed send must not fail the signature itself. The
-    email is the client's only record of this agreement, but the signature
-    is already committed by the time this runs."""
+def _send_signed_copies(
+    booking: Booking, service: Service | None, vendor: Vendor | None, vendor_user: User | None,
+    vendor_name: str, db: Session,
+) -> None:
+    """Both sides get the signed PDF, certificate included (DECISIONS #27).
+    Best-effort — a failed send must not fail the signature itself, which
+    is already committed by the time this runs. Each send that went out is
+    on the timeline with its delivery id."""
+    from app.services import pdf_service
+
+    try:
+        attachment = [pdf_attachment(pdf_service.contract_pdf(booking, db))]
+    except Exception:
+        logger.exception("Couldn't draw the signed PDF for %s", booking.booking_id)
+        attachment = None
+    sent = _send_signed_receipt(booking, service, vendor, vendor_name, attachment)
+    if sent.get("success"):
+        doc.record(db, booking, "copy_sent", "system", {"to": "client", "email_id": sent.get("id")})
+    vendor_email = getattr(vendor_user, "email", None)
+    if vendor_email:
+        client = booking.signer_name or "Your client"
+        sent = send_email(
+            to=vendor_email,
+            subject=f"Signed: {client}, {_pretty_date(booking.date_iso)}",
+            html=(
+                f"<p>{client} signed your contract for "
+                f"{service.name if service else 'your services'} on {_pretty_date(booking.date_iso)}.</p>"
+                "<p>The signed copy is attached, with its signing certificate. Keep it with your records.</p>"
+            ),
+            attachments=attachment,
+        )
+        if sent.get("success"):
+            doc.record(db, booking, "copy_sent", "system", {"to": "vendor", "email_id": sent.get("id")})
+    db.commit()
+
+
+def _send_signed_receipt(
+    booking: Booking, service: Service | None, vendor: Vendor | None, vendor_name: str,
+    attachments: list[dict] | None = None,
+) -> dict:
+    """The client's confirmation, with the signed PDF attached."""
     if booking.payment_schedule:
         payment_line = "<br>".join(
             f"{i['label']}: ${i['amount_cents'] / 100:,.2f}"
@@ -358,12 +439,14 @@ def _send_signed_receipt(booking: Booking, service: Service | None, vendor: Vend
     {payment_line}</p>
     <p>You'll pay {vendor_name} directly — Jorna doesn't handle the money.
     {pay_to_line}</p>
-    <p>Signed by {booking.signer_name} on {booking.signed_at.strftime('%B %d, %Y')}.</p>
+    <p>Signed by {booking.signer_name} on {booking.signed_at.strftime('%B %d, %Y')}.
+    {"Your signed copy is attached." if attachments else ""}</p>
     """
-    send_email(
+    return send_email(
         to=booking.guest_email,
         subject=f"Your booking with {vendor_name} is confirmed",
         html=html,
+        attachments=attachments,
     )
 
 

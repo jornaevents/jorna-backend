@@ -10,17 +10,22 @@ step lands on the parent booking's contract timeline.
 
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app import config
 from app.config import WEB_APP_URL
 from app.db.models import Booking, ContractDocument, User, Vendor
 from app.models.schemas import BookingStatus
 from app.services import contract_document as doc
-from app.services.email_service import send_email
+from app.services import esign_consent, signing_evidence
+from app.services.email_service import pdf_attachment, send_email
 from app.utils.timeutil import utc_iso
+
+logger = logging.getLogger(__name__)
 
 KINDS = ("addendum", "cancellation")
 KIND_LABEL = {"addendum": "addendum", "cancellation": "cancellation agreement"}
@@ -107,6 +112,10 @@ def _dict(d: ContractDocument, booking: Booking, db: Session, *, with_token: boo
     }
     if with_token:
         out["token"] = d.token
+    else:
+        # The client's signing page (DECISIONS #27).
+        out["esign_consent"] = esign_consent.view()
+        out["signing_code_required"] = config.SIGNING_REQUIRE_CODE
     return out
 
 
@@ -272,24 +281,49 @@ def _require_open(d: ContractDocument) -> None:
         raise DocumentServiceError(400, "This document has already been signed")
 
 
-def get_by_token(*, token: str, preview: bool, db: Session) -> dict:
+def get_by_token(*, token: str, preview: bool, db: Session, client: dict | None = None) -> dict:
     """The couple opening their link. The first open marks it viewed; the
-    vendor's own preview doesn't."""
+    vendor's own preview doesn't. `client` is where that open came from."""
     d, booking = _by_token(token, db)
     if not preview and d.viewed_at is None and d.status == "sent":
         d.status = "viewed"
         d.viewed_at = _now()
-        doc.record(db, booking, "document_viewed", "client", {"document_id": d.document_id})
+        doc.record(db, booking, "document_viewed", "client", {"document_id": d.document_id, **(client or {})})
         db.commit()
         db.refresh(d)
     return _dict(d, booking, db, with_token=False)
 
 
-def sign_by_token(*, token: str, signer_name: str, db: Session) -> dict:
+def send_signing_code(*, token: str, db: Session) -> dict:
+    """Email the client the code they sign this document with (DECISIONS #27)."""
+    d, booking = _by_token(token, db)
+    _require_open(d)
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == d.vendor_id).first()
+    try:
+        return signing_evidence.send_code(
+            db, booking, email=_client_email(booking, db), vendor_name=_vendor_name(vendor, db) or "your vendor",
+            what=f"the {KIND_LABEL.get(d.kind, 'document')} “{d.title}”", document_id=d.document_id,
+        )
+    except signing_evidence.SigningError as e:
+        raise DocumentServiceError(e.status_code, e.detail)
+
+
+def sign_by_token(
+    *, token: str, signer_name: str, db: Session, code: str | None = None, consent: bool = False,
+    consent_version: str | None = None, client: dict | None = None,
+) -> dict:
     d, booking = _by_token(token, db)
     _require_open(d)
     if not signer_name or not signer_name.strip():
         raise DocumentServiceError(400, "Type your full legal name to sign")
+    client_email = _client_email(booking, db)
+    try:
+        evidence = signing_evidence.collect(
+            db, booking, email=client_email, client=client, code=code,
+            consent=consent, consent_version=consent_version, document_id=d.document_id,
+        )
+    except signing_evidence.SigningError as e:
+        raise DocumentServiceError(e.status_code, e.detail)
     d.signer_name = signer_name.strip()[:255]
     d.signed_at = _now()
     d.status = "signed"
@@ -303,6 +337,7 @@ def sign_by_token(*, token: str, signer_name: str, db: Session) -> dict:
         "date_iso": booking.date_iso,
         "signer_name": d.signer_name,
         "signed_at": d.signed_at.isoformat(),
+        "evidence": evidence,
     }
     d.signed_snapshot = snapshot
     d.signed_snapshot_sha256 = hashlib.sha256(
@@ -310,18 +345,51 @@ def sign_by_token(*, token: str, signer_name: str, db: Session) -> dict:
     ).hexdigest()
     doc.record(db, booking, "document_signed", "client", {
         "document_id": d.document_id, "title": d.title, "signer_name": d.signer_name,
-        "sha256": d.signed_snapshot_sha256,
+        "sha256": d.signed_snapshot_sha256, "ip": evidence["ip"],
+        "email_verified": evidence["email_verified_at"] is not None,
     })
     db.commit()
     db.refresh(d)
 
     from app.services.guest_booking_service import _tell_vendor
 
+    _send_signed_copies(d, booking, client_email, db)
     _tell_vendor(
         booking, f"{d.signer_name} signed “{d.title}”",
         f"For the booking on {booking.date_iso}.", "document_signed", db,
     )
     return _dict(d, booking, db, with_token=False)
+
+
+def _send_signed_copies(d: ContractDocument, booking: Booking, client_email: str | None, db: Session) -> None:
+    """Both sides get the signed PDF (DECISIONS #27). Best-effort, after
+    the signature is committed; each send that went out is on the timeline."""
+    from app.services import pdf_service
+
+    try:
+        attachment = [pdf_attachment(pdf_service.document_pdf(d, booking, db, _client_name(booking, db)))]
+    except Exception:
+        logger.exception("Couldn't draw the signed PDF for document %s", d.document_id)
+        attachment = None
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == d.vendor_id).first()
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
+    vendor_name = _vendor_name(vendor, db) or "your vendor"
+    label = KIND_LABEL.get(d.kind, "document")
+    for to, who, html in (
+        (client_email, "client",
+         f"<p>You signed the {label} “{d.title}” with {vendor_name}. Your signed copy is attached.</p>"),
+        (getattr(vendor_user, "email", None), "vendor",
+         f"<p>{d.signer_name} signed the {label} “{d.title}”. The signed copy is attached, with its "
+         f"signing certificate.</p>"),
+    ):
+        if not to:
+            continue
+        sent = send_email(to=to, subject=f"Signed: {d.title}", html=html, attachments=attachment)
+        if sent.get("success"):
+            doc.record(db, booking, "copy_sent", "system", {
+                "to": who, "email_id": sent.get("id"), "document_id": d.document_id,
+            })
+    db.commit()
 
 
 def decline_by_token(*, token: str, reason: str | None, db: Session) -> dict:

@@ -673,6 +673,28 @@ class ContractEvent(Base):
     detail = Column(JSON, nullable=True)
 
 
+class SigningCode(Base):
+    """A one-time code emailed to the client before they sign a contract or
+    a document by link (0073, docs/DECISIONS.md #27): proof that whoever
+    signs can read the email the agreement goes to. Only a hash is kept.
+    Bound to the address it went to — change the email and it no longer
+    signs."""
+
+    __tablename__ = "signing_codes"
+
+    code_id = Column(String(36), primary_key=True, default=uuid_str)
+    booking_id = Column(String(36), ForeignKey("bookings.booking_id", ondelete="CASCADE"), nullable=False, index=True)
+    # Null for the contract itself; set for an addendum or cancellation.
+    document_id = Column(String(36), ForeignKey("contract_documents.document_id", ondelete="CASCADE"), nullable=True)
+    email = Column(String(255), nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    # Set when the code signs; a superseded code gets used_at with no signature.
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class Lead(Base):
     """An informal, off-platform prospect a vendor wants to track before it
     becomes a real Booking — no client account, no committed date/price yet.
