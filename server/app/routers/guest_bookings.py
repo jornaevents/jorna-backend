@@ -9,7 +9,7 @@ these calls to throttle by identity instead.
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -17,9 +17,11 @@ from app.limiter import limiter
 from app.services import field_negotiation_service, pdf_service, proposal_service
 from app.services.contract_document import DocumentError
 from app.services.contract_service import ContractError
+from app.utils.request_meta import client_meta
 from app.services.guest_booking_service import (
     GuestBookingError,
     get_guest_booking,
+    send_signing_code,
     guest_contract_pdf,
     fill_details,
     sign_contract,
@@ -43,7 +45,9 @@ def get_guest_booking_route(
     """preview=true is the vendor's "View as client" — it doesn't mark the
     contract viewed."""
     try:
-        return get_guest_booking(contract_token=contract_token, db=db, preview=preview)
+        return get_guest_booking(
+            contract_token=contract_token, db=db, preview=preview, client=client_meta(request),
+        )
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -87,6 +91,20 @@ class SignRequest(BaseModel):
     # Field-by-field contracts (DECISIONS #26): sign while changes are still
     # waiting, taking the vendor's and dropping your own.
     as_is: bool = False
+    # DECISIONS #27: the emailed code, and the e-records consent box with
+    # the version of its words the page showed.
+    code: Optional[str] = Field(None, max_length=12)
+    consent: bool = False
+    consent_version: Optional[str] = Field(None, max_length=40)
+
+
+@router.post("/{contract_token}/signing-code", summary="Email the client the code they sign with")
+@limiter.limit("3/minute")
+def send_signing_code_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    try:
+        return send_signing_code(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.post("/{contract_token}/sign", summary="Client e-signs by typing their full legal name")
@@ -100,7 +118,8 @@ def sign_contract_route(
     try:
         return sign_contract(
             contract_token=contract_token, signer_name=body.signer_name, revision=body.revision,
-            as_is=body.as_is, db=db,
+            as_is=body.as_is, code=body.code, consent=body.consent, consent_version=body.consent_version,
+            client=client_meta(request), db=db,
         )
     except (GuestBookingError, ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

@@ -275,6 +275,25 @@ A signed record is drawn from its snapshot and includes the SHA-256.
 - `GET /guest-bookings/{token}/pdf` (public, 10/minute). A draft gets 404.
 - `GET /guest-documents/{token}/pdf` (public, 10/minute). A draft gets 404.
 
+A signed record with signing evidence ends with a signing-certificate page (DECISIONS #27).
+
+## Signing evidence (DECISIONS #27)
+
+- `GET /guest-bookings/{token}` and `GET /guest-documents/{token}` return
+  `esign_consent: {version, text}`, which the page shows next to the consent box, and
+  `signing_code_required`.
+- `POST /guest-bookings/{token}/signing-code` and `POST /guest-documents/{token}/signing-code`
+  (public, 3/minute) email a 6-digit code to the email on the contract and return
+  `{sent_to, expires_in_minutes}`. `sent_to` is masked. 400 with no email on file, 502 if the
+  send failed. A new code replaces the last one.
+- `POST /guest-bookings/{token}/sign` and `POST /guest-documents/{token}/sign` also take
+  `code`, `consent` and `consent_version`. Refusals:
+  - 400 for a wrong, expired or superseded code
+  - 400 once the email has changed since the code was sent
+  - 400 after 5 wrong codes
+  - 409 for an out-of-date `consent_version`
+  - with `SIGNING_REQUIRE_CODE` on, 400 without a code or without `consent: true`
+
 ## Vendor categories
 
 Some categories require a subcategory at vendor registration (e.g. `music_entertainment`

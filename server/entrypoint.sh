@@ -15,4 +15,8 @@ if [ -n "$GOOGLE_CLIENT_SECRET_JSON" ]; then
     export GOOGLE_CLIENT_SECRET_PATH=/app/client_secret.json
 fi
 
-exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}"
+# Railway's edge proxy is the only way in, so trust its X-Forwarded-For:
+# request.client.host is then the visitor's address, which the rate limiter
+# keys on and a contract signature records (docs/DECISIONS.md #27).
+exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" \
+    --proxy-headers --forwarded-allow-ips '*'

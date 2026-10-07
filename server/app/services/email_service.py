@@ -8,6 +8,7 @@ Gracefully no-ops (returns success=False) when RESEND_API_KEY is unset, so
 local/dev environments and the test suite never make real network calls.
 """
 
+import base64
 import logging
 from typing import Optional
 
@@ -33,6 +34,7 @@ def send_email(
     html: str,
     text: Optional[str] = None,
     from_addr: Optional[str] = None,
+    attachments: Optional[list[dict]] = None,
 ) -> dict:
     """Send a single transactional email.
 
@@ -56,6 +58,8 @@ def send_email(
     }
     if text:
         payload["text"] = text
+    if attachments:
+        payload["attachments"] = attachments
 
     try:
         resp = httpx.post(
@@ -78,3 +82,9 @@ def send_email(
     except Exception as exc:
         logger.error("Email send failed: %s", exc)
         return {"success": False, "error": str(exc)}
+
+
+def pdf_attachment(rendered: tuple[bytes, str]) -> dict:
+    """pdf_service's (bytes, filename) as a Resend attachment."""
+    content, name = rendered
+    return {"filename": name, "content": base64.b64encode(content).decode()}

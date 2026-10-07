@@ -80,6 +80,18 @@ ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "f
 # by whole proposal (#23). Off until the web workspace for it ships; turning
 # it on only affects contracts created afterwards.
 FIELD_NEGOTIATION: bool = os.getenv("FIELD_NEGOTIATION", "false").strip().lower() == "true"
+
+# Signing by link needs an emailed code and the e-records consent box
+# (docs/DECISIONS.md #27). Off until the web page that asks for them ships;
+# while off, whatever a page sends is still checked and recorded.
+SIGNING_REQUIRE_CODE: bool = os.getenv("SIGNING_REQUIRE_CODE", "false").strip().lower() == "true"
+# A fixed code the staging E2E suite signs with, since it can't read email.
+# Ignored in Railway's production environment whatever it's set to.
+SIGNING_TEST_CODE: str = (
+    ""
+    if os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip().lower() == "production"
+    else os.getenv("SIGNING_TEST_CODE", "").strip()
+)
 STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
