@@ -300,3 +300,15 @@ def test_a_document_signs_with_its_own_code_and_both_sides_get_a_copy(required, 
     db.close()
     assert ev["email_verified_at"] and ev["consent"]["version"] == esign_consent.VERSION
     assert {m["to"] for m in outbox.sent if m.get("attachments")} == {"priya@example.com", _vendor_email(c)}
+
+
+def test_with_a_test_code_a_failed_send_still_lets_the_page_ask_for_it(required, monkeypatch):
+    # Staging: no email, signs with SIGNING_TEST_CODE.
+    monkeypatch.setattr(config, "SIGNING_TEST_CODE", "424242")
+    _, c, token = _contract()
+    with patch("app.services.signing_evidence.send_email", return_value={"success": False, "error": "Email not configured"}):
+        r = client.post(f"/guest-bookings/{token}/signing-code")
+    assert r.status_code == 200, r.text
+    [sent] = _events(c["booking_id"], "code_sent")
+    assert sent.detail["unsent"] is True
+    assert _sign(token, code="424242", **_consent()).status_code == 200
