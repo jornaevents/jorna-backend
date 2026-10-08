@@ -81,11 +81,16 @@ def send_code(
             "nobody can sign without it.</p>"
         ),
     )
-    if not sent.get("success"):
+    # Staging has no email set up; its test code signs anyway, so a send that
+    # failed there shouldn't stop the page from asking for it. Never in
+    # production, where SIGNING_TEST_CODE is always empty (app/config.py).
+    unsent = not sent.get("success")
+    if unsent and not config.SIGNING_TEST_CODE:
         db.rollback()
         raise SigningError(502, "We couldn't send the code. Check your email address and try again")
     doc.record(db, booking, "code_sent", "system", {
         "email": email, "document_id": document_id, "email_id": sent.get("id"),
+        **({"unsent": True} if unsent else {}),
     })
     db.commit()
     return {"sent_to": mask_email(email), "expires_in_minutes": int(CODE_TTL.total_seconds() // 60)}
