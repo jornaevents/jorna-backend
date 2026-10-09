@@ -33,7 +33,7 @@ reason.
 
 The root `alembic.ini`/`migrations/` predate the code being organized under
 `server/` and were never deleted. Deleting them now is safe (nothing
-references them — `railway.toml` points at `server/`) but hasn't been done
+references them — the Railway build uses `server/Dockerfile`) but hasn't been done
 so this note exists instead; feel free to delete them in a cleanup PR if
 you're already touching this area, but don't assume they're wired up if you
 see them.

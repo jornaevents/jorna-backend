@@ -53,8 +53,9 @@ descriptions of a contract they don't own.
 
 - **A push to `main` deploys to staging, then to production once a reviewer
   approves**, and each deploy runs Alembic migrations against that
-  environment's Postgres first (`railway.toml`'s `preDeployCommand`,
-  `server/alembic/`). Staging is a separate Railway environment with its own
+  environment's Postgres first (`server/alembic/`, run by the service's
+  Pre-deploy Command — a Railway setting in each environment, see
+  docs/STAGING.md → Service settings). Staging is a separate Railway environment with its own
   empty database — see [docs/STAGING.md](docs/STAGING.md). Branch for all
   changes; merge to `main` only when the user says to deploy, and be
   especially careful with any migration: staging catches one that fails, not
@@ -136,9 +137,9 @@ by hand against production. Root cause was never conclusively pinned down
 a real shell does), so the fix doesn't depend on understanding it:
 `server/scripts/predeploy.py` now runs the guard and `alembic upgrade
 head` (via `alembic.command.upgrade`, the same API the CLI wraps) in one
-Python process, with nothing for a shell to silently drop. `railway.toml`'s
-`preDeployCommand` is just `python -m scripts.predeploy` — don't
-reintroduce a `&&` chain here.
+Python process, with nothing for a shell to silently drop. The service's
+Pre-deploy Command is just `python -m scripts.predeploy` — don't
+reintroduce a `&&` chain there.
 
 ```bash
 railway login                                  # first time in a fresh session; opens a browser
