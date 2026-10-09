@@ -3,8 +3,9 @@
 Instagram enrichment scraper for Desiconnect.
 
 Fetches vendors who have linked their Instagram account from the backend,
-scrapes their profiles via Apify, then posts enriched data (tags + images)
-back to each vendor's existing profile.
+scrapes their profiles via Apify, then posts enriched data (tags, and a bio
+if they have none) back to each vendor's existing profile. It never adds
+photos to their packages.
 
 Instagram-scraped tags are stored separately from user-inputted tags so
 vendors retain full control over their curated tags.
@@ -69,10 +70,10 @@ def get_instagram_linked_vendors(token: str) -> List[Dict]:
     return resp.json()
 
 
-def post_enrichment(token: str, vendor_id: str, tags: List[str], images: List[str], bio: str) -> None:
+def post_enrichment(token: str, vendor_id: str, tags: List[str], bio: str) -> None:
     resp = httpx.post(
         f"{API_BASE_URL}/vendors/{vendor_id}/instagram-enrich",
-        json={"tags": tags, "images": images, "bio": bio},
+        json={"tags": tags, "bio": bio},
         headers={"Authorization": f"Bearer {token}"},
         timeout=REQUEST_TIMEOUT,
     )
@@ -101,19 +102,6 @@ def scrape_profile(apify_client: ApifyClient, username: str) -> Optional[Dict[st
     except Exception as e:
         print(f"    Scrape error: {e}")
         return None
-
-
-def extract_images(profile: Dict) -> List[str]:
-    posts = profile.get("posts", []) or profile.get("latestPosts", []) or []
-    images = []
-    for post in posts[:9]:
-        url = (
-            post.get("imgDisplayUrl") or post.get("displayUrl")
-            or post.get("imageUrl") or post.get("src")
-        )
-        if url and isinstance(url, str):
-            images.append(url)
-    return images
 
 
 def extract_tags(profile: Dict, bio: str, username: str) -> List[str]:
@@ -203,17 +191,16 @@ def main() -> int:
             continue
 
         bio = profile.get("biography") or profile.get("bio") or ""
-        images = extract_images(profile)
         tags = extract_tags(profile, bio, username)
 
-        print(f"    tags={len(tags)}  images={len(images)}")
+        print(f"    tags={len(tags)}")
 
         if args.dry_run:
-            print(f"    DRY RUN — would post {len(tags)} tags, {len(images)} images")
+            print(f"    DRY RUN — would post {len(tags)} tags")
             success += 1
         else:
             try:
-                post_enrichment(token, vendor_id, tags, images, bio)
+                post_enrichment(token, vendor_id, tags, bio)
                 print(f"    Enriched.")
                 success += 1
             except Exception as e:

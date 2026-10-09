@@ -7,9 +7,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import User, Vendor, Service
+from app.db.models import User, Vendor
 from app.dependencies import get_current_user, get_current_admin
-from app.services.service_service import media_url
 from app.limiter import limiter
 from app.models.schemas import (
     CATEGORY_LABELS,
@@ -139,8 +138,9 @@ class UpdateVendorRequest(BaseModel):
 
 
 class InstagramEnrichRequest(BaseModel):
+    # No images: the scraper no longer adds photos to packages. An older
+    # caller that still sends "images" is fine — unknown fields are ignored.
     tags: list[str] = []
-    images: list[str] = []
     bio: Optional[str] = None
 
 
@@ -409,8 +409,8 @@ def instagram_enrich(
     db: Session = Depends(get_db),
 ):
     """Called by the scraper after scraping a vendor's Instagram.
-    Updates instagram_tags (separate from user-inputted tags) and
-    optionally adds scraped images to the vendor's first service."""
+    Updates instagram_tags (separate from user-inputted tags) and the bio if
+    the vendor hasn't written one. Never touches their packages or photos."""
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
@@ -425,26 +425,10 @@ def instagram_enrich(
 
     db.commit()
 
-    # Add scraped images to the vendor's first service if they have one
-    if body.images:
-        service = db.query(Service).filter(Service.vendor_id == vendor_id).first()
-        if service:
-            existing = list(service.media or [])
-            # Typed the same as every other write path — see the identical
-            # fix (and its rationale) in admin.py's run_scraper.
-            existing_urls = {media_url(m) for m in existing}
-            new_images = [
-                {"url": img, "type": "image", "thumbnail_url": None}
-                for img in body.images
-                if img not in existing_urls
-            ]
-            service.media = (existing + new_images)[:9]
-            db.commit()
-
     return {
         "vendor_id": vendor_id,
         "instagram_tags": vendor.instagram_tags or [],
-        "message": f"Enriched with {len(body.tags)} tags and {len(body.images)} images.",
+        "message": f"Enriched with {len(body.tags)} tags.",
     }
 
 
