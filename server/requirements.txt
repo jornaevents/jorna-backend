@@ -26,6 +26,6 @@ stripe==15.6.1
 # has to fire at a real local moment.
 tzdata==2026.4
 uvicorn==0.54.0
-websockets==16.1
+websockets==17.1
 openai
 pytest-asyncio==1.4.0
