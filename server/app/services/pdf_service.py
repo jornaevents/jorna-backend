@@ -186,7 +186,7 @@ def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str
 
 # ── Signing certificate (docs/DECISIONS.md #27) ──────────────────────
 
-CONTRACT_EVENTS = ("sent", "resent", "emailed", "viewed", "code_sent", "signed", "copy_sent")
+CONTRACT_EVENTS = ("sent", "resent", "emailed", "viewed", "details_updated", "code_sent", "signed", "copy_sent")
 DOCUMENT_EVENTS = ("document_sent", "document_emailed", "document_viewed", "code_sent", "document_signed", "copy_sent")
 
 
@@ -206,6 +206,8 @@ def _event_line(e: dict) -> str | None:
         return f"Signing code emailed to {d.get('email') or 'the client'}"
     if kind in ("signed", "document_signed"):
         return f"Signed by {d.get('signer_name') or 'the client'}{ip}"
+    if kind == "details_updated":
+        return f"Client changed their {' and '.join(d.get('fields') or ['details'])} on the contract"
     if kind == "copy_sent":
         return f"Signed copy emailed to the {d.get('to') or 'client'}"
     return None
@@ -231,6 +233,11 @@ def _certificate(pdf: _Pdf, title: str, signer: str, signed_at: str | None, sha:
 
     consent = evidence.get("consent") or {}
     field("Signed by", f"{signer} (typed full legal name)")
+    # Signing still goes ahead on a mismatch (signing_evidence.name_check);
+    # this is where it's shown.
+    if evidence.get("name_matches") is False:
+        field("Name on contract", evidence.get("name_on_contract"))
+        field("Name check", "The typed signature differs from the name on the contract")
     field("Signed at", signed_on(signed_at))
     field("Email", evidence.get("email"))
     field(
@@ -362,7 +369,10 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
 
     policies = []
     if a.get("cancellation_window_hours") is not None:
-        policies.append(f"Cancellation window: {round(a['cancellation_window_hours'] / 24)} days before the event.")
+        policies.append(
+            f"Cancelling within {round(a['cancellation_window_hours'] / 24)} days of the event "
+            "may forfeit what's been paid."
+        )
     if a.get("overtime_rate_cents") is not None:
         policies.append(f"Overtime: {money(a['overtime_rate_cents'])} per hour, agreed in advance.")
     legacy = a.get("contract_terms") or {}

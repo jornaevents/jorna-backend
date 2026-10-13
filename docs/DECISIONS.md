@@ -679,3 +679,20 @@ signed copy goes to, and stays useful after sign-in ships.
 
 **The vendor sees the evidence only in the PDF.** Their app shows no client
 IPs.
+
+**The typed name is checked, not enforced** (2026-10-13). The evidence also
+has `name_on_contract` and `name_matches` (`signing_evidence.name_check`):
+case, punctuation and spacing don't count, and the same first and last word
+is a match, so a middle name or initial passes. A mismatch still signs. A
+partner, a parent or a nickname is a real signature, and the code already
+shows who controls the email. It's recorded instead: in the snapshot, on the
+`signed` / `document_signed` event (`name_on_contract`), and as a line on the
+certificate. The page warns before signing.
+
+**The signing form can't move the terms** (same day). `fill_details` lets
+the client fill in a venue or guest count the vendor left blank. Changing a
+set value is a 409; it goes through negotiation (#23, #26), where the vendor
+answers it. A change to the client's own name, email or phone, where one was
+already set, is a `details_updated` event on the timeline and the
+certificate. Otherwise, renaming yourself just before signing would hide a
+mismatch.
