@@ -293,6 +293,12 @@ A signed record with signing evidence ends with a signing-certificate page (DECI
   - 400 after 5 wrong codes
   - 409 for an out-of-date `consent_version`
   - with `SIGNING_REQUIRE_CODE` on, 400 without a code or without `consent: true`
+- A signature whose name doesn't match the client's name still signs. The snapshot's evidence
+  has `name_on_contract` and `name_matches`, and the signed event's detail has
+  `name_on_contract` when they differ.
+- `PATCH /guest-bookings/{token}` returns 409 when it would change a venue or guest count the
+  vendor already set; the same value, or filling in a blank one, is fine. Changing an
+  already-set name, email or phone records a `details_updated` event (`{fields: [...]}`).
 
 ## Vendor categories
 

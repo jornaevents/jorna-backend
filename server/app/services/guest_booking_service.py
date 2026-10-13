@@ -206,22 +206,44 @@ def fill_details(
     db: Session,
 ) -> dict:
     """The client's own contact + venue info. Refused once signed — the
-    agreement is what was signed, not whatever gets typed in afterward."""
+    agreement is what was signed, not whatever gets typed in afterward.
+
+    Venue and guest count are terms of the contract: the client can fill
+    in one the vendor left blank, but changing a set one goes through
+    negotiation, where the vendor answers it. The page resends both
+    unchanged, so the same value is fine. A change to the client's own
+    name, email or phone is put on the timeline: the signature is checked
+    against that name (signing_evidence.name_check)."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
     if booking.signed_at is not None:
         raise GuestBookingError(400, "This booking has already been signed and can no longer be edited")
 
-    if guest_name is not None:
-        booking.guest_name = guest_name.strip() or None
-    if guest_email is not None:
-        booking.guest_email = guest_email.strip() or None
-    if guest_phone is not None:
-        booking.guest_phone = guest_phone.strip() or None
     if location is not None:
-        booking.location = location.strip() or "TBD"
+        new_location = location.strip() or "TBD"
+        if booking.location not in (None, "", "TBD") and new_location != booking.location:
+            raise GuestBookingError(
+                409, f"The venue is part of the contract — ask {_vendor_name(booking, db)} for a change instead",
+            )
+        booking.location = new_location
     if guest_count is not None:
+        if booking.guest_count is not None and guest_count != booking.guest_count:
+            raise GuestBookingError(
+                409, f"The guest count is part of the contract — ask {_vendor_name(booking, db)} for a change instead",
+            )
         booking.guest_count = guest_count
+
+    changed = []
+    for field, value in (("name", guest_name), ("email", guest_email), ("phone", guest_phone)):
+        if value is None:
+            continue
+        attr = f"guest_{field}"
+        before, after = getattr(booking, attr), value.strip() or None
+        if before and after != before:
+            changed.append(field)
+        setattr(booking, attr, after)
+    if changed:
+        doc.record(db, booking, "details_updated", "client", {"fields": changed})
 
     db.commit()
     db.refresh(booking)
@@ -295,6 +317,7 @@ def sign_contract(
         evidence = signing_evidence.collect(
             db, booking, email=booking.guest_email, client=client,
             code=code, consent=consent, consent_version=consent_version,
+            signer_name=signer_name, on_contract=booking.guest_name,
         )
     except signing_evidence.SigningError as e:
         raise GuestBookingError(e.status_code, e.detail)
@@ -313,6 +336,7 @@ def sign_contract(
         "signer_name": booking.signer_name, "revision": booking.revision,
         "sha256": booking.signed_snapshot_sha256, "ip": evidence["ip"],
         "email_verified": evidence["email_verified_at"] is not None,
+        **({"name_on_contract": evidence["name_on_contract"]} if evidence["name_matches"] is False else {}),
     })
     db.commit()
     db.refresh(booking)

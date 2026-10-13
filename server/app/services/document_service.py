@@ -321,6 +321,7 @@ def sign_by_token(
         evidence = signing_evidence.collect(
             db, booking, email=client_email, client=client, code=code,
             consent=consent, consent_version=consent_version, document_id=d.document_id,
+            signer_name=signer_name, on_contract=_client_name(booking, db),
         )
     except signing_evidence.SigningError as e:
         raise DocumentServiceError(e.status_code, e.detail)
@@ -347,6 +348,7 @@ def sign_by_token(
         "document_id": d.document_id, "title": d.title, "signer_name": d.signer_name,
         "sha256": d.signed_snapshot_sha256, "ip": evidence["ip"],
         "email_verified": evidence["email_verified_at"] is not None,
+        **({"name_on_contract": evidence["name_on_contract"]} if evidence["name_matches"] is False else {}),
     })
     db.commit()
     db.refresh(d)

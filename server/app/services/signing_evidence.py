@@ -11,6 +11,7 @@ Shared by the contract (guest_booking_service) and attached documents
 
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -119,9 +120,27 @@ def _verify(db: Session, booking: Booking, *, code: str, email: str, document_id
     return now
 
 
+def _name_words(name: str | None) -> list[str]:
+    return re.sub(r"[^\w\s]", " ", (name or "").casefold()).split()
+
+
+def name_check(signer: str | None, on_contract: str | None) -> dict:
+    """Whether the typed signature is the name the contract is for. A
+    mismatch still signs (a partner, a nickname); it's recorded so the
+    vendor can see it. Same first and last word counts as a match, so a
+    middle name or initial doesn't flag. Mirrored by the signing page's
+    warning (web: lib/signerName.ts)."""
+    want, got = _name_words(on_contract), _name_words(signer)
+    if not want:
+        return {"name_on_contract": None, "name_matches": None}
+    matches = got == want or (len(got) >= 2 and got[0] == want[0] and got[-1] == want[-1])
+    return {"name_on_contract": on_contract.strip(), "name_matches": matches}
+
+
 def collect(
     db: Session, booking: Booking, *, email: str | None, client: dict | None,
     code: str | None, consent: bool, consent_version: str | None, document_id: str | None = None,
+    signer_name: str | None = None, on_contract: str | None = None,
 ) -> dict:
     """Check the code and consent, and return the evidence the snapshot
     keeps. Call it after every other check on the signature, so a refusal
@@ -146,6 +165,7 @@ def collect(
         "user_agent": client.get("user_agent"),
         "email": email,
         "email_verified_at": verified_at.isoformat() if verified_at else None,
+        **name_check(signer_name, on_contract),
         "consent": (
             {"version": esign_consent.VERSION, "text": esign_consent.TEXT, "accepted_at": _now().isoformat()}
             if consent else None
