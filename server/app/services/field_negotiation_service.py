@@ -257,7 +257,11 @@ def validate(key: str, value, terms: dict, vendor_id: str, db: Session):
                 raise FieldNegotiationError(400, "A quantity has to be above zero")
             return value
         if part == "price":
-            return _whole(value, "The price")
+            # Above $0: a $0 counter made "Total if agreed $0" sendable. A
+            # line meant to be free is better said as a discount or left out.
+            if value == 0:
+                raise FieldNegotiationError(400, "A price has to be above $0 — leave the item out instead")
+            return _whole(value, "The price", low=1)
     raise FieldNegotiationError(400, f"There's no field called {key}")
 
 
@@ -493,6 +497,31 @@ def _require_open(booking: Booking) -> None:
         raise FieldNegotiationError(400, "This contract isn't open for changes")
 
 
+def _check_total_if_agreed(current: dict, rows: dict, settled: dict) -> None:
+    """Refuse a send that would leave the contract at $0 or less once every
+    open value is agreed — the "Total if this is agreed" both sides see.
+    Settling it later would fail anyway (contract_document.totals); this
+    says so while the sender can still change it."""
+    values = dict(current)
+    for key, r in rows.items():
+        if r.state != SETTLED:
+            values[key] = r.proposed_value
+    values.update(settled)
+    total = 0
+    for key, value in values.items():
+        if key.startswith("line:new:"):
+            if isinstance(value, dict):
+                total += round((value.get("unit_price_cents") or 0) * (value.get("quantity") or 1))
+        elif key.startswith("line:") and key.endswith(".price"):
+            base = key[: -len(".price")]
+            if values.get(f"{base}.included") is False:
+                continue
+            total += round((value or 0) * (values.get(f"{base}.quantity") or 0))
+    total -= values.get("discount") or 0
+    if total <= 0:
+        raise FieldNegotiationError(400, "That would bring the total to $0 or less — change the price or the discount")
+
+
 def send(
     booking: Booking, vendor: Vendor, side: str, *,
     base_round: int, answers: list, message: str | None, db: Session,
@@ -590,6 +619,7 @@ def send(
     if left:
         names = ", ".join(label(k, terms) for k in left[:3])
         raise FieldNegotiationError(400, f"Answer everything waiting on you first: {names}")
+    _check_total_if_agreed(current, rows, settled)
 
     _settle(booking, vendor, settled, db)
     booking.negotiation_round = next_round
@@ -671,6 +701,24 @@ def has_waiting(booking: Booking, db: Session) -> bool:
         NegotiationField.booking_id == booking.booking_id,
         NegotiationField.state.in_(tuple(WAITING.values())),
     ).first() is not None
+
+
+def summary(booking: Booking, db: Session) -> dict | None:
+    """Whose turn it is and how many changes wait on each side — what a list
+    row needs to say "Asha asked for 2 changes", without the whole state.
+    Null for a contract on the older proposal flow."""
+    if not is_fields(booking):
+        return None
+    states = [s for (s,) in db.query(NegotiationField.state).filter(
+        NegotiationField.booking_id == booking.booking_id,
+        NegotiationField.state.in_(tuple(WAITING.values())),
+    ).all()]
+    return {
+        "turn": _turn(booking),
+        "round": _round(booking),
+        "waiting_vendor": states.count(WAITING["vendor"]),
+        "waiting_client": states.count(WAITING["client"]),
+    }
 
 
 # ── Drafts ───────────────────────────────────────────────────────────

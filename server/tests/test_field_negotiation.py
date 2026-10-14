@@ -333,3 +333,39 @@ def test_each_side_is_offered_the_packages_it_may_add():
     assert theirs[[p["service_id"] for p in theirs].index(private_id)]["add_ons"] == [{"id": "fog", "name": "Fog machine", "price_cents": 7500}]
     # And whoever's waiting gets none.
     assert client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()["packages"] == []
+
+
+# ── Whose turn, for lists; nothing at $0 (DECISIONS #28) ─────────────
+
+def test_lists_say_whose_turn_it_is_and_how_many_changes_wait():
+    from tests.test_leads_pipeline import _item, _pipeline
+
+    v = _setup_vendor()
+    c = _contract(v)
+    got = client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()
+    assert got["negotiation"] == {"turn": "client", "round": 1, "waiting_vendor": 0, "waiting_client": 0}
+
+    assert _client_send(c, 1, [
+        {"key": "event.guests", "action": "change", "value": 150},
+        {"key": "line:pkg.price", "action": "change", "value": 120_000},
+    ]).status_code == 200
+    got = client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()
+    assert got["negotiation"]["turn"] == "vendor" and got["negotiation"]["waiting_vendor"] == 2
+    item = _item(_pipeline(v), c["booking_id"])
+    assert (item["attention"], item["attention_reason"]) == ("needs_you", "changes_proposed")
+
+    assert _vendor_send(c, v, 2, [
+        {"key": "event.guests", "action": "accept"},
+        {"key": "line:pkg.price", "action": "counter", "value": 130_000},
+    ]).status_code == 200
+    item = _item(_pipeline(v), c["booking_id"])
+    assert (item["attention"], item["attention_reason"]) == ("waiting", "revised")
+
+
+def test_a_zero_price_or_a_total_at_zero_is_refused():
+    v = _setup_vendor()
+    c = _contract(v)
+    zero = _client_send(c, 1, [{"key": "line:pkg.price", "action": "change", "value": 0}])
+    assert zero.status_code == 400 and "above $0" in zero.json()["detail"]
+    nothing = _client_send(c, 1, [{"key": "discount", "action": "change", "value": 160_000}])
+    assert nothing.status_code == 400 and "$0 or less" in nothing.json()["detail"]

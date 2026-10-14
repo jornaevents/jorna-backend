@@ -57,6 +57,8 @@ class BookingUpdate(BaseModel):
 
 class BookingStatusUpdate(BaseModel):
     status: BookingStatus
+    # A vendor's optional reason when declining a request, shown to the client.
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class CheckInRequest(BaseModel):
@@ -146,6 +148,7 @@ def update_booking_status(
             caller_user_id=current_user.user_id,
             status=body.status,
             db=db,
+            note=body.note,
         )
     except BookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

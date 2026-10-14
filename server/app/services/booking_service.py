@@ -48,6 +48,12 @@ def _proposal_status(booking: Booking, db: Session) -> str | None:
     return latest_status(db, booking)
 
 
+def _negotiation_summary(booking: Booking, db: Session) -> dict | None:
+    from app.services.field_negotiation_service import summary
+
+    return summary(booking, db)
+
+
 def _contract_state(booking: Booking) -> str | None:
     # contract_service imports this module, so it can't be imported at the top.
     from app.services.contract_service import contract_state
@@ -230,6 +236,30 @@ def _get_booking_parties(db: Session, booking: Booking):
     return client, vendor_obj, vendor_user, service
 
 
+def _email_decline(booking: Booking, client: User, vendor_user: User | None, service: Service | None) -> None:
+    """Tell the client a vendor turned their request down, with the vendor's
+    note when they left one. Best effort, like every email here."""
+    from html import escape
+
+    from app.services.email_service import send_email
+
+    who = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "The vendor"
+    what = service.name if service else "your request"
+    said = f'<p>They said: “{escape(booking.vendor_decline_note)}”</p>' if booking.vendor_decline_note else ""
+    try:
+        send_email(
+            to=client.email,
+            subject=f"{who} can't take {what}",
+            html=(
+                f"<p>{escape(who)} isn't able to take <strong>{escape(what)}</strong> "
+                f"for {escape(booking.date_iso or 'your event')}.</p>{said}"
+                "<p>It's still on your plan, marked not going ahead. You can ask another vendor.</p>"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Decline email failed for booking %s: %s", booking.booking_id, exc)
+
+
 def _dispatch_status_notification(
     status: str,
     booking: Booking,
@@ -339,7 +369,12 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # The latest change proposal on an unsigned contract — "open" while
         # the vendor owes an answer (docs/DECISIONS.md #23). Null otherwise.
         "proposal_status": _proposal_status(booking, db),
+        # Field-by-field negotiation (DECISIONS #26): whose turn, and how many
+        # changes wait on each side. Null on the older proposal flow.
+        "negotiation": _negotiation_summary(booking, db),
         "status": booking.status,
+        # The vendor's note when they declined this request (DECISIONS #28).
+        "vendor_decline_note": booking.vendor_decline_note,
         # Which of the three real events "rejected" covers — null on a row
         # written before this field existed, or on a client-initiated
         # cancellation (see cancelled_at instead). See RejectionReason.
@@ -1096,8 +1131,12 @@ def update_booking_status(
     caller_user_id: str,
     status: BookingStatus,
     db: Session,
+    note: str | None = None,
 ) -> dict:
-    """Validate authorization + business rules, then update status."""
+    """Validate authorization + business rules, then update status.
+
+    note: the vendor's optional reason when declining a request ("Booked that
+    weekend"), shown to the client on their plan and in the email."""
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise BookingError(404, "Booking not found")
@@ -1205,6 +1244,8 @@ def update_booking_status(
             if cancelling
             else RejectionReason.VENDOR_DECLINED.value
         )
+        if not cancelling:
+            booking.vendor_decline_note = (note or "").strip()[:500] or None
         # An accepted request's proposal goes with it, so its link says
         # withdrawn rather than still waiting for a signature.
         if booking.contract_token and booking.signed_at is None:
@@ -1314,6 +1355,9 @@ def update_booking_status(
     except Exception as exc:
         logger.warning("Notification failed for booking %s: %s", booking.booking_id, exc)
         notification = {"error": "Notification unavailable"}
+
+    if status_str == BookingStatus.REJECTED.value and not cancelling and client and client.email:
+        _email_decline(booking, client, vendor_user, service)
 
     return {
         "message": f"Booking successfully updated to {status_str}",

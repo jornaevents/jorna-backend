@@ -30,7 +30,7 @@ def _at(d: date) -> datetime:
     return datetime(d.year, d.month, d.day, 12, tzinfo=timezone.utc)
 
 
-def _signed_contract(v, *, date_iso: str, schedule: list[dict]) -> dict:
+def _signed_contract(v, *, date_iso: str, schedule: list[dict], move_to: str | None = None) -> dict:
     total = sum(i["amount_cents"] for i in schedule)
     resp = client.post("/contracts", json={
         "date_iso": date_iso, "time_start": "19:00", "time_end": "23:00",
@@ -40,6 +40,12 @@ def _signed_contract(v, *, date_iso: str, schedule: list[dict]) -> dict:
     assert resp.status_code == 201, resp.text
     c = resp.json()
     _created["bookings"].append(c["booking_id"])
+    if move_to:
+        # A date moved after the schedule was written; "days before"
+        # payments move with it and aren't checked again (DECISIONS #28).
+        moved = client.patch(f"/contracts/{c['booking_id']}", json={"date_iso": move_to}, headers=v["headers"])
+        assert moved.status_code == 200, moved.text
+        c = moved.json()
     signed = client.post(f"/guest-bookings/{c['contract_token']}/sign", json={"signer_name": "Priya Mehta"})
     assert signed.status_code == 200, signed.text
     return signed.json() | {"booking_id": c["booking_id"], "contract_token": c["contract_token"]}
@@ -96,9 +102,9 @@ def test_a_date_that_passed_before_signing_counts_from_the_signature(outbox):
     already gone — that's a payment due now, not one overdue."""
     v = _setup_vendor()
     today = datetime.now(timezone.utc).date()
-    c = _signed_contract(v, date_iso=(today + timedelta(days=10)).isoformat(), schedule=[
+    c = _signed_contract(v, date_iso=(today + timedelta(days=30)).isoformat(), schedule=[
         {"label": "Balance", "amount_cents": 100_000, "due_type": "before_event", "due_days": 14},
-    ])
+    ], move_to=(today + timedelta(days=10)).isoformat())
     assert _sweep(today) == 1
     assert "due today" in outbox["client"][0]["subject"]
     assert outbox["vendor"] == []

@@ -83,6 +83,25 @@ contract link is sent, then `negotiation`), `source` (`request` | `contract`
 `counter_sent`, or the lead's own status while waiting), `archived`, and `created_at`/`updated_at`. `counts`
 summarises the unarchived items.
 
+Closed leads stay in the list, archived (DECISIONS #28). `outcome` says how
+each ended: `declined` (the vendor declined the request), `cancelled_by_client`
+(the client took a sent request off their plan), `contract_declined`, or
+`not_going_ahead` (a lead marked `lost`); null for an open one.
+`outcome_note` is the vendor's decline note or the client's decline reason.
+Booking items also carry `client_note`, `time_start`, `time_end` and
+`guest_count`, so the drawer can show what the client sent.
+
+- `PUT /bookings/{id}/status` takes an optional `note` (≤500) with
+  `rejected`: the vendor's reason, stored as `vendor_decline_note`, returned
+  on the vendor's and the client's booking payloads, and emailed to the
+  client.
+- `POST /leads` and `PATCH /leads/{id}` return 422 for an email that doesn't
+  look like one, a phone that isn't 7–15 digits, or an event date in the past.
+- Removing a sent request from a plan (`DELETE /bundles/{id}/bookings/{booking_id}`
+  while the plan isn't a draft) keeps the booking: `status: rejected`,
+  `rejected_reason: client_cancelled`, `cancelled_at` set. Removing it again
+  deletes it.
+
 - `POST /bookings/{id}/archive` `{archived: bool}` hides or restores a
   request or unsigned contract. It declines, voids and notifies nothing;
   signed bookings 400. Leads archive via `PATCH /leads/{id}` `{archived}`.
@@ -196,6 +215,19 @@ booking list and bundle bookings) carry `proposal_status`: the latest
 proposal's status on an unsigned contract, or null. Pipeline items carry it
 too, with the attention reasons `changes_proposed` (needs you) and
 `revised` (waiting).
+
+They also carry `negotiation`, for a contract negotiating field by field
+(DECISIONS #26, #28): `{turn, round, waiting_vendor, waiting_client}`, the
+counts of changes waiting on each side; null on the proposal flow. A
+pipeline item with changes waiting on the vendor is `needs_you` /
+`changes_proposed`; after the vendor's answer it's `waiting` / `revised`.
+
+Payment dates (DECISIONS #28): creating or editing a schedule, accepting a
+request with a schedule, or first sending a draft returns 400 when a
+payment would be due before today (one day of UTC slack). A payment due
+after the event is accepted. A field-by-field send is refused (400) when a
+price is $0 or the total would be $0 or less once everything open is agreed.
+A hold never outlasts the start of the event.
 
 `POST /negotiations` (starting a price counter) now returns 410. Open
 counters can still be answered.

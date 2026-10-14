@@ -696,3 +696,58 @@ answers it. A change to the client's own name, email or phone, where one was
 already set, is a `details_updated` event on the timeline and the
 certificate. Otherwise, renaming yourself just before signing would hide a
 mismatch.
+
+## 28. What a contract can say, and how leads end (0074)
+
+From the Oct 5 staging walkthrough and the product review (2026-10-14).
+
+**Payment dates.** A payment due before today is refused (400) when the
+vendor writes or edits a schedule, accepts a request with one, or first
+sends a draft (`contract_service._check_schedule`, one day of UTC slack like
+`_check_dates`). "400 days before" an event 250 days out had been saved and
+signed with a due date months gone. A payment due *after* the event is
+allowed: a final balance on delivery is ordinary, and the editor only warns.
+Moving the date alone doesn't re-check a schedule, and neither does a
+resend: "days before" payments move with the date, a client's date ask has
+no say over the schedule, and a payment whose day has slipped past is due on
+signing (`effective_due`). The vendor's usual schedule counts back no further
+than today, so a request for an event next week isn't born overdue.
+
+**Holds end at the event.** `_start_hold` caps the hold at the event's start.
+
+**Negotiation values.** A price of $0, or a send that would leave the total
+at $0 or less once every open value is agreed, is refused (400). Guest
+counts were already limited to 1–100,000.
+
+**Leads' details are checked.** An email that isn't one, a phone that isn't
+7–15 digits, or a past event date is a 422 on `POST/PATCH /leads`.
+
+**Whose turn, in one field.** Contract and booking payloads carry
+`negotiation` (`field_negotiation_service.summary`): the turn, the round and
+how many changes wait on each side. The pipeline reads it, so a contract
+with the client's asks waiting is "needs you" on Leads, the contract page and
+Overview alike. Before this, only the proposal flow's `proposal_status` was
+read, and a field-by-field ask showed as "waiting on client".
+
+**A decline can say why** (0074, `vendor_decline_note`). The vendor's
+optional note goes to the client in an email and on their plan. Declining
+always emailed nothing before; the client saw "Not going ahead" with no
+context.
+
+**Closed leads are archived, not dropped.** A declined request, a request
+the client cancelled, a declined contract and a lead marked lost stay in the
+pipeline, archived, with an `outcome`. They had vanished, so a vendor
+couldn't look back at what they lost. Voided contracts and converted leads
+still leave: those are the vendor's own undo or a booking.
+
+**A client cancelling a sent request keeps the row.** Removing a booking from
+a plan that has been sent now marks it `rejected` / `client_cancelled` with
+`cancelled_at`, and voids an unsigned contract's link, instead of deleting
+it. The vendor sees it archived; the client's plan shows it ended. Removing
+it again, or removing one from a draft plan, deletes it as before.
+
+**Price haggling stays retired.** `POST /negotiations` was already 410
+(`NEW_NEGOTIATIONS_OPEN`). The web apps stop offering "open to offers" and
+the plan's price panel; `Service.negotiable` and the vendor's
+`open_to_price_negotiation` columns stay, unused.
+

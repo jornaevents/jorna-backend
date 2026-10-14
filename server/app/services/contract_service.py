@@ -7,6 +7,7 @@ lives in guest_booking_service.py instead — this file never trusts a
 contract_token as identity, only an authenticated vendor's own user_id.
 """
 import json
+import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
 
@@ -79,7 +80,14 @@ def _start_hold(booking: Booking, vendor: Vendor, hold_days: int | None) -> None
     now = _now()
     booking.contract_status = "viewed" if booking.viewed_at else "sent"
     booking.sent_at = now
-    booking.hold_expires_at = now + timedelta(days=_hold_days(vendor, hold_days))
+    expires = now + timedelta(days=_hold_days(vendor, hold_days))
+    # Holding a date past the day itself means nothing: the hold ends when
+    # the event starts, unless that's already gone (an event today).
+    try:
+        starts = datetime.combine(date.fromisoformat(booking.date_iso), datetime.min.time())
+    except (TypeError, ValueError):
+        starts = None
+    booking.hold_expires_at = min(expires, starts) if starts and starts > now else expires
     from app.services.field_negotiation_service import copy_locks
 
     copy_locks(booking, vendor)
@@ -143,7 +151,16 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         # The latest change proposal's status (docs/DECISIONS.md #23). "open"
         # means the client is waiting on an answer: GET …/proposals.
         "proposal_status": _latest_proposal_status(booking, db),
+        # Field-by-field negotiation (DECISIONS #26): whose turn, and how many
+        # changes wait on each side. Null on the older proposal flow.
+        "negotiation": _negotiation_summary(booking, db),
     }
+
+
+def _negotiation_summary(booking: Booking, db: Session) -> dict | None:
+    from app.services.field_negotiation_service import summary
+
+    return summary(booking, db)
 
 
 def _latest_proposal_status(booking: Booking, db: Session) -> str | None:
@@ -169,6 +186,22 @@ def _check_dates(date_iso: str, date_end: str | None) -> None:
         raise ContractError(400, "The event date is in the past")
     if end < start:
         raise ContractError(400, "The end date is before the start date")
+
+
+def _check_schedule(schedule: list[dict] | None, date_iso: str) -> None:
+    """Reject a payment the vendor scheduled for a day that has already gone
+    ("400 days before" an event 250 days out). Same day of UTC slack as
+    _check_dates. A payment due after the event is fine — a final balance on
+    delivery is ordinary; the editor only warns about it."""
+    earliest = datetime.now(timezone.utc).date() - timedelta(days=1)
+    for item in schedule or []:
+        day = doc.scheduled_date(item, date_iso)
+        if day is not None and day < earliest:
+            raise ContractError(
+                400,
+                f"“{item['label']}” would be due on {day.strftime('%b')} {day.day}, {day.year}, "
+                "which has already passed — pick a later date, or fewer days before the event",
+            )
 
 
 def _legacy_service(vendor: Vendor, service_id: str | None, db: Session) -> Service:
@@ -296,6 +329,7 @@ def create_contract(
         layout, clauses = None, doc.normalize_clauses(terms_clauses)
 
     _check_dates(date_iso, date_end)
+    _check_schedule(schedule, date_iso)
     guest_email = (guest_email or "").strip() or None
     if email_client and not draft and not guest_email:
         raise ContractError(400, "Add your client's email to send it to them")
@@ -514,6 +548,11 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
         booking.document_layout, booking.terms_clauses = doc.normalize_layout(update_data["document_layout"])
     if "document_title" in update_data:
         booking.document_title = (update_data["document_title"] or "").strip()[:200] or None
+    if "payment_schedule" in update_data:
+        # Against the date as it now stands. A moved date alone doesn't
+        # re-check an existing schedule: "days before" payments move with it,
+        # and a client's date ask has no say over the schedule.
+        _check_schedule(booking.payment_schedule, booking.date_iso)
 
     # Re-derive the snapshot rather than trust a client-supplied deposit_amount_cents.
     if not booking.payment_schedule and ("deposit_percent" in update_data or booking.amount_cents != total_before):
@@ -611,6 +650,12 @@ def send_contract(
         raise ContractError(400, "Add your client's email to send it to them")
 
     _check_dates(booking.date_iso, booking.date_end)
+    # A draft written weeks ago can have a payment whose day has since gone.
+    # A resend doesn't re-check: the client has already seen that schedule,
+    # and a "days before" payment that has slipped past is due on signing
+    # (contract_document.effective_due).
+    if booking.sent_at is None:
+        _check_schedule(booking.payment_schedule, booking.date_iso)
     conflict = vendor_has_conflicting_booking(
         vendor_id=booking.vendor_id, date_iso=booking.date_iso, date_end=booking.date_end,
         time_start=booking.time_start, time_end=booking.time_end,
@@ -678,7 +723,9 @@ def _default_clauses(vendor: Vendor) -> list[dict] | None:
     return doc.normalize_clauses(raw)
 
 
-def _default_schedule(total: int, deposit_percent: int | None, plan: dict | None = None) -> list[dict]:
+def _default_schedule(
+    total: int, deposit_percent: int | None, plan: dict | None = None, *, date_iso: str | None = None,
+) -> list[dict]:
     """The schedule "Send with my usual terms" sends.
 
     The vendor's usual plan (Vendor.default_payment_plan) when they've set
@@ -689,6 +736,14 @@ def _default_schedule(total: int, deposit_percent: int | None, plan: dict | None
     """
     preset = (plan or {}).get("preset")
     balance_days = (plan or {}).get("balance_days_before", 14)
+    # A request for an event sooner than the usual timing: count back no
+    # further than today, or the balance is born overdue.
+    try:
+        days_left = (date.fromisoformat(date_iso or "") - datetime.now(timezone.utc).date()).days
+    except ValueError:
+        days_left = None
+    if days_left is not None:
+        balance_days = max(0, min(balance_days, days_left))
     if preset is None:
         preset = "deposit_balance" if deposit_percent and 0 < deposit_percent < 100 else "full"
     pct = deposit_percent if deposit_percent and 0 < deposit_percent < 100 else 50
@@ -704,7 +759,10 @@ def _default_schedule(total: int, deposit_percent: int | None, plan: dict | None
         raw = [
             {"label": "Deposit", "amount_cents": third, "due_type": "on_signing"},
             # Halfway-ish: never on or after the final balance.
-            {"label": "Second payment", "amount_cents": third, "due_type": "before_event", "due_days": max(60, balance_days + 30)},
+            {
+                "label": "Second payment", "amount_cents": third, "due_type": "before_event",
+                "due_days": max(60, balance_days + 30) if days_left is None else min(max(60, balance_days + 30), max(0, days_left)),
+            },
             {"label": "Final balance", "amount_cents": total - 2 * third, "due_type": "before_event", "due_days": balance_days},
         ]
     else:
@@ -756,11 +814,13 @@ def attach_proposal(
     booking.service_id = primary
     booking.amount_cents = total
     booking.discount_cents = discount_cents or None
-    booking.payment_schedule = (
-        doc.normalize_schedule(payment_schedule, total_cents=total)
-        if payment_schedule
-        else _default_schedule(total, usual["deposit_percent"], vendor.default_payment_plan)
-    )
+    if payment_schedule:
+        booking.payment_schedule = doc.normalize_schedule(payment_schedule, total_cents=total)
+        _check_schedule(booking.payment_schedule, booking.date_iso)
+    else:
+        booking.payment_schedule = _default_schedule(
+            total, usual["deposit_percent"], vendor.default_payment_plan, date_iso=booking.date_iso,
+        )
     doc.sync_legacy_payment_fields(booking)
     if document_layout is not None:
         booking.document_layout, booking.terms_clauses = doc.normalize_layout(document_layout)
@@ -1015,6 +1075,38 @@ def _lead_dict(lead: Lead) -> dict:
     }
 
 
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _check_lead(data: dict) -> dict:
+    """A lead's contact details and date, tidied, or a 422 that says what's
+    wrong. Blank means not given. Only the fields present are checked, so an
+    update can send just one."""
+    out = dict(data)
+    if "email" in data:
+        email = (data["email"] or "").strip() or None
+        if email and not _EMAIL.match(email):
+            raise ContractError(422, "That email doesn't look right — check it, or leave it blank")
+        out["email"] = email
+    if "phone" in data:
+        phone = (data["phone"] or "").strip() or None
+        digits = len(re.sub(r"\D", "", phone or ""))
+        if phone and (re.search(r"[A-Za-z]", phone) or not 7 <= digits <= 15):
+            raise ContractError(422, "That phone number doesn't look right — check it, or leave it blank")
+        out["phone"] = phone
+    if "event_date_iso" in data:
+        raw = (data["event_date_iso"] or "").strip() or None
+        if raw:
+            try:
+                day = date.fromisoformat(raw)
+            except ValueError:
+                raise ContractError(422, "Dates must be YYYY-MM-DD")
+            if day < datetime.now(timezone.utc).date() - timedelta(days=1):
+                raise ContractError(422, "The event date has already passed")
+        out["event_date_iso"] = raw
+    return out
+
+
 def create_lead(
     *, vendor_id: str, caller_user_id: str, name: str, phone: str | None,
     email: str | None, event_date_iso: str | None, note: str | None, db: Session,
@@ -1022,6 +1114,8 @@ def create_lead(
     _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
     if not name.strip():
         raise ContractError(400, "name is required")
+    checked = _check_lead({"email": email, "phone": phone, "event_date_iso": event_date_iso})
+    email, phone, event_date_iso = checked["email"], checked["phone"], checked["event_date_iso"]
     now = datetime.now(timezone.utc)
     lead = Lead(
         vendor_id=vendor_id, name=name.strip(), phone=phone, email=email,
@@ -1055,6 +1149,7 @@ def _own_lead(*, lead_id: str, caller_user_id: str, db: Session) -> Lead:
 
 def update_lead(*, lead_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:
     lead = _own_lead(lead_id=lead_id, caller_user_id=caller_user_id, db=db)
+    update_data = _check_lead(update_data)
     for field in ("name", "phone", "email", "event_date_iso", "note", "status"):
         if field in update_data:
             setattr(lead, field, update_data[field])

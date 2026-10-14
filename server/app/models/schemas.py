@@ -21,6 +21,10 @@ class RejectionReason(str, Enum):
     VENDOR_WITHDREW = "vendor_withdrew"
     RESCHEDULE_FAILED = "reschedule_failed"
     CLIENT_DECLINED = "client_declined"  # a contract client turned the offer down
+    # The client took a request they'd sent off their plan before it was
+    # signed. Kept, not deleted, so the vendor's archived leads and the
+    # client's plan both show it ended (cancelled_at is set too).
+    CLIENT_CANCELLED = "client_cancelled"
 
 
 class PaymentStatus(str, Enum):

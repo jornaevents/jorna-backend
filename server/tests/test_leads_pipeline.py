@@ -104,7 +104,7 @@ def test_requests_drafts_and_sent_contracts_land_in_the_right_stage(cleanup_lead
     assert pipe["counts"]["needs_you"] == 3
 
 
-def test_signed_voided_and_declined_requests_leave_the_list():
+def test_signed_and_voided_leave_the_list_and_a_declined_request_is_archived():
     v = _setup_vendor()
     signed = _create_contract(v, date_iso="2027-11-06", guest_email="a@example.com")
     client.patch(f"/guest-bookings/{signed['contract_token']}", json={"guest_email": "a@example.com"})
@@ -119,10 +119,14 @@ def test_signed_voided_and_declined_requests_leave_the_list():
     db.commit()
     db.close()
 
-    ids = {i["id"] for i in _pipeline(v)["items"]}
+    items = _pipeline(v)["items"]
+    ids = {i["id"] for i in items}
     assert f"booking:{signed['booking_id']}" not in ids
     assert f"booking:{voided['booking_id']}" not in ids
-    assert f"booking:{declined.booking_id}" not in ids
+    # A declined request is closed, so it's archived with how it ended
+    # (DECISIONS #28), not dropped.
+    item = _item({"items": items}, declined.booking_id)
+    assert (item["archived"], item["outcome"], item["attention"]) == (True, "declined", None)
 
 
 def test_a_couples_counter_offer_needs_the_vendor():
