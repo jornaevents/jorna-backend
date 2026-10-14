@@ -222,3 +222,19 @@ def test_a_client_cancelling_a_sent_request_keeps_it_for_both_sides():
     db.query(Bundle).filter(Bundle.bundle_id == bundle_id).delete()
     db.commit()
     db.close()
+
+
+# ── Clearing a field ───────────────────────────────────────────────────
+
+def test_a_null_clears_a_clearable_field_and_leaves_the_rest():
+    v = _setup_vendor()
+    c = _create_contract(v, date_iso=_days(100), guest_phone="call me maybe", location="Pines Manor")
+    resp = client.patch(
+        f"/contracts/{c['booking_id']}",
+        json={"guest_phone": None, "date_iso": None, "time_start": None},
+        headers=v["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    got = resp.json()
+    assert got["guest_phone"] is None
+    assert (got["date_iso"], got["location"]) == (c["date_iso"], "Pines Manor")
