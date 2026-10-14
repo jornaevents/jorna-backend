@@ -452,6 +452,9 @@ class Booking(Base):
     hold_expires_at = Column(DateTime, nullable=True)
     declined_at = Column(DateTime, nullable=True)
     decline_reason = Column(String(500), nullable=True)
+    # The vendor's optional note when declining a request (0074). The client's
+    # reason for declining a contract is decline_reason, above.
+    vendor_decline_note = Column(String(500), nullable=True)
     voided_at = Column(DateTime, nullable=True)
 
     # What the agreement says (0065, docs/DECISIONS.md #16), all snapshots —

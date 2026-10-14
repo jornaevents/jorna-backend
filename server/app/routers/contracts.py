@@ -82,6 +82,12 @@ class ContractTermsRequest(BaseModel):
     document_layout: Optional[list[dict]] = Field(default=None, max_length=40)
 
 
+CLEARABLE_ON_UPDATE = frozenset({
+    "date_end", "guest_name", "guest_email", "guest_phone", "location", "guest_count",
+    "cancellation_window_hours", "overtime_rate_cents", "document_title",
+})
+
+
 class ContractUpdateRequest(BaseModel):
     date_iso: Optional[str] = None
     date_end: Optional[str] = None
@@ -160,7 +166,12 @@ def update_contract_route(
     db: Session = Depends(get_db),
 ):
     try:
-        update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+        # Fields left out don't change. Most fields can't be emptied, so a
+        # null means "no change" too — except these, where a null sent on
+        # purpose clears the value (a phone deleted in the editor used to
+        # stay on the contract).
+        sent = body.model_dump(exclude_unset=True)
+        update_data = {k: v for k, v in sent.items() if v is not None or k in CLEARABLE_ON_UPDATE}
         proposal_id = update_data.pop("proposal_id", None)
         proposal_note = update_data.pop("proposal_note", None)
         return update_contract(

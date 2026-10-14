@@ -257,7 +257,11 @@ def validate(key: str, value, terms: dict, vendor_id: str, db: Session):
                 raise FieldNegotiationError(400, "A quantity has to be above zero")
             return value
         if part == "price":
-            return _whole(value, "The price")
+            # Above $0: a $0 counter made "Total if agreed $0" sendable. A
+            # line meant to be free is better said as a discount or left out.
+            if value == 0:
+                raise FieldNegotiationError(400, "A price has to be above $0 — leave the item out instead")
+            return _whole(value, "The price", low=1)
     raise FieldNegotiationError(400, f"There's no field called {key}")
 
 
@@ -427,6 +431,18 @@ def state(booking: Booking, side: str, db: Session) -> dict:
     rows = {r.field_key: r for r in _rows(db, booking)}
     locks = booking.negotiation_locks or []
     keys = list(current) + [k for k in rows if k not in current]
+    # The reader's own latest ask for each field, so a counter or a "kept"
+    # can be shown next to what they asked for (web #168).
+    asked: dict = {}
+    for sent in (
+        db.query(NegotiationSend)
+        .filter(NegotiationSend.booking_id == booking.booking_id, NegotiationSend.side == side)
+        .order_by(NegotiationSend.round.desc())
+        .all()
+    ):
+        for a in sent.answers or []:
+            if a.get("action") in ("change", "counter") and a.get("key") not in asked:
+                asked[a["key"]] = a.get("value")
 
     fields = []
     for key in keys:
@@ -441,6 +457,7 @@ def state(booking: Booking, side: str, db: Session) -> dict:
             "proposed_by": r.proposed_by if r and r.state != SETTLED else None,
             "round": r.round if r else None,
             "note": r.note if r else None,
+            "your_last_ask": asked.get(key),
             "locked": group_of(key) in locks,
             "can_change": _may_change(side, key, locks),
         })
@@ -491,6 +508,31 @@ def _require_open(booking: Booking) -> None:
         raise FieldNegotiationError(400, "This contract is signed, so it can't be changed now")
     if booking.contract_status in ("draft", "declined") or booking.status == "rejected":
         raise FieldNegotiationError(400, "This contract isn't open for changes")
+
+
+def _check_total_if_agreed(current: dict, rows: dict, settled: dict) -> None:
+    """Refuse a send that would leave the contract at $0 or less once every
+    open value is agreed — the "Total if this is agreed" both sides see.
+    Settling it later would fail anyway (contract_document.totals); this
+    says so while the sender can still change it."""
+    values = dict(current)
+    for key, r in rows.items():
+        if r.state != SETTLED:
+            values[key] = r.proposed_value
+    values.update(settled)
+    total = 0
+    for key, value in values.items():
+        if key.startswith("line:new:"):
+            if isinstance(value, dict):
+                total += round((value.get("unit_price_cents") or 0) * (value.get("quantity") or 1))
+        elif key.startswith("line:") and key.endswith(".price"):
+            base = key[: -len(".price")]
+            if values.get(f"{base}.included") is False:
+                continue
+            total += round((value or 0) * (values.get(f"{base}.quantity") or 0))
+    total -= values.get("discount") or 0
+    if total <= 0:
+        raise FieldNegotiationError(400, "That would bring the total to $0 or less — change the price or the discount")
 
 
 def send(
@@ -590,6 +632,7 @@ def send(
     if left:
         names = ", ".join(label(k, terms) for k in left[:3])
         raise FieldNegotiationError(400, f"Answer everything waiting on you first: {names}")
+    _check_total_if_agreed(current, rows, settled)
 
     _settle(booking, vendor, settled, db)
     booking.negotiation_round = next_round
@@ -609,12 +652,15 @@ def send(
     })
     db.commit()
     db.refresh(booking)
-    _tell(booking, vendor, side, record, db)
-    return state(booking, side, db)
+    emailed = _tell(booking, vendor, side, record, db)
+    # Whether the client was actually emailed, so the vendor app says "We
+    # emailed them" only when it's true (web #155). Null on a client's send.
+    return {**state(booking, side, db), "email_sent": emailed}
 
 
-def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: Session) -> None:
-    """Let the other side know it's their turn. Best effort, after commit."""
+def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: Session) -> bool | None:
+    """Let the other side know it's their turn. Best effort, after commit.
+    Returns whether the client's email went (None when the vendor is told)."""
     from app.services.guest_booking_service import _client_label, _tell_vendor
 
     n = len(record)
@@ -625,11 +671,11 @@ def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: S
             f"Round {booking.negotiation_round}: {what} to review. It's your turn.",
             "contract_negotiation_turn", db,
         )
-        return
+        return None
     if not booking.guest_email:
-        return
+        return False
     who = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first()) or "Your vendor"
-    send_email(
+    result = send_email(
         to=booking.guest_email,
         subject=f"{who} answered your changes",
         html=(
@@ -638,6 +684,7 @@ def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: S
             f'<p><a href="{_link(booking)}">Open the contract</a></p>'
         ),
     )
+    return bool(result.get("success")) if isinstance(result, dict) else False
 
 
 # ── Signing (guest_booking_service.sign_contract) ────────────────────
@@ -671,6 +718,24 @@ def has_waiting(booking: Booking, db: Session) -> bool:
         NegotiationField.booking_id == booking.booking_id,
         NegotiationField.state.in_(tuple(WAITING.values())),
     ).first() is not None
+
+
+def summary(booking: Booking, db: Session) -> dict | None:
+    """Whose turn it is and how many changes wait on each side — what a list
+    row needs to say "Asha asked for 2 changes", without the whole state.
+    Null for a contract on the older proposal flow."""
+    if not is_fields(booking):
+        return None
+    states = [s for (s,) in db.query(NegotiationField.state).filter(
+        NegotiationField.booking_id == booking.booking_id,
+        NegotiationField.state.in_(tuple(WAITING.values())),
+    ).all()]
+    return {
+        "turn": _turn(booking),
+        "round": _round(booking),
+        "waiting_vendor": states.count(WAITING["vendor"]),
+        "waiting_client": states.count(WAITING["client"]),
+    }
 
 
 # ── Drafts ───────────────────────────────────────────────────────────

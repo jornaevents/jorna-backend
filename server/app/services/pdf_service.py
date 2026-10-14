@@ -341,6 +341,9 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
                 if qty != 1:
                     label += f" × {qty:g} at {money(item.get('unit_price_cents'))}"
                 pdf.row(label, money(item.get("total_cents")))
+                if item.get("description"):
+                    # What the line includes ("5 hours included").
+                    pdf.text_block(item["description"], size=9, gap=0.5)
             subtotal = sum(i.get("total_cents") or 0 for i in lines) if lines else a.get("amount_cents")
             if a.get("discount_cents"):
                 pdf.row("Subtotal", money(subtotal), color=SOFT)

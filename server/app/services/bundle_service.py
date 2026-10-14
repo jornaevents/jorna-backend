@@ -186,6 +186,8 @@ def _booking_summary(
         "status": booking.status,
         # See the identical field/comment on booking_service._booking_dict.
         "rejected_reason": booking.rejected_reason,
+        # The vendor's note when they declined this request (DECISIONS #28).
+        "vendor_decline_note": booking.vendor_decline_note,
         "payment_status": booking.payment_status,
         # The single source of truth for "can anything further happen to
         # this booking" — see the identical field/comment on
@@ -784,6 +786,25 @@ def add_booking_to_bundle(*, bundle_id: str, booking_id: str, caller_user_id: st
     return _bundle_dict(bundle, bookings, db)
 
 
+_SENT_REQUEST_STATUSES = ("pending", "negotiation_ongoing", "approved")
+
+
+def _cancel_sent_request(booking: Booking, db: Session) -> None:
+    from app.models.schemas import BookingStatus, RejectionReason
+
+    now = datetime.now(timezone.utc)
+    booking.status = BookingStatus.REJECTED.value
+    booking.rejected_reason = RejectionReason.CLIENT_CANCELLED.value
+    booking.cancelled_at = now
+    if booking.contract_token and booking.signed_at is None:
+        from app.services import contract_document as doc
+
+        # The link stops working, as it does when a vendor withdraws.
+        booking.contract_status = "voided"
+        booking.voided_at = now.replace(tzinfo=None)
+        doc.record(db, booking, "cancelled", "client")
+
+
 def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_id: str, db: Session) -> dict:
     bundle = db.query(Bundle).filter(Bundle.bundle_id == bundle_id).first()
     if not bundle:
@@ -810,8 +831,15 @@ def remove_booking_from_bundle(*, bundle_id: str, booking_id: str, caller_user_i
         )
 
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
-    # Delete the booking outright so it also disappears from the vendor's side.
-    _delete_booking_cascade(booking, db)
+    if bundle.status != "draft" and booking.status in _SENT_REQUEST_STATUSES:
+        # The vendor has seen this request: keep it, marked cancelled by the
+        # client, so it lands in their archived leads and stays on the plan as
+        # a line that says it ended (DECISIONS #28). Removing it again deletes it.
+        _cancel_sent_request(booking, db)
+    else:
+        # Never sent, or already ended: delete it outright so it also
+        # disappears from the vendor's side.
+        _delete_booking_cascade(booking, db)
     bundle.updated_at = datetime.now(timezone.utc)
     db.flush()
 

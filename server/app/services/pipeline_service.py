@@ -11,8 +11,10 @@ and iOS can't disagree:
 - **Negotiation**: the contract link has gone to the couple — sent, viewed,
   countered, changes proposed, declined or expired — and it isn't signed.
 
-Signed contracts are bookings, not leads, and leave this list. Dead ones
-(declined requests, voided contracts, converted or lost leads) leave it too.
+Signed contracts are bookings, not leads, and leave this list. Closed ones
+(a declined request, a request the client cancelled, a declined contract, a
+lead marked lost) stay in it archived, with an `outcome` saying how they
+ended (DECISIONS #28). Voided contracts and converted leads leave it.
 Archived items stay in it, flagged, so the page can show them on request.
 """
 
@@ -21,7 +23,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Conversation, ConversationMember, Lead, User, Vendor
-from app.models.schemas import BookingStatus
+from app.models.schemas import BookingStatus, RejectionReason
 from app.services.booking_service import _booking_dict
 from app.utils.timeutil import utc_iso
 
@@ -66,6 +68,9 @@ def _attention(source: str, stage: str, d: dict) -> tuple[str | None, str | None
     """(needs_you | waiting | None, why). The order is the order a vendor
     should act in: a couple's proposed changes, then a counter, beat the
     contract's own state."""
+    negotiation = d.get("negotiation")
+    if negotiation and negotiation["waiting_vendor"]:
+        return "needs_you", "changes_proposed"
     proposal = d.get("proposal_status")
     if proposal == "open":
         return "needs_you", "changes_proposed"
@@ -86,6 +91,8 @@ def _attention(source: str, stage: str, d: dict) -> tuple[str | None, str | None
         # A version the vendor sent back in answer to proposed changes.
         if proposal in ("accepted", "revised"):
             return "waiting", "revised"
+        if negotiation and negotiation["round"] > 1 and negotiation["turn"] == "client":
+            return "waiting", "revised"
         return "waiting", status
     return None, None
 
@@ -95,10 +102,28 @@ def _latest(*stamps: str | None) -> str | None:
     return max(present) if present else None
 
 
-def _booking_item(b: Booking, d: dict, conversation_id: str | None) -> dict:
+def _outcome(b: Booking) -> str | None:
+    """How a lead ended without a signature, when it ended in a way the vendor
+    wants to look back on: they declined the request, the client cancelled it,
+    or the client declined the contract. A voided contract or a withdrawn
+    booking is the vendor's own undo and stays out."""
+    if b.signed_at is not None:
+        return None
+    reason = b.rejected_reason if b.status == BookingStatus.REJECTED.value else None
+    if reason == RejectionReason.VENDOR_DECLINED.value:
+        return "declined"
+    if reason == RejectionReason.CLIENT_DECLINED.value:
+        return "contract_declined"
+    if reason == RejectionReason.CLIENT_CANCELLED.value or b.cancelled_at is not None:
+        return "cancelled_by_client"
+    return None
+
+
+def _booking_item(b: Booking, d: dict, conversation_id: str | None, outcome: str | None = None) -> dict:
     source = "contract" if b.contract_token else "request"
     stage = "negotiation" if b.contract_token and d.get("contract_status") in SENT_STATES else "inquiry"
-    archived = b.vendor_archived_at is not None
+    # A closed lead is archived on its own: nothing more to do on it.
+    archived = outcome is not None or b.vendor_archived_at is not None
     attention, reason = (None, None) if archived else _attention(source, stage, d)
     price = d.get("price")
     return {
@@ -123,15 +148,28 @@ def _booking_item(b: Booking, d: dict, conversation_id: str | None) -> dict:
         "attention": attention,
         "attention_reason": reason,
         "archived": archived,
+        "outcome": outcome,
+        # The vendor's note when they declined a request; the client's reason
+        # when they declined the contract.
+        "outcome_note": d.get("vendor_decline_note") if outcome == "declined" else (
+            d.get("decline_reason") if outcome == "contract_declined" else None
+        ),
+        "client_note": d.get("client_note"),
+        "time_start": d.get("time_start"),
+        "time_end": d.get("time_end"),
+        "guest_count": d.get("guest_count"),
         "created_at": d.get("created_at"),
         "updated_at": _latest(
             d.get("created_at"), d.get("sent_at"), d.get("viewed_at"), d.get("declined_at"),
+            utc_iso(b.cancelled_at) if outcome else None,
         ),
     }
 
 
 def _lead_item(lead: Lead) -> dict:
-    archived = lead.archived_at is not None
+    # A lead marked lost is closed, so it's archived like a declined request.
+    outcome = "not_going_ahead" if lead.status == "lost" else None
+    archived = outcome is not None or lead.archived_at is not None
     # A lead nobody has replied to yet is the vendor's move; once they've
     # marked it contacted or quoted, it's waiting on the couple.
     if archived:
@@ -161,6 +199,8 @@ def _lead_item(lead: Lead) -> dict:
         "attention": attention,
         "attention_reason": reason,
         "archived": archived,
+        "outcome": outcome,
+        "outcome_note": None,
         "created_at": utc_iso(lead.created_at),
         "updated_at": utc_iso(lead.updated_at),
         "note": lead.note,
@@ -199,17 +239,20 @@ def _conversations_for(vendor: Vendor, bookings: list[Booking], leads: list[Lead
 
 def list_pipeline(*, caller_user_id: str, db: Session) -> dict:
     vendor = _vendor_for(caller_user_id, db)
-    bookings = [
-        b for b in db.query(Booking).filter(Booking.vendor_id == vendor.vendor_id).all()
-        if _is_live_unsigned(b)
-    ]
+    every = db.query(Booking).filter(Booking.vendor_id == vendor.vendor_id).all()
+    bookings = [b for b in every if _is_live_unsigned(b)]
+    closed = [(b, outcome) for b in every if not _is_live_unsigned(b) and (outcome := _outcome(b))]
     all_leads = db.query(Lead).filter(Lead.vendor_id == vendor.vendor_id).all()
-    conversations = _conversations_for(vendor, bookings, all_leads, db)
+    conversations = _conversations_for(vendor, bookings + [b for b, _ in closed], all_leads, db)
 
     items = [_booking_item(b, _booking_dict(b, db), conversations.get(b.booking_id)) for b in bookings]
     items += [
+        _booking_item(b, _booking_dict(b, db), conversations.get(b.booking_id), outcome)
+        for b, outcome in closed
+    ]
+    items += [
         _lead_item(lead) for lead in all_leads
-        if not lead.converted_booking_id and lead.status not in ("won", "lost")
+        if not lead.converted_booking_id and lead.status != "won"
     ]
     items.sort(key=lambda i: i["updated_at"] or "", reverse=True)
 

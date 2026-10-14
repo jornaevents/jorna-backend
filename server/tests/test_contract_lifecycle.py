@@ -148,7 +148,7 @@ def test_vendor_is_told_when_the_client_signs_and_marks_payments(monkeypatch):
 def test_converting_a_lead_keeps_what_the_vendor_typed_over_the_lead():
     v = _setup_vendor()
     lead = client.post(
-        "/leads", json={"name": "Lead Name", "email": "lead@example.com", "phone": "111"},
+        "/leads", json={"name": "Lead Name", "email": "lead@example.com", "phone": "732-555-0111"},
         headers=v["headers"],
     ).json()
 

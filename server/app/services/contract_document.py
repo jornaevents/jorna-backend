@@ -206,17 +206,27 @@ def normalize_schedule(raw: list, *, total_cents: int) -> list[dict]:
     return out
 
 
+def scheduled_date(installment: dict, date_iso: str | None) -> date | None:
+    """The day a dated payment falls on for an event starting date_iso: its
+    own date, or so many days before the event. None for "on signing", or
+    when the event has no date to count back from."""
+    kind = installment.get("due_type")
+    try:
+        if kind == "date":
+            return date.fromisoformat(installment.get("due_date") or "")
+        if kind == "before_event":
+            return date.fromisoformat(date_iso or "") - timedelta(days=installment.get("due_days") or 0)
+    except ValueError:
+        return None
+    return None
+
+
 def due_on(installment: dict, booking: Booking) -> str | None:
     """The calendar date a payment is due, for display. Null for "on signing"
     until it's signed."""
-    kind = installment.get("due_type")
-    if kind == "date":
-        return installment.get("due_date")
-    if kind == "before_event":
-        try:
-            return (date.fromisoformat(booking.date_iso) - timedelta(days=installment.get("due_days") or 0)).isoformat()
-        except (TypeError, ValueError):
-            return None
+    if installment.get("due_type") in ("date", "before_event"):
+        day = scheduled_date(installment, booking.date_iso)
+        return day.isoformat() if day else None
     return booking.signed_at.date().isoformat() if booking.signed_at else None
 
 
