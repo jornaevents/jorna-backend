@@ -227,6 +227,12 @@ clears `date_end`, `guest_name`, `guest_email`, `guest_phone`, `location`,
 `guest_count`, `cancellation_window_hours`, `overtime_rate_cents` or
 `document_title`; for any other field a null is ignored, as before.
 
+A field-by-field send (`POST …/negotiation/send`, either side) returns the
+state plus `email_sent`: whether the client was emailed about the vendor's
+answer (`false` with no email on the contract), null on a client's send.
+Each field in the state carries `your_last_ask`: the reader's own latest
+change or counter for it, or null.
+
 Payment dates (DECISIONS #28): creating or editing a schedule, accepting a
 request with a schedule, or first sending a draft returns 400 when a
 payment would be due before today (one day of UTC slack). A payment due

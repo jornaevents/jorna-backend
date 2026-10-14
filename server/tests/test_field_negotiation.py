@@ -369,3 +369,16 @@ def test_a_zero_price_or_a_total_at_zero_is_refused():
     assert zero.status_code == 400 and "above $0" in zero.json()["detail"]
     nothing = _client_send(c, 1, [{"key": "discount", "action": "change", "value": 160_000}])
     assert nothing.status_code == 400 and "$0 or less" in nothing.json()["detail"]
+
+
+def test_a_send_says_whether_the_client_was_emailed_and_each_field_remembers_your_ask(monkeypatch):
+    monkeypatch.setattr("app.services.field_negotiation_service.send_email", lambda **kw: {"success": True})
+    v = _setup_vendor()
+    c = _contract(v)
+    sent = _client_send(c, 1, [{"key": "line:pkg.price", "action": "change", "value": 120_000}]).json()
+    assert sent["email_sent"] is None
+    answered = _vendor_send(c, v, 2, [{"key": "line:pkg.price", "action": "counter", "value": 130_000}]).json()
+    assert answered["email_sent"] is True
+    s = client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()
+    assert _field(s, "line:pkg.price")["your_last_ask"] == 120_000
+    assert _field(s, "line:pkg.price")["proposed"] == 130_000

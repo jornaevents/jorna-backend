@@ -431,6 +431,18 @@ def state(booking: Booking, side: str, db: Session) -> dict:
     rows = {r.field_key: r for r in _rows(db, booking)}
     locks = booking.negotiation_locks or []
     keys = list(current) + [k for k in rows if k not in current]
+    # The reader's own latest ask for each field, so a counter or a "kept"
+    # can be shown next to what they asked for (web #168).
+    asked: dict = {}
+    for sent in (
+        db.query(NegotiationSend)
+        .filter(NegotiationSend.booking_id == booking.booking_id, NegotiationSend.side == side)
+        .order_by(NegotiationSend.round.desc())
+        .all()
+    ):
+        for a in sent.answers or []:
+            if a.get("action") in ("change", "counter") and a.get("key") not in asked:
+                asked[a["key"]] = a.get("value")
 
     fields = []
     for key in keys:
@@ -445,6 +457,7 @@ def state(booking: Booking, side: str, db: Session) -> dict:
             "proposed_by": r.proposed_by if r and r.state != SETTLED else None,
             "round": r.round if r else None,
             "note": r.note if r else None,
+            "your_last_ask": asked.get(key),
             "locked": group_of(key) in locks,
             "can_change": _may_change(side, key, locks),
         })
@@ -639,12 +652,15 @@ def send(
     })
     db.commit()
     db.refresh(booking)
-    _tell(booking, vendor, side, record, db)
-    return state(booking, side, db)
+    emailed = _tell(booking, vendor, side, record, db)
+    # Whether the client was actually emailed, so the vendor app says "We
+    # emailed them" only when it's true (web #155). Null on a client's send.
+    return {**state(booking, side, db), "email_sent": emailed}
 
 
-def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: Session) -> None:
-    """Let the other side know it's their turn. Best effort, after commit."""
+def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: Session) -> bool | None:
+    """Let the other side know it's their turn. Best effort, after commit.
+    Returns whether the client's email went (None when the vendor is told)."""
     from app.services.guest_booking_service import _client_label, _tell_vendor
 
     n = len(record)
@@ -655,11 +671,11 @@ def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: S
             f"Round {booking.negotiation_round}: {what} to review. It's your turn.",
             "contract_negotiation_turn", db,
         )
-        return
+        return None
     if not booking.guest_email:
-        return
+        return False
     who = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first()) or "Your vendor"
-    send_email(
+    result = send_email(
         to=booking.guest_email,
         subject=f"{who} answered your changes",
         html=(
@@ -668,6 +684,7 @@ def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: S
             f'<p><a href="{_link(booking)}">Open the contract</a></p>'
         ),
     )
+    return bool(result.get("success")) if isinstance(result, dict) else False
 
 
 # ── Signing (guest_booking_service.sign_contract) ────────────────────
