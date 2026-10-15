@@ -253,3 +253,49 @@ def test_new_bookings_record_when_they_were_made():
     mine = next(b for b in booking if b["booking_id"] == contract["booking_id"])
     assert mine["created_at"] is not None
     assert mine["sent_at"] is not None
+
+
+def _plan(who, status):
+    from datetime import datetime, timezone
+
+    from app.db.models import Bundle
+
+    now = datetime.now(timezone.utc)
+    db = TestingSessionLocal()
+    bundle = Bundle(user_id=who.user_id, name="Plan", status=status, created_at=now, updated_at=now)
+    db.add(bundle)
+    db.commit()
+    db.refresh(bundle)
+    db.close()
+    return bundle.bundle_id
+
+
+def _set_plan_status(bundle_id, status):
+    from app.db.models import Bundle
+
+    db = TestingSessionLocal()
+    db.query(Bundle).filter(Bundle.bundle_id == bundle_id).update({Bundle.status: status})
+    db.commit()
+    db.close()
+
+
+def test_a_request_on_a_plan_the_client_hasnt_sent_isnt_a_lead_yet():
+    """The vendor can't accept it or send a contract for it until the client
+    presses Send, so it mustn't say it needs them (or count on the badge)."""
+    v = _setup_vendor()
+    who = _client_user()
+    bundle_id = _plan(who, "draft")
+    b = _request(v, who, bundle_id=bundle_id)
+
+    pipe = _pipeline(v)
+    assert _item(pipe, booking_id=b.booking_id) is None
+    assert pipe["counts"]["needs_you"] == 0
+    assert pipe["counts"]["inquiries"] == 0
+
+    # Sent: now it's theirs to answer.
+    _set_plan_status(bundle_id, "confirmed")
+    pipe = _pipeline(v)
+    item = _item(pipe, booking_id=b.booking_id)
+    assert item is not None
+    assert (item["attention"], item["attention_reason"]) == ("needs_you", "new_request")
+    assert pipe["counts"]["needs_you"] == 1
