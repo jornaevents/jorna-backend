@@ -207,6 +207,9 @@ def _event_line(e: dict) -> str | None:
     if kind in ("signed", "document_signed"):
         return f"Signed by {d.get('signer_name') or 'the client'}{ip}"
     if kind == "details_updated":
+        if d.get("email_to"):
+            rest = [f for f in d.get("fields") or [] if f != "email"]
+            return f"Client changed their email to {d['email_to']}" + (f", and their {' and '.join(rest)}" if rest else "")
         return f"Client changed their {' and '.join(d.get('fields') or ['details'])} on the contract"
     if kind == "copy_sent":
         return f"Signed copy emailed to the {d.get('to') or 'client'}"
