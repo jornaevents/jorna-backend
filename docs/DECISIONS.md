@@ -782,3 +782,19 @@ badge: signed, not yet opened, not voided.
 - **Bookings signed before 0075** are marked seen as of their signature, so the badge starts
   at zero instead of lighting up with every booking a vendor has had.
 
+## 31. Every package has a contract template; the vendor's edit is stored against it (0076)
+
+Most contracts start from one package. The vendor's "Send a contract" now asks which template to
+start from, and every package has one by default (web DECISIONS, 2026-10-15).
+
+- **Built, not stored, until edited.** A package's template is made by the web from the package
+  (its price, hours and what's included) and the vendor's contract defaults, so a price change
+  reaches it with nothing to sync and nothing to backfill for existing vendors.
+- **The edit is stored.** Once the vendor edits and saves it, it's a `contract_templates` row with
+  `service_id` set, and stops following the package. One per package (a unique constraint on
+  vendor + package; ordinary templates have none). Reset to package deletes it.
+- **Only the vendor's own package, and only an agreement.** An addendum or cancellation template
+  isn't a package's.
+- **A deleted package** leaves its edited copy as an ordinary template (`ON DELETE SET NULL`), so
+  the vendor's wording isn't lost. Archived packages are the web's to hide.
+

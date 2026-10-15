@@ -912,6 +912,8 @@ def _template_dict(t: ContractTemplate) -> dict:
         "name": t.name,
         "kind": t.kind or "agreement",
         "body": t.body,
+        # The package this is the edited template of (DECISIONS #31), or null.
+        "service_id": t.service_id,
         "created_at": _iso(t.created_at),
         "updated_at": _iso(t.updated_at),
     }
@@ -943,16 +945,37 @@ def list_templates(*, vendor_id: str, caller_user_id: str, db: Session) -> dict:
     return {"items": [_template_dict(t) for t in rows], "total": len(rows)}
 
 
+def _check_package(vendor_id: str, service_id: str, kind: str | None, db: Session) -> None:
+    """A package's template: the vendor's own package, an agreement, and
+    only one per package — editing it again is a PATCH, not a second copy."""
+    if (kind or "agreement") != "agreement":
+        raise ContractError(400, "Only a contract template can belong to a package")
+    service = db.query(Service).filter(Service.service_id == service_id).first()
+    if not service or service.vendor_id != vendor_id:
+        raise ContractError(404, "Package not found")
+    taken = (
+        db.query(ContractTemplate)
+        .filter(ContractTemplate.vendor_id == vendor_id, ContractTemplate.service_id == service_id)
+        .first()
+    )
+    if taken:
+        raise ContractError(409, "This package already has its own template — edit that one")
+
+
 def create_template(
     *, vendor_id: str, caller_user_id: str, name: str, body: dict, db: Session, kind: str = "agreement",
+    service_id: str | None = None,
 ) -> dict:
     _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
     _check_template(name, body, kind)
+    if service_id:
+        _check_package(vendor_id, service_id, kind, db)
     if db.query(ContractTemplate).filter(ContractTemplate.vendor_id == vendor_id).count() >= MAX_TEMPLATES:
         raise ContractError(400, f"You can keep up to {MAX_TEMPLATES} templates — delete one first")
     now = _now()
     t = ContractTemplate(
-        vendor_id=vendor_id, name=name.strip()[:120], body=body, kind=kind, created_at=now, updated_at=now,
+        vendor_id=vendor_id, name=name.strip()[:120], body=body, kind=kind, service_id=service_id or None,
+        created_at=now, updated_at=now,
     )
     db.add(t)
     db.commit()
@@ -974,6 +997,8 @@ def update_template(
 ) -> dict:
     t = _own_template(template_id, caller_user_id, db)
     _check_template(name, body, kind)
+    if kind is not None and kind != "agreement" and t.service_id:
+        raise ContractError(400, "Only a contract template can belong to a package")
     if kind is not None:
         t.kind = kind
     if name is not None:

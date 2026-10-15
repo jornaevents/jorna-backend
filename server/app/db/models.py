@@ -528,8 +528,14 @@ class ContractTemplate(Base):
     body = Column(JSON, nullable=False)
     # agreement | addendum | cancellation (0067) — which gallery card it is.
     kind = Column(String(20), nullable=False, default="agreement", server_default="agreement")
+    # Set on the vendor's edited copy of a package's template (0076,
+    # DECISIONS #31); one per package. Unedited package templates aren't
+    # stored — the web builds them from the package.
+    service_id = Column(String(36), ForeignKey("services.service_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("vendor_id", "service_id", name="uq_contract_templates_vendor_service"),)
 
 
 class ContractDocument(Base):
