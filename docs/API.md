@@ -341,7 +341,9 @@ A signed record with signing evidence ends with a signing-certificate page (DECI
   `name_on_contract` when they differ.
 - `PATCH /guest-bookings/{token}` returns 409 when it would change a venue or guest count the
   vendor already set; the same value, or filling in a blank one, is fine. Changing an
-  already-set name, email or phone records a `details_updated` event (`{fields: [...]}`).
+  already-set name, email or phone records a `details_updated` event (`{fields: [...]}`). An
+  email change adds `email_to` (the new address) and emails the old address a notice with the
+  new one masked. An email that isn't `x@y.z`-shaped is 422.
 
 ## Vendor categories
 

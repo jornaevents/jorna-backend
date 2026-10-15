@@ -8,6 +8,7 @@ The vendor-authenticated side (create/edit a contract, confirm receiving a
 payment) lives in contract_service.py / stripe_service.py instead.
 """
 import logging
+import re
 from datetime import date, datetime, time, timezone
 
 from sqlalchemy.orm import Session
@@ -24,6 +25,10 @@ from app.utils.notifications import notify_vendor_contract_event
 from app.utils.timeutil import utc_iso
 
 logger = logging.getLogger(__name__)
+
+# Same loose shape as a lead's email (contract_service._check_lead): catches
+# a typo before the vendor and the signing code rely on it.
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class GuestBookingError(Exception):
@@ -213,11 +218,18 @@ def fill_details(
     negotiation, where the vendor answers it. The page resends both
     unchanged, so the same value is fine. A change to the client's own
     name, email or phone is put on the timeline: the signature is checked
-    against that name (signing_evidence.name_check)."""
+    against that name (signing_evidence.name_check).
+
+    The email is the link's first step (DECISIONS #29). The client may
+    give a different one than the vendor typed: the timeline names the new
+    address, and the old one is told, since the link alone lets anyone
+    change it and the signing code then goes to the new inbox."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
     if booking.signed_at is not None:
         raise GuestBookingError(400, "This booking has already been signed and can no longer be edited")
+    if guest_email is not None and guest_email.strip() and not _EMAIL.match(guest_email.strip()):
+        raise GuestBookingError(422, "That email doesn't look right — check it and try again")
 
     if location is not None:
         new_location = location.strip() or "TBD"
@@ -234,6 +246,7 @@ def fill_details(
         booking.guest_count = guest_count
 
     changed = []
+    old_email = booking.guest_email
     for field, value in (("name", guest_name), ("email", guest_email), ("phone", guest_phone)):
         if value is None:
             continue
@@ -243,14 +256,33 @@ def fill_details(
             changed.append(field)
         setattr(booking, attr, after)
     if changed:
-        doc.record(db, booking, "details_updated", "client", {"fields": changed})
+        detail: dict = {"fields": changed}
+        if "email" in changed:
+            detail["email_to"] = booking.guest_email
+        doc.record(db, booking, "details_updated", "client", detail)
 
     db.commit()
     db.refresh(booking)
+    if "email" in changed and old_email and booking.guest_email:
+        _tell_old_email(old_email, booking, db)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
     return _guest_dict(booking, service, vendor, vendor_user)
+
+
+def _tell_old_email(old_email: str, booking: Booking, db: Session) -> None:
+    """A heads-up to the address the contract used to go to. Best-effort,
+    like every email here: a failed send doesn't undo the change."""
+    vendor_name = _vendor_name(booking, db)
+    new = signing_evidence.mask_email(booking.guest_email)
+    html = f"""
+    <p>The email on your contract with {vendor_name} for {_pretty_date(booking.date_iso)} was changed to {new}.
+    Replies, the signing code and the signed copy will go there from now on.</p>
+    <p>If you changed it, there's nothing to do. If you didn't, contact {vendor_name} — someone with your
+    contract link may have changed it.</p>
+    """
+    send_email(to=old_email, subject=f"The email on your contract with {vendor_name} was changed", html=html)
 
 
 def send_signing_code(*, contract_token: str, db: Session) -> dict:

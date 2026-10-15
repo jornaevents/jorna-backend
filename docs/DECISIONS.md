@@ -751,3 +751,20 @@ it again, or removing one from a draft plan, deletes it as before.
 the plan's price panel; `Service.negotiable` and the vendor's
 `open_to_price_negotiation` columns stay, unused.
 
+## 29. The client's link asks for an email first; a new one is told to the old (2026-10-15)
+
+The client's contract link now runs as steps — email, details, review, sign — in the web app
+(its DECISIONS entry of 2026-10-15). The link is still the only credential (#13), and the
+signing code is still asked at signing, every time (#27). What the backend adds:
+
+- **A different email is allowed.** `PATCH /guest-bookings/{token}` takes it, and the
+  `details_updated` event names it (`email_to`), so the vendor's timeline and the signing
+  certificate say where the client now is.
+- **The old address is told.** Anyone with the link can change the email, and the signing code
+  then goes to the new inbox. A short notice to the old address — the new one masked — means
+  the real client hears about a change they didn't make. Best-effort, like every email here.
+  A first email, or the same one again, sends nothing.
+- **A malformed email is refused** (422), the same loose check a lead's email gets (#28).
+- Sending changes already required an email (field negotiation and proposals both 400 without
+  one), so the steps change nothing there.
+

@@ -144,3 +144,41 @@ def test_changing_their_own_details_is_on_the_timeline():
     # The phone was blank: filling it in isn't a change.
     assert changed.detail == {"fields": ["name"]}
     assert _booking(c["booking_id"]).guest_name == "Bob Smith"
+
+
+def test_a_new_email_is_named_on_the_timeline_and_the_old_address_is_told(outbox):
+    _, c, token = _contract()
+    r = _fill(token, guest_email="asha.m@example.com")
+    assert r.status_code == 200, r.text
+    [changed] = _events(c["booking_id"], "details_updated")
+    assert changed.detail == {"fields": ["email"], "email_to": "asha.m@example.com"}
+
+    [notice] = outbox.sent
+    assert notice["to"] == "asha@example.com"
+    assert notice["subject"].startswith("The email on your contract with")
+    # Masked: the old inbox learns it moved, not the whole new address.
+    assert "a•••••@example.com" in notice["html"]
+    assert "asha.m@example.com" not in notice["html"]
+
+
+def test_giving_the_same_email_or_a_first_one_tells_nobody(outbox):
+    _, _, token = _contract()
+    _fill(token, guest_email="asha@example.com")
+    v = _setup_vendor()
+    blank = _create_contract(v, guest_name="Asha Mehta")
+    _fill(blank["contract_token"], guest_email="asha@example.com")
+    assert outbox.sent == []
+
+
+def test_an_email_that_cant_be_right_is_refused():
+    _, c, token = _contract()
+    r = _fill(token, guest_email="asha@example")
+    assert r.status_code == 422
+    assert "email" in r.json()["detail"]
+    assert _booking(c["booking_id"]).guest_email == "asha@example.com"
+
+
+def test_the_certificate_names_the_new_email():
+    assert pdf_service._event_line({"kind": "details_updated", "detail": {"fields": ["email", "phone"], "email_to": "asha.m@example.com"}}) == (
+        "Client changed their email to asha.m@example.com, and their phone"
+    )
