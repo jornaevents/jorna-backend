@@ -434,6 +434,9 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "contract_terms": booking.contract_terms,
         "signer_name": booking.signer_name,
         "signed_at": utc_iso(booking.signed_at),
+        # When the vendor first opened it (0075). Signed and still null: new
+        # to them, and on the Bookings tab's badge (DECISIONS #30).
+        "vendor_seen_at": utc_iso(booking.vendor_seen_at),
         # Where the contract stands as an offer, "expired" derived — see
         # contract_service.contract_state. Null on a non-contract booking.
         "contract_status": _contract_state(booking),
@@ -1517,6 +1520,47 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
     total = query.count()
     items = query.offset(offset).limit(limit).all()
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
+
+
+
+
+def _unseen(vendor_id: str, db: Session):
+    """A client signed it and the vendor hasn't opened it yet (DECISIONS #30).
+    Signing is what turns a lead into a booking without the vendor doing
+    anything, so it's the one arrival they could miss."""
+    return (
+        db.query(Booking)
+        .filter(
+            Booking.vendor_id == vendor_id,
+            Booking.signed_at.isnot(None),
+            Booking.vendor_seen_at.is_(None),
+            # Voided or cancelled since: gone from the Bookings page.
+            Booking.status != BookingStatus.REJECTED.value,
+        )
+    )
+
+
+def count_new_bookings(*, caller_user_id: str, db: Session) -> dict:
+    """The Bookings tab's badge, for the signed-in vendor."""
+    vendor = db.query(Vendor).filter(Vendor.user_id == caller_user_id).first()
+    if not vendor:
+        raise BookingError(403, "You must be a vendor to view vendor bookings")
+    return {"count": _unseen(vendor.vendor_id, db).count()}
+
+
+def mark_seen_by_vendor(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
+    """The vendor opened it. Only the first time counts; opening it again
+    changes nothing."""
+    booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+    if not booking:
+        raise BookingError(404, "Booking not found")
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    if not vendor or vendor.user_id != caller_user_id:
+        raise BookingError(403, "Only the vendor on this booking can do that")
+    if booking.vendor_seen_at is None:
+        booking.vendor_seen_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"booking_id": booking.booking_id, "vendor_seen_at": utc_iso(booking.vendor_seen_at)}
 
 
 def _open_change_request(booking: Booking, db: Session) -> dict | None:

@@ -456,6 +456,9 @@ class Booking(Base):
     # reason for declining a contract is decline_reason, above.
     vendor_decline_note = Column(String(500), nullable=True)
     voided_at = Column(DateTime, nullable=True)
+    # The first time the vendor opened it on their Bookings page (0075). A
+    # signed booking without it is new to them — the Bookings tab's badge.
+    vendor_seen_at = Column(DateTime, nullable=True)
 
     # What the agreement says (0065, docs/DECISIONS.md #16), all snapshots —
     # nothing here joins back to the package it came from, so editing or

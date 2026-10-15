@@ -71,6 +71,11 @@ create bookings: `POST /bookings` (direct, single-booking bundle unless
 above. See `docs/ARCHITECTURE.md` for what happens to a booking's payment
 after it's created.
 
+New bookings for the vendor (DECISIONS #30): a booking dict carries `vendor_seen_at`.
+`GET /bookings/vendor/new-count` → `{count}` counts the signed-in vendor's signed bookings
+they haven't opened (voided ones excluded); `POST /bookings/{id}/seen` (vendor on the
+booking only, else 403) sets it the first time and returns `{booking_id, vendor_seen_at}`.
+
 ## Leads pipeline (vendor)
 
 `GET /leads/pipeline` returns everything before a signed contract in one
