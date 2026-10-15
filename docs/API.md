@@ -86,7 +86,9 @@ contract link is sent, then `negotiation`), `source` (`request` | `contract`
 `attention_reason` (`changes_proposed`, `new_request`, `new_lead`, `draft`,
 `counter_offer`, `declined`, `expired`; `sent`, `viewed`, `revised`,
 `counter_sent`, or the lead's own status while waiting), `archived`, and `created_at`/`updated_at`. `counts`
-summarises the unarchived items.
+summarises the unarchived items. A request on a plan the client hasn't sent yet isn't listed or
+counted — the vendor can't answer it until it's sent — the same rule `GET
+/bookings/vendor/{id}` follows (`booking_service.sent_to_vendor`).
 
 Closed leads stay in the list, archived (DECISIONS #28). `outcome` says how
 each ended: `declined` (the vendor declined the request), `cancelled_by_client`

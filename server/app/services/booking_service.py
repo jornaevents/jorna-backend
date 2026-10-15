@@ -1479,6 +1479,20 @@ def get_user_bookings(*, user_id: str, limit: int = 20, offset: int = 0, db: Ses
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}
 
 
+def sent_to_vendor(query):
+    """Only the bookings a vendor has actually been asked about: none from a
+    plan the client hasn't sent (see get_vendor_bookings for why). Every list
+    a vendor works from goes through this — Bookings, and Leads with its
+    "needs you" count (pipeline_service) — so they can't disagree.
+
+    Outer, so a booking with no bundle survives the join. `NULL != 'draft'`
+    is NULL in SQL rather than true, which is why the null case is spelled
+    out rather than left to the inequality."""
+    return query.outerjoin(Bundle, Booking.bundle_id == Bundle.bundle_id).filter(
+        or_(Bundle.bundle_id.is_(None), Bundle.status != "draft"),
+    )
+
+
 def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20, offset: int = 0, db: Session) -> dict:
     """Return a paginated list of bookings directed to a vendor.
 
@@ -1506,17 +1520,7 @@ def get_vendor_bookings(*, vendor_id: str, caller_user_id: str, limit: int = 20,
         raise BookingError(404, "Vendor not found")
     if vendor.user_id != caller_user_id:
         raise BookingError(403, "You are not authorised to view these bookings")
-    query = (
-        db.query(Booking)
-        # Outer, so a booking with no bundle survives the join. `NULL != 'draft'`
-        # is NULL in SQL rather than true, which is why the null case is spelled
-        # out rather than left to the inequality.
-        .outerjoin(Bundle, Booking.bundle_id == Bundle.bundle_id)
-        .filter(
-            Booking.vendor_id == vendor_id,
-            or_(Bundle.bundle_id.is_(None), Bundle.status != "draft"),
-        )
-    )
+    query = sent_to_vendor(db.query(Booking).filter(Booking.vendor_id == vendor_id))
     total = query.count()
     items = query.offset(offset).limit(limit).all()
     return {"items": [_booking_dict(b, db) for b in items], "total": total, "limit": limit, "offset": offset}

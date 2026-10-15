@@ -11,6 +11,9 @@ and iOS can't disagree:
 - **Negotiation**: the contract link has gone to the couple — sent, viewed,
   countered, changes proposed, declined or expired — and it isn't signed.
 
+A request on a plan the client hasn't sent yet isn't on it either: the
+vendor can't answer it until it's sent (booking_service.sent_to_vendor).
+
 Signed contracts are bookings, not leads, and leave this list. Closed ones
 (a declined request, a request the client cancelled, a declined contract, a
 lead marked lost) stay in it archived, with an `outcome` saying how they
@@ -24,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Conversation, ConversationMember, Lead, User, Vendor
 from app.models.schemas import BookingStatus, RejectionReason
-from app.services.booking_service import _booking_dict
+from app.services.booking_service import _booking_dict, sent_to_vendor
 from app.utils.timeutil import utc_iso
 
 
@@ -239,7 +242,10 @@ def _conversations_for(vendor: Vendor, bookings: list[Booking], leads: list[Lead
 
 def list_pipeline(*, caller_user_id: str, db: Session) -> dict:
     vendor = _vendor_for(caller_user_id, db)
-    every = db.query(Booking).filter(Booking.vendor_id == vendor.vendor_id).all()
+    # A request on a plan the client hasn't sent isn't the vendor's to act on —
+    # they can't accept it or send a contract — so it isn't a lead yet. It
+    # arrives, with everything else on the plan, when the client presses Send.
+    every = sent_to_vendor(db.query(Booking).filter(Booking.vendor_id == vendor.vendor_id)).all()
     bookings = [b for b in every if _is_live_unsigned(b)]
     closed = [(b, outcome) for b in every if not _is_live_unsigned(b) and (outcome := _outcome(b))]
     all_leads = db.query(Lead).filter(Lead.vendor_id == vendor.vendor_id).all()
