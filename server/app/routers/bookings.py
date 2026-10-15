@@ -18,6 +18,8 @@ from app.services.booking_service import (
     update_booking_status as svc_update_booking_status,
     get_user_bookings as svc_get_user_bookings,
     get_vendor_bookings as svc_get_vendor_bookings,
+    count_new_bookings as svc_count_new_bookings,
+    mark_seen_by_vendor as svc_mark_seen_by_vendor,
     check_in as svc_check_in,
 )
 
@@ -183,6 +185,30 @@ def get_vendor_bookings_route(
             raise HTTPException(status_code=403, detail="You must be a vendor to view vendor bookings")
         vendor_id = vendor.vendor_id
     return svc_get_vendor_bookings(vendor_id=vendor_id, caller_user_id=current_user.user_id, limit=limit, offset=offset, db=db)
+
+
+@router.get("/vendor/new-count", summary="How many signed bookings the vendor hasn't opened yet")
+def count_new_bookings_route(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """The Bookings tab's badge (docs/DECISIONS.md #30). Declared before
+    /vendor/{vendor_id}, which would otherwise take "new-count" as an id."""
+    try:
+        return svc_count_new_bookings(caller_user_id=current_user.user_id, db=db)
+    except BookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{booking_id}/seen", summary="The vendor opened this booking")
+@limiter.limit("60/minute")
+def mark_seen_route(
+    request: Request,
+    booking_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    try:
+        return svc_mark_seen_by_vendor(booking_id=booking_id, caller_user_id=current_user.user_id, db=db)
+    except BookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.get("/vendor/{vendor_id}", summary="Get all bookings for a vendor")

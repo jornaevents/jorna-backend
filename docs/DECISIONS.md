@@ -768,3 +768,17 @@ signing code is still asked at signing, every time (#27). What the backend adds:
 - Sending changes already required an email (field negotiation and proposals both 400 without
   one), so the steps change nothing there.
 
+## 30. A signed contract is new to the vendor until they open it (0075)
+
+A lead becomes a booking the moment the client signs — the vendor does nothing, so it's easy
+to miss. `bookings.vendor_seen_at` records the first time the vendor opens it on their Bookings
+page (`POST /bookings/{id}/seen`), and `GET /bookings/vendor/new-count` is the Bookings tab's
+badge: signed, not yet opened, not voided.
+
+- **Signed, not accepted.** A marketplace request the vendor accepts was their own act; only a
+  client's signature arrives on its own.
+- **Kept on the booking, not the browser**, so opening it on a phone clears the badge on the
+  laptop.
+- **Bookings signed before 0075** are marked seen as of their signature, so the badge starts
+  at zero instead of lighting up with every booking a vendor has had.
+
