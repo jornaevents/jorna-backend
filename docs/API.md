@@ -121,6 +121,18 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
   sent and starts the hold.
 
+## Contract templates (vendor)
+
+`GET/POST /contract-templates`, `PATCH/DELETE /contract-templates/{id}` — the vendor's saved
+templates (0065). The body is the web builder's own shape and the server never reads it. `kind`
+is `agreement` | `addendum` | `cancellation`; up to 50 per vendor.
+
+`service_id` (0076, DECISIONS #31) marks the vendor's edited copy of a package's template. Every
+package has a template, built by the web from the package and the vendor's defaults until it's
+edited; saving the edit is a POST with `service_id` (the vendor's own package, agreements only —
+404 / 400 otherwise; 409 if that package already has one, which is then a PATCH). Deleting it is
+"Reset to package". The list returns `service_id` (null for ordinary templates).
+
 ## Contract documents (vendor + public)
 
 Contracts (`POST/PATCH /contracts`, and `POST /bookings/{id}/propose`) also take `document_title` (≤200) and

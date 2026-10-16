@@ -422,6 +422,8 @@ class TemplateRequest(BaseModel):
     body: dict
     # agreement | addendum | cancellation (0067).
     kind: str = "agreement"
+    # The package this is the edited template of (0076, DECISIONS #31).
+    service_id: Optional[str] = Field(default=None, max_length=36)
 
 
 class TemplateUpdateRequest(BaseModel):
@@ -447,7 +449,7 @@ def create_template_route(
     try:
         return create_template(
             vendor_id=_my_vendor_id(current_user, db), caller_user_id=current_user.user_id,
-            name=body.name, body=body.body, kind=body.kind, db=db,
+            name=body.name, body=body.body, kind=body.kind, service_id=body.service_id, db=db,
         )
     except ContractError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
