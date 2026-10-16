@@ -2,7 +2,7 @@
 
 Enriches registered Desiconnect vendor profiles with data scraped from their Instagram accounts.
 
-Vendors link their own Instagram username through the app. The scraper then fetches those accounts, extracts tags and images, and posts the enriched data back to each vendor's existing profile.
+Vendors link their own Instagram username through the app. The scraper then fetches those accounts, extracts tags, and posts them back to each vendor's existing profile.
 
 Instagram-generated tags are stored separately from vendor-curated tags so vendors keep full control over their profile.
 
@@ -15,7 +15,7 @@ scraper.py fetches linked vendors from API
         ↓
 Apify scrapes each Instagram profile
         ↓
-Tags + images posted back via /vendors/{id}/instagram-enrich
+Tags (+ bio if empty) posted back via /vendors/{id}/instagram-enrich
         ↓
 Bundle creator uses instagram_tags in scoring
 ```
@@ -56,9 +56,11 @@ The scraper then picks them up automatically on the next run.
 - **instagram_tags** — normalized tags extracted from post hashtags and bio,
   aligned with the bundle creator's scoring keywords (e.g. `bhangra`, `wedding`,
   `traditional`). Kept separate from user-inputted tags.
-- **Service images** — recent post images added to the vendor's first service
-  (up to 9 total, no duplicates).
 - **Bio** — only set if the vendor hasn't written one yet.
+
+It **doesn't touch packages or photos.** It used to add recent post images to
+the vendor's first package, but vendors never chose those, and Instagram's
+image URLs expire within days, so they turned into broken images.
 
 ## Bundle creator integration
 

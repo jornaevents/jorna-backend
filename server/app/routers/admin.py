@@ -9,9 +9,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import User, Vendor, Service
+from app.db.models import User, Vendor
 from app.dependencies import get_current_admin
-from app.services.service_service import media_url
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +61,6 @@ def _scrape_profile(apify_token: str, username: str) -> tuple[dict | None, str |
     except Exception as exc:
         logger.warning("Apify scrape failed for @%s: %s", username, exc)
         return None, str(exc)
-
-
-def _extract_images(profile: dict) -> list[str]:
-    posts = profile.get("posts", []) or profile.get("latestPosts", []) or []
-    images = []
-    for post in posts[:9]:
-        url = (post.get("imgDisplayUrl") or post.get("displayUrl")
-               or post.get("imageUrl") or post.get("src"))
-        if url and isinstance(url, str):
-            images.append(url)
-    return images
 
 
 def _extract_tags(profile: dict, bio: str, username: str) -> list[str]:
@@ -236,7 +224,8 @@ def run_scraper(
     _auth=Depends(_require_scraper_auth),
 ):
     """Scrape Instagram profiles for all vendors who have linked their account
-    and enrich their profiles with tags and images.
+    and enrich their profiles with tags (and a bio, if they have none). Never
+    touches their packages or photos.
 
     Authenticate with either a Bearer admin JWT or an api_key query param
     matching the SCRAPER_API_KEY environment variable (for cron jobs).
@@ -273,16 +262,13 @@ def run_scraper(
             entry["status"] = "failed"
             entry["error"] = error
             entry["tags"] = []
-            entry["images"] = 0
             results.append(entry)
             continue
 
         bio = profile.get("biography") or profile.get("bio") or ""
-        images = _extract_images(profile)
         tags = _extract_tags(profile, bio, username)
 
         entry["tags"] = tags
-        entry["images"] = len(images)
 
         if dry_run:
             entry["status"] = "dry_run"
@@ -290,26 +276,11 @@ def run_scraper(
             vendor.instagram_tags = tags
             if bio and (not vendor.bio or not vendor.bio.strip()):
                 vendor.bio = bio[:500]
+            # Tags and an empty bio only. Packages are left alone: it used to
+            # add post images to the vendor's first package, which the vendor
+            # never chose, and Instagram's CDN URLs expire within days, so
+            # they turned into broken images.
             db.commit()
-
-            service = db.query(Service).filter(Service.vendor_id == vendor.vendor_id).first()
-            if service and images:
-                existing = list(service.media or [])
-                # Typed the same as every other write path (see
-                # service_service.add_service_image) — this used to append
-                # bare URL strings, which the frontend's MediaItem-typed
-                # renderer silently can't display (no .url on a string) while
-                # the backend's image-count cap still counted them, so a
-                # vendor could be told their service "already has 9 images"
-                # with only their own 2 actually visible anywhere.
-                existing_urls = {media_url(m) for m in existing}
-                new_images = [
-                    {"url": img, "type": "image", "thumbnail_url": None}
-                    for img in images
-                    if img not in existing_urls
-                ]
-                service.media = (existing + new_images)[:9]
-                db.commit()
 
             entry["status"] = "enriched"
 
