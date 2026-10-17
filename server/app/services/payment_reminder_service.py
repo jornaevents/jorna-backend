@@ -154,3 +154,56 @@ def send_payment_reminders(*, db: Session, now: datetime | None = None) -> int:
     if sent:
         logger.info("Sent %d payment reminders", sent)
     return sent
+
+
+# ── "Remind client", by hand (DECISIONS #33) ─────────────────────────
+
+def reminded_today(booking: Booking, installment_id: str, db: Session, today: date | None = None) -> bool:
+    """Whether the vendor already sent this payment's manual reminder today
+    (UTC, like everything here) — one a day."""
+    today = today or datetime.now(timezone.utc).date()
+    rows = (
+        db.query(ContractEvent)
+        .filter(ContractEvent.booking_id == booking.booking_id, ContractEvent.kind == "payment_reminder")
+        .all()
+    )
+    return any(
+        (r.detail or {}).get("installment_id") == installment_id
+        and (r.detail or {}).get("reminder") == "manual"
+        and r.at.date() == today
+        for r in rows
+    )
+
+
+def send_manual_reminder(booking: Booking, installment: dict, db: Session) -> None:
+    """The vendor's "Remind client" on an overdue payment: the amount, when it
+    was due, and how to pay them. The automatic overdue notice goes to the
+    vendor; this is the one that reaches the client."""
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
+    vendor_name = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
+    due = doc.effective_due(installment, booking)
+    link = f"{WEB_APP_URL}/booking-link?t={booking.contract_token}"
+    ways = [w for w in (
+        f"Venmo {vendor.venmo_handle}" if vendor and vendor.venmo_handle else None,
+        f"Zelle {vendor.zelle_contact}" if vendor and vendor.zelle_contact else None,
+    ) if w]
+    how = f"<p>You can pay {vendor_name} by {' or '.join(ways)}.</p>" if ways else ""
+    send_email(
+        to=booking.guest_email,
+        subject=f"A reminder from {vendor_name}: your {installment['label'].lower()} is overdue",
+        html=(
+            f"<p>{installment['label']}: <strong>{_money(installment['amount_cents'])}</strong>, "
+            f"was due {_pretty(due) if due else 'already'}, for your booking with {vendor_name} on "
+            f"{_pretty(date.fromisoformat(booking.date_iso))}.</p>{how}"
+            "<p>You pay them directly — Jorna doesn't handle the money. Once you've sent it, "
+            f'<a href="{link}">mark it as sent</a> so they know to look for it.</p>'
+        ),
+    )
+    doc.record(db, booking, "payment_reminder", "vendor", {
+        "installment_id": installment["id"],
+        "label": installment["label"],
+        "amount_cents": installment["amount_cents"],
+        "reminder": "manual",
+        "due_on": due.isoformat() if due else None,
+    })

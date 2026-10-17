@@ -4,7 +4,7 @@ guest_bookings.py instead.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from app.db.database import get_db
 from app.db.models import Vendor
 from app.dependencies import get_current_user
 from app.services.contract_document import DocumentError
-from app.services import field_negotiation_service, pdf_service, proposal_service
+from app.services import field_negotiation_service, ledger_service, pdf_service, proposal_service
 from app.services.contract_service import (
     contract_pdf,
     ContractError,
@@ -232,6 +232,60 @@ def confirm_installment_route(
             caller_user_id=current_user.user_id, db=db,
         )
     except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/contracts/{booking_id}/payments/{installment_id}/remind",
+    summary="Vendor emails the client about one overdue payment (once a day)",
+)
+def remind_installment_route(
+    booking_id: str,
+    installment_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Returns the payment's ledger row (DECISIONS #33)."""
+    try:
+        return ledger_service.remind(
+            booking_id=booking_id, installment_id=installment_id,
+            caller_user_id=current_user.user_id, db=db,
+        )
+    except ledger_service.LedgerError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/contracts/{booking_id}/payments/{installment_id}/not-received",
+    summary="Vendor undoes one step: the client's 'sent', or their own 'received'",
+)
+def not_received_route(
+    booking_id: str,
+    installment_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Returns the payment's ledger row (DECISIONS #33)."""
+    try:
+        return ledger_service.not_received(
+            booking_id=booking_id, installment_id=installment_id,
+            caller_user_id=current_user.user_id, db=db,
+        )
+    except ledger_service.LedgerError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/vendors/me/ledger", summary="Every payment on the vendor's signed bookings, for Earnings")
+def ledger_route(
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """One row per payment, with totals; no year means all time
+    (DECISIONS #33)."""
+    try:
+        return ledger_service.vendor_ledger(caller_user_id=current_user.user_id, year=year, db=db)
+    except ledger_service.LedgerError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 

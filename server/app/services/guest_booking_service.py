@@ -506,23 +506,28 @@ def _send_signed_receipt(
     )
 
 
-def _mark_scheduled(booking: Booking, ids: list[str], db: Session) -> list[dict]:
+_VIA_LABEL = {"venmo": "Venmo", "zelle": "Zelle"}
+
+
+def _mark_scheduled(booking: Booking, ids: list[str], db: Session, paid_via: str | None = None) -> list[dict]:
     """Mark scheduled payments sent and tell the vendor, one notice for the
     lot. Returns the payments that changed."""
-    changed = doc.mark_paid(booking, ids)
+    changed = doc.mark_paid(booking, ids, paid_via)
     if not changed:
         return changed
     for i in changed:
         doc.record(db, booking, "payment_marked", "client", {
             "installment_id": i["id"], "label": i["label"], "amount_cents": i["amount_cents"],
+            **({"paid_via": paid_via} if paid_via else {}),
         })
     db.commit()
     db.refresh(booking)
     labels = ", ".join(i["label"] for i in changed)
     amount = sum(i["amount_cents"] for i in changed)
+    by = f" by {_VIA_LABEL[paid_via]}" if paid_via in _VIA_LABEL else ""
     _tell_vendor(
         booking,
-        f"{_client_label(booking)} says they've sent {labels}",
+        f"{_client_label(booking)} says they've sent {labels}{by}",
         f"${amount / 100:,.2f} for {_pretty_date(booking.date_iso)}. "
         "Confirm it arrived on the contract's page.",
         "contract_payment_marked", db,
@@ -536,15 +541,19 @@ def _require_signed(booking: Booking) -> None:
         raise GuestBookingError(400, "This booking hasn't been signed yet")
 
 
-def mark_installment_paid(*, contract_token: str, installment_id: str, db: Session) -> dict:
-    """The client says one scheduled payment is sent."""
+def mark_installment_paid(
+    *, contract_token: str, installment_id: str, db: Session, paid_via: str | None = None,
+) -> dict:
+    """The client says one scheduled payment is sent, and how, if they said."""
+    if paid_via is not None and paid_via not in doc.PAID_VIA:
+        raise GuestBookingError(422, "Say Venmo, Zelle or other")
     booking = _by_token(contract_token, db)
     _require_signed(booking)
     try:
         item = doc.installment(booking, installment_id)
     except doc.DocumentError as e:
         raise GuestBookingError(404, e.detail)
-    if not _mark_scheduled(booking, [installment_id], db):
+    if not _mark_scheduled(booking, [installment_id], db, paid_via):
         raise GuestBookingError(400, f"“{item['label']}” is already marked as sent")
     return get_guest_booking(contract_token=contract_token, db=db, preview=True)
 
