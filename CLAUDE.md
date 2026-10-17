@@ -214,6 +214,8 @@ not afterwards:
    line). The board then moves the card to In Review when the PR opens and to
    Done when it merges. If the PR is only part of the work, write
    `Part of #123` instead and leave the card In Progress.
+   For several issues, repeat the word: `Closes #1, closes #2`. GitHub only
+   closes the first issue of `Closes #1, #2` (jorna-website #177–#179 left six open).
 5. **Before you finish, check the card.** Stopped or blocked work goes back
    to Todo with a comment on the issue saying why. Follow-up work you found
    gets its own issue (steps 1–2), not a note in the PR.
