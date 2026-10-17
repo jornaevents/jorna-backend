@@ -254,6 +254,7 @@ def schedule_view(booking: Booking) -> list[dict] | None:
             "effective_due": _iso_date(effective_due(i, booking)),
             "marked_paid_at": utc_iso(i.get("marked_paid_at")),
             "confirmed_at": utc_iso(i.get("confirmed_at")),
+            "paid_via": i.get("paid_via"),
         }
         for i in booking.payment_schedule
     ]
@@ -303,7 +304,12 @@ def sync_legacy_payment_fields(booking: Booking) -> None:
         booking.manual_payment_confirmed_at = None
 
 
-def _update_schedule(booking: Booking, ids: set[str], *, mark: bool, confirm: bool) -> list[dict]:
+PAID_VIA = ("venmo", "zelle", "other")
+
+
+def _update_schedule(
+    booking: Booking, ids: set[str], *, mark: bool, confirm: bool, paid_via: str | None = None,
+) -> list[dict]:
     """Set marks on the given installments. A new list is assigned, not the
     old one mutated — the JSON column doesn't notice in-place changes."""
     now = _now().isoformat()
@@ -313,6 +319,8 @@ def _update_schedule(booking: Booking, ids: set[str], *, mark: bool, confirm: bo
         if i["id"] in ids:
             if mark and not i.get("marked_paid_at"):
                 i["marked_paid_at"] = now
+                if paid_via:
+                    i["paid_via"] = paid_via
                 changed.append(i)
             if confirm and not i.get("confirmed_at"):
                 # A vendor can confirm money the client never marked as sent
@@ -333,14 +341,44 @@ def installment(booking: Booking, installment_id: str) -> dict:
     return found
 
 
-def mark_paid(booking: Booking, installment_ids: list[str]) -> list[dict]:
-    """The client says these payments are sent. Returns the ones that
-    changed — empty if they were all marked already."""
-    return _update_schedule(booking, set(installment_ids), mark=True, confirm=False)
+def mark_paid(booking: Booking, installment_ids: list[str], paid_via: str | None = None) -> list[dict]:
+    """The client says these payments are sent, and how, when they said.
+    Returns the ones that changed — empty if they were all marked already."""
+    return _update_schedule(booking, set(installment_ids), mark=True, confirm=False, paid_via=paid_via)
 
 
 def confirm_received(booking: Booking, installment_ids: list[str]) -> list[dict]:
     return _update_schedule(booking, set(installment_ids), mark=False, confirm=True)
+
+
+def _undo(booking: Booking, installment_id: str, keys: tuple[str, ...]) -> dict:
+    """Clear `keys` on one payment, through the same copy-and-assign and
+    legacy-field sync every other change uses (DECISIONS #33)."""
+    schedule, found = [], None
+    for i in booking.payment_schedule or []:
+        i = dict(i)
+        if i["id"] == installment_id:
+            for key in keys:
+                i.pop(key, None)
+            found = i
+        schedule.append(i)
+    if found is None:
+        raise DocumentError("That payment isn't on this contract")
+    booking.payment_schedule = schedule
+    sync_legacy_payment_fields(booking)
+    return found
+
+
+def unmark(booking: Booking, installment_id: str) -> dict:
+    """The client's "I've sent this" is withdrawn: the vendor hasn't got it."""
+    return _undo(booking, installment_id, ("marked_paid_at", "paid_via"))
+
+
+def unconfirm(booking: Booking, installment_id: str, *, keep_mark: bool) -> dict:
+    """The vendor takes back "received". The client's own mark stays when
+    they made one; a mark the confirmation filled in goes with it."""
+    keys = ("confirmed_at",) if keep_mark else ("confirmed_at", "marked_paid_at", "paid_via")
+    return _undo(booking, installment_id, keys)
 
 
 # ── Terms ────────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ custom URL scheme can't be directly.
 | `users.py` | (no prefix) | `user_service.py` | User profile CRUD outside of auth |
 | `contracts.py` (leads routes) | (no prefix) | `pipeline_service.py`, `contract_service.py` | The vendor's leads pipeline (`GET /leads/pipeline`), archiving requests/contracts and leads — see DECISIONS #20 |
 | `inquiries.py` | `/vendors` | `inquiry_service.py` | The public inquiry form, `POST /vendors/{id}/inquiries`: no auth, makes a lead and emails both sides — see DECISIONS #32 |
+| (ledger routes in `contracts.py`) | — | `ledger_service.py`, `payment_reminder_service.py` | The vendor's earnings ledger, "Remind client" and undoing a payment's status — see DECISIONS #33 |
 | `contract_documents.py` | (no prefix) | `document_service.py` | Addenda and cancellation agreements attached to a signed booking, signed on the public link — see DECISIONS #21 |
 | (proposal routes in `contracts.py`, `guest_bookings.py`) | — | `proposal_service.py` | The client's change proposals on an unsigned contract, and the vendor's accept / decline / revise; each side's saved draft — see DECISIONS #23, #24 |
 | (negotiation routes in `contracts.py`, `guest_bookings.py`) | — | `field_negotiation_service.py` | Field-by-field contract negotiation in strict turns: per-field accept / counter / keep, settling into revisions, vendor locks, the signing gate — see DECISIONS #26 |

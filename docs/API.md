@@ -133,6 +133,30 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
   sent and starts the hold.
 
+## Earnings ledger (vendor, DECISIONS #33)
+
+- `GET /vendors/me/ledger?year=` — every payment on the vendor's signed bookings, due in `year`
+  (2000–2100; omitted means all time). Returns `{year, today, rows, other_rows, totals,
+  payment_methods}`. A row has `row_id`, `booking_id`, `installment_id` (null for a "Full amount"
+  row from before contracts), `label`, `sequence`/`count`, `amount_cents`, `due_on`, `due_type`,
+  `due_days`, `status` (`received` | `client_says_sent` | `cancelled` | `overdue` | `due_soon` |
+  `scheduled`), `marked_paid_at`, `marked_by_client`, `paid_via`, `confirmed_at`, `reminded_at`,
+  `can_remind`, `can_undo`, `events` (`payment_marked`, `payment_confirmed`, `payment_reminder`,
+  `payment_not_received`, with `paid_via` / `reminder` / `step`), and `booking` (client name,
+  event name and dates, location, `state` upcoming | done | cancelled, `total_cents`,
+  `has_contract`, `contract_title`, `signed_at`, `signed_by`, `addenda_count`,
+  `cancellation_document_id`). `totals` has received / to come / overdue / waiting, each in
+  cents with a count. `other_rows` is the rest of each shown booking's schedule. 403 for a
+  non-vendor.
+- `POST /contracts/{id}/payments/{installment_id}/remind` — emails the client about an overdue
+  payment. 400 if it isn't overdue or there's no client email, 429 if already reminded today.
+  Returns the row.
+- `POST /contracts/{id}/payments/{installment_id}/not-received` — undoes one step: the client's
+  "sent" (and emails them), or the vendor's "received". 400 on a cancelled booking or when
+  there's nothing to undo. Returns the row.
+- `POST /guest-bookings/{token}/payments/{installment_id}/mark-paid` takes an optional
+  `{paid_via: "venmo" | "zelle" | "other"}` (422 otherwise); payment schedules include `paid_via`.
+
 ## Contract templates (vendor)
 
 `GET/POST /contract-templates`, `PATCH/DELETE /contract-templates/{id}` — the vendor's saved

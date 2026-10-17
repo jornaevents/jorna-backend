@@ -824,3 +824,30 @@ badge with nothing else to wire up.
 - **Not yet:** asking for a specific time (needs real availability), an embeddable widget, and a
   setting to turn the form off.
 
+## 33. Earnings is a ledger: one row per payment, tied to its contract
+
+The vendor's Earnings page becomes the record of every booking, past and present, and every
+payment on it, each linked to the signed contract that set the amount (user, 2026-10-17; spec
+https://claude.ai/artifact/3iXq72ZaidefdZZ2gbGvkm). `GET /vendors/me/ledger?year=` serves it
+(`ledger_service.py`); no migration.
+
+- **A row is a payment on a signed, unvoided contract.** A booking from before contracts (no
+  `contract_token`, accepted by the vendor) is one "Full amount" row from its own payment fields,
+  with no actions.
+- **Status is decided once, on the server:** Received > Client says sent > Cancelled > Overdue >
+  Due soon (7 days) > Scheduled, on `effective_due` and UTC days like the reminders (#18). A
+  booking is cancelled when it has `cancelled_at`, status `rejected`, or a signed cancellation
+  agreement; what was already received stays received.
+- **A year is the payments due in it.** Totals add up the rows. `other_rows` carries the rest of
+  each shown booking's schedule, so a by-booking view adds up.
+- **How the client paid.** "I've sent this" takes an optional `paid_via` (venmo | zelle | other),
+  kept on the payment in `payment_schedule` and in the `payment_marked` event.
+- **Remind client, by hand:** overdue payments only, one a day per payment, an email to the client
+  with the amount and the vendor's Venmo/Zelle (the automatic overdue notice goes to the vendor).
+  Recorded as `payment_reminder` with `reminder: "manual"`.
+- **Undo is one step at a time** (`…/not-received`). Client says sent → the mark is cleared and the
+  client is emailed. Received → the confirmation is cleared; the client's mark stays only if they
+  made one. A confirmation fills in `marked_paid_at` too, so "they made one" is read from the
+  `payment_marked` events, not the field. Each step is a `payment_not_received` event, and the
+  booking-level payment fields are re-synced through the same path as every other change.
+
