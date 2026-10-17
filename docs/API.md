@@ -103,7 +103,19 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   on the vendor's and the client's booking payloads, and emailed to the
   client.
 - `POST /leads` and `PATCH /leads/{id}` return 422 for an email that doesn't
-  look like one, a phone that isn't 7–15 digits, or an event date in the past.
+  look like one, a phone that isn't 7–15 digits, an event date in the past,
+  or a `guest_count` outside 1–100,000. Leads carry `event_type`,
+  `guest_count` and `source` (`manual` | `messages` | `inquiry_form`); lead
+  items in the pipeline have them as `event_name`, `guest_count` and
+  `lead_source`.
+- `POST /vendors/{vendor_id}/inquiries` — **no auth**, the public inquiry
+  form (DECISIONS #32). Body: `name`, `email` (required), `phone`,
+  `event_date_iso`, `event_type`, `guest_count`, `note` (≤2000), and
+  `website` (a honeypot; leave it empty). 201 `{received: true,
+  vendor_name}`. 404 for an unknown vendor or one with no package, 422 with
+  a plain message for a bad field, 429 at 5/minute per IP or 50/day per
+  vendor. Makes a `new` lead with `source: inquiry_form`, emails the vendor
+  (Reply-To the sender) and sends the sender a fixed confirmation.
 - Removing a sent request from a plan (`DELETE /bundles/{id}/bookings/{booking_id}`
   while the plan isn't a draft) keeps the booking: `status: rejected`,
   `rejected_reason: client_cancelled`, `cancelled_at` set. Removing it again

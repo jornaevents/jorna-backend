@@ -486,6 +486,8 @@ class LeadCreateRequest(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     event_date_iso: Optional[str] = None
+    event_type: Optional[str] = None
+    guest_count: Optional[int] = None
     note: Optional[str] = None
 
 
@@ -494,6 +496,8 @@ class LeadUpdateRequest(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     event_date_iso: Optional[str] = None
+    event_type: Optional[str] = None
+    guest_count: Optional[int] = None
     note: Optional[str] = None
     status: Optional[str] = None
     # Hide from (true) or return to (false) the vendor's active leads.

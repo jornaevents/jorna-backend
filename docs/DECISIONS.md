@@ -798,3 +798,29 @@ start from, and every package has one by default (web DECISIONS, 2026-10-15).
 - **A deleted package** leaves its edited copy as an ordinary template (`ON DELETE SET NULL`), so
   the vendor's wording isn't lost. Archived packages are the web's to hide.
 
+## 32. Anyone can send a vendor an inquiry, and it lands in Leads (0077)
+
+`POST /vendors/{vendor_id}/inquiries` takes an inquiry with no account: from the vendor's Jorna
+page or a link they share (user, 2026-10-17; backend #66). It makes a lead with
+`source: inquiry_form`, status `new`, so it's "needs you" in the pipeline and counts on the Leads
+badge with nothing else to wire up.
+
+- **Same trust model as `/guest-bookings`**, but there's no token, so the guards are on the vendor
+  and on abuse. A vendor with no package, or only archived ones, is a 404: still in setup, not
+  taking inquiries. A hidden package counts.
+- **Short form.** Name and email are required (the vendor has to be able to answer); phone, event
+  date (blank is "not sure yet"), event type, rough guest count and a message are optional. The
+  checks are the Add a client ones (#28), plus a guest count of 1–100,000. Leads gain
+  `event_type`, `guest_count` and `source` (`manual` | `messages` | `inquiry_form`), which the
+  vendor's own leads use too.
+- **Spam: a honeypot, 5 a minute per IP, 50 a day per vendor.** A filled-in hidden `website` field
+  gets the normal reply and nothing is saved or sent, so a bot learns nothing. The daily cap
+  answers 429 "try again tomorrow". A CAPTCHA (Turnstile) waits until spam actually shows up.
+- **The reply says nothing about the lead**: `{received, vendor_name}` only.
+- **Both sides are emailed.** The vendor gets the inquiry with Reply-To set to the sender. The
+  sender gets fixed wording and the vendor's name, never anything they typed (not even their own
+  name), and at most once per address per vendor per day — otherwise the form would send any text
+  to any inbox. Both are best effort; the lead is saved either way.
+- **Not yet:** asking for a specific time (needs real availability), an embeddable widget, and a
+  setting to turn the form off.
+

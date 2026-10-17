@@ -191,7 +191,7 @@ def _lead_item(lead: Lead) -> dict:
         "name": lead.name,
         "email": lead.email,
         "phone": lead.phone,
-        "event_name": None,
+        "event_name": lead.event_type,
         "event_date": lead.event_date_iso,
         "event_date_end": None,
         "location": None,
@@ -208,6 +208,8 @@ def _lead_item(lead: Lead) -> dict:
         "updated_at": utc_iso(lead.updated_at),
         "note": lead.note,
         "lead_status": lead.status,
+        "lead_source": lead.source or "manual",
+        "guest_count": lead.guest_count,
     }
 
 
@@ -330,10 +332,11 @@ def lead_from_conversation(*, conversation_id: str, caller_user_id: str, db: Ses
     now = _now()
     lead = Lead(
         vendor_id=vendor.vendor_id,
-        name=name or "New couple",
+        name=name or "New client",
         email=client.email if client else None,
         phone=client.phone if client else None,
         status="new",
+        source="messages",
         user_id=client_id,
         conversation_id=conversation_id,
         created_at=now,

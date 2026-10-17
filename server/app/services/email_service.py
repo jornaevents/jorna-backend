@@ -35,6 +35,7 @@ def send_email(
     text: Optional[str] = None,
     from_addr: Optional[str] = None,
     attachments: Optional[list[dict]] = None,
+    reply_to: Optional[str] = None,
 ) -> dict:
     """Send a single transactional email.
 
@@ -60,6 +61,8 @@ def send_email(
         payload["text"] = text
     if attachments:
         payload["attachments"] = attachments
+    if reply_to:
+        payload["reply_to"] = reply_to
 
     try:
         resp = httpx.post(
