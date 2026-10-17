@@ -1089,8 +1089,11 @@ def _lead_dict(lead: Lead) -> dict:
         "phone": lead.phone,
         "email": lead.email,
         "event_date_iso": lead.event_date_iso,
+        "event_type": lead.event_type,
+        "guest_count": lead.guest_count,
         "note": lead.note,
         "status": lead.status,
+        "source": lead.source or "manual",
         "converted_booking_id": lead.converted_booking_id,
         "created_at": lead.created_at.isoformat(),
         "updated_at": lead.updated_at.isoformat(),
@@ -1129,22 +1132,32 @@ def _check_lead(data: dict) -> dict:
             if day < datetime.now(timezone.utc).date() - timedelta(days=1):
                 raise ContractError(422, "The event date has already passed")
         out["event_date_iso"] = raw
+    if "event_type" in data:
+        out["event_type"] = (data["event_type"] or "").strip()[:50] or None
+    if "guest_count" in data and data["guest_count"] is not None:
+        count = data["guest_count"]
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100_000:
+            raise ContractError(422, "Guest count must be between 1 and 100,000")
     return out
 
 
 def create_lead(
     *, vendor_id: str, caller_user_id: str, name: str, phone: str | None,
     email: str | None, event_date_iso: str | None, note: str | None, db: Session,
+    event_type: str | None = None, guest_count: int | None = None,
 ) -> dict:
     _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
     if not name.strip():
         raise ContractError(400, "name is required")
-    checked = _check_lead({"email": email, "phone": phone, "event_date_iso": event_date_iso})
-    email, phone, event_date_iso = checked["email"], checked["phone"], checked["event_date_iso"]
+    checked = _check_lead({
+        "email": email, "phone": phone, "event_date_iso": event_date_iso,
+        "event_type": event_type, "guest_count": guest_count,
+    })
     now = datetime.now(timezone.utc)
     lead = Lead(
-        vendor_id=vendor_id, name=name.strip(), phone=phone, email=email,
-        event_date_iso=event_date_iso, note=note, status="new",
+        vendor_id=vendor_id, name=name.strip(), phone=checked["phone"], email=checked["email"],
+        event_date_iso=checked["event_date_iso"], event_type=checked["event_type"],
+        guest_count=checked["guest_count"], note=note, status="new", source="manual",
         created_at=now, updated_at=now,
     )
     db.add(lead)
@@ -1175,7 +1188,7 @@ def _own_lead(*, lead_id: str, caller_user_id: str, db: Session) -> Lead:
 def update_lead(*, lead_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:
     lead = _own_lead(lead_id=lead_id, caller_user_id=caller_user_id, db=db)
     update_data = _check_lead(update_data)
-    for field in ("name", "phone", "email", "event_date_iso", "note", "status"):
+    for field in ("name", "phone", "email", "event_date_iso", "event_type", "guest_count", "note", "status"):
         if field in update_data:
             setattr(lead, field, update_data[field])
     # Archiving hides a lead from the active list; it isn't a status, so it

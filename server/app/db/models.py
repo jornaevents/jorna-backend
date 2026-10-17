@@ -1,7 +1,7 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint, false
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint, Index, false
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -717,6 +717,8 @@ class Lead(Base):
     as CRM history of how that client was won, not deleted.
     """
     __tablename__ = "leads"
+    # The inquiry form's per-vendor daily cap counts these (0077).
+    __table_args__ = (Index("ix_leads_vendor_source_created", "vendor_id", "source", "created_at"),)
 
     lead_id = Column(String(36), primary_key=True, default=uuid_str)
     vendor_id = Column(String(36), ForeignKey("vendors.vendor_id"), nullable=False, index=True)
@@ -738,6 +740,12 @@ class Lead(Base):
     # the client it's about, and where the conversation is.
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     conversation_id = Column(String(36), ForeignKey("conversations.conversation_id"), nullable=True, index=True)
+    # What the event is and roughly how many guests, as the client gave them
+    # on the inquiry form or the vendor typed them (0077).
+    event_type = Column(String(50), nullable=True)
+    guest_count = Column(Integer, nullable=True)
+    # manual | messages | inquiry_form — where the lead came from (0077).
+    source = Column(String(20), nullable=False, default="manual", server_default="manual")
 
 
 class Bundle(Base):
