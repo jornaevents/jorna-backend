@@ -262,7 +262,7 @@ Each list endpoint also returns `draft`, the caller's side's draft or null:
 A draft isn't validated beyond its shape, since it can be half done:
 `changes` may hold only terms fields (400 otherwise) and must stay under
 100 KB (413). Saving is refused once the contract is signed (400), or on a
-voided or declined link (410). Proposing drops the client's draft. Any
+voided, declined or expired link (410). Proposing drops the client's draft. Any
 vendor answer or edit drops the vendor's.
 
 Contract payloads (`GET /contracts/{id}`, the guest payload, the vendor's
@@ -350,6 +350,7 @@ Public routes, by the contract's token:
 - `POST /guest-bookings/{token}/negotiation/send` (10/minute). 400 without
   a `guest_email`; 410 once expired, voided or declined.
 - `PUT|DELETE /guest-bookings/{token}/negotiation/draft` `{answers, message?}`.
+  Saving is 410 once the offer has expired, like sending.
 - `POST /guest-bookings/{token}/sign` takes `as_is`: with fields still
   waiting it's a 409 unless `as_is` is true, which takes the vendor's open
   changes and drops the client's.

@@ -2,6 +2,8 @@
 answers the other's changes one field at a time, in strict turns, and the
 contract only ever holds agreed values."""
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from app.db.models import (
@@ -277,6 +279,42 @@ def test_drafts_are_kept_per_side_and_dropped_on_send():
     assert s["draft"]["answers"] == answers and s["draft"]["stale"] is False
     _client_send(c, 1, answers)
     assert client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()["draft"] is None
+
+
+def _expire(c):
+    db = TestingSessionLocal()
+    db.query(Booking).filter(Booking.booking_id == c["booking_id"]).update(
+        {"hold_expires_at": datetime.utcnow() - timedelta(minutes=1)},
+    )
+    db.commit()
+    db.close()
+
+
+def test_an_expired_offer_takes_no_client_draft_but_still_reads():
+    v = _setup_vendor()
+    c = _contract(v)
+    _expire(c)
+    url = f"/guest-bookings/{c['contract_token']}/negotiation"
+    answers = [{"key": "discount", "action": "change", "value": 10_000}]
+    assert client.put(f"{url}/draft", json={"answers": answers}).status_code == 410
+    assert _client_send(c, 1, answers).status_code == 410
+    # The page can still read where things stood, to say the offer expired.
+    assert client.get(url).status_code == 200
+
+
+def test_a_resend_revives_an_offer_that_lapsed_on_the_clients_turn():
+    v = _setup_vendor()
+    c = _contract(v)
+    assert _client_send(c, 1, [{"key": "line:lights.quantity", "action": "change", "value": 3}]).status_code == 200
+    assert _vendor_send(c, v, 2, [{"key": "line:lights.quantity", "action": "counter", "value": 4}]).status_code == 200
+    # Only a vendor send restarts the hold, so it can run out while the client thinks.
+    _expire(c)
+    assert _client_send(c, 3, [{"key": "line:lights.quantity", "action": "accept"}]).status_code == 410
+
+    assert client.post(f"/contracts/{c['booking_id']}/send", json={}, headers=v["headers"]).status_code == 200
+    r = _client_send(c, 3, [{"key": "line:lights.quantity", "action": "accept"}])
+    assert r.status_code == 200, r.text
+    assert _field(r.json(), "line:lights.quantity")["state"] == "settled"
 
 
 def test_the_nudge_shows_from_round_six():

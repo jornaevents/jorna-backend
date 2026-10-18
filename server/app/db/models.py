@@ -616,7 +616,9 @@ class ContractDraft(Base):
     that party sends something.
 
     party: vendor | client. proposal_id: the open proposal a vendor's
-    draft answers, if any."""
+    draft answers, if any. base_revision is the contract revision the draft
+    was made against — except on a field-by-field contract (0072), where it
+    holds the negotiation round instead (field_negotiation_service.save_draft)."""
 
     __tablename__ = "contract_drafts"
     __table_args__ = (UniqueConstraint("booking_id", "party", name="uq_contract_drafts_booking_party"),)
