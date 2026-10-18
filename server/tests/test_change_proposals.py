@@ -451,6 +451,23 @@ def test_drafts_are_checked_for_shape_and_owner():
     assert client.delete(url, headers=other["headers"]).status_code in (403, 404)
 
 
+def test_no_client_draft_once_the_offer_expired():
+    v = _setup_vendor()
+    c = _contract(v)
+    db = TestingSessionLocal()
+    db.query(Booking).filter(Booking.booking_id == c["booking_id"]).update(
+        {"hold_expires_at": datetime.utcnow() - timedelta(hours=1)},
+    )
+    db.commit()
+    db.close()
+    r = client.put(
+        f"/guest-bookings/{c['contract_token']}/proposals/draft",
+        json={"base_revision": 1, "changes": {"guest_count": 120}},
+    )
+    assert r.status_code == 410
+    assert _guest_history(c)["draft"] is None
+
+
 def test_no_drafts_once_signed():
     v = _setup_vendor()
     c = _contract(v)

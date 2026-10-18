@@ -487,10 +487,12 @@ def save_draft(
 
 
 def guest_save_draft(*, contract_token: str, base_revision: int, changes: dict, message: str | None, db: Session) -> dict:
-    from app.services.guest_booking_service import _by_token, _require_live
+    from app.services.guest_booking_service import _by_token, _require_live, _require_open_offer
 
     booking = _by_token(contract_token, db)
     _require_live(booking)
+    # An expired offer can't take a proposal, so it doesn't take a draft of one.
+    _require_open_offer(booking)
     return save_draft(db, booking, "client", base_revision=base_revision, changes=changes, message=message)
 
 

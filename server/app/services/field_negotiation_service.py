@@ -825,7 +825,12 @@ def client_send(*, contract_token: str, base_round: int, answers: list, message:
 
 
 def client_save_draft(*, contract_token: str, answers: list, message: str | None, db: Session) -> dict:
+    from app.services.guest_booking_service import _require_open_offer
+
     booking, _ = _client_booking(contract_token, db)
+    # Same as sending: once the hold has lapsed, nothing typed here could be
+    # sent, so saving it would only hide that the offer has expired.
+    _require_open_offer(booking)
     return save_draft(booking, "client", answers=answers, message=message, db=db)
 
 
