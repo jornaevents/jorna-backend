@@ -254,6 +254,26 @@ def test_the_client_can_add_one_of_the_vendors_packages():
     assert custom.status_code == 400
 
 
+def test_accepting_a_new_item_with_a_line_change_settles_both():
+    # A new item has no id until the contract saves it, so settling it in
+    # the same send as a change to an existing line used to crash (500).
+    v = _setup_vendor()
+    c = _contract(v)
+    r = _client_send(c, 1, [
+        {"key": "line:new:extra", "action": "change", "value": {"service_id": v["service_id"], "quantity": 1}},
+        {"key": "line:lights.quantity", "action": "change", "value": 3},
+    ])
+    assert r.status_code == 200, r.text
+    r = _vendor_send(c, v, 2, [
+        {"key": "line:new:extra", "action": "accept"},
+        {"key": "line:lights.quantity", "action": "accept"},
+    ])
+    assert r.status_code == 200, r.text
+    items = _booking(c).line_items
+    assert len(items) == 3
+    assert next(li for li in items if li["id"] == "lights")["quantity"] == 3
+
+
 def test_a_stale_round_and_the_old_endpoints_are_refused():
     v = _setup_vendor()
     c = _contract(v)
