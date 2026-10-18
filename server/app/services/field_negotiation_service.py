@@ -328,8 +328,9 @@ def _update_for(booking: Booking, settled: dict, db: Session) -> dict:
             items_changed = True
         elif key.startswith("line:"):
             lid, part = _line_id(key), key.rsplit(".", 1)[1]
+            # Items added above in this same settle have no id yet.
             for li in items:
-                if li["id"] == lid:
+                if li.get("id") == lid:
                     if part == "quantity":
                         li["quantity"] = value
                     elif part == "price":
