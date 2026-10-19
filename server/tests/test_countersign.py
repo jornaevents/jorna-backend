@@ -206,7 +206,9 @@ def test_declining_to_sign_voids_it_frees_the_date_and_tells_the_client_why(outb
     again = _create_contract(v, date_iso="2027-11-27")
     assert again["contract_status"] == "sent"
     assert _countersign(v, c, **CONSENT).status_code == 400
-    assert client.get(f"/guest-bookings/{c['contract_token']}").json()["status"] == "rejected"
+    page = client.get(f"/guest-bookings/{c['contract_token']}").json()
+    assert page["status"] == "rejected" and page["rejected_reason"] == "vendor_declined_signature"
+    assert page["vendor_decline_note"] == "We're no longer free that night."
 
 
 # ── Attached documents ───────────────────────────────────────────────

@@ -154,6 +154,11 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "vendor_signer_name": booking.vendor_signer_name,
         "vendor_signed_at": utc_iso(booking.vendor_signed_at),
         "status": booking.status,
+        # Why a dead contract ended, so the link can say so: the vendor
+        # declining to sign after the client did (DECISIONS #34) carries the
+        # reason they gave the client.
+        "rejected_reason": booking.rejected_reason,
+        "vendor_decline_note": booking.vendor_decline_note,
         "contract_status": contract_state(booking),
         "hold_expires_at": utc_iso(booking.hold_expires_at),
         "payment_status": booking.payment_status,

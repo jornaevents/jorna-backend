@@ -424,7 +424,9 @@ it's booked (and `signed_at` set) only once the vendor countersigns.
   - 404 for another vendor's contract
 - `POST /contracts/{booking_id}/decline-signature` and
   `POST /contract-documents/{document_id}/decline-signature` (vendor) take `{reason}`
-  (required) and void it; the client is emailed the reason.
+  (required) and void it; the client is emailed the reason. `GET /guest-bookings/{token}`
+  then carries `rejected_reason: "vendor_declined_signature"` and the reason as
+  `vendor_decline_note`.
 - While `awaiting_vendor`, editing, sending, voiding and archiving the contract are 400, as
   are the client's details, signing again and declining. Marking a payment sent is 400
   until the vendor signs.
