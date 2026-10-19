@@ -8,8 +8,6 @@ signature, and a frozen, hashed snapshot of exactly what was signed. Each
 step lands on the parent booking's contract timeline.
 """
 
-import hashlib
-import json
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -96,8 +94,13 @@ def _dict(d: ContractDocument, booking: Booking, db: Session, *, with_token: boo
         "status": d.status,
         "sent_at": utc_iso(d.sent_at),
         "viewed_at": utc_iso(d.viewed_at),
+        # Signed by both (DECISIONS #34): signed_at is the vendor's
+        # countersignature; client_signed_at and signer_name, the client's.
         "signed_at": utc_iso(d.signed_at),
         "signer_name": d.signer_name,
+        "client_signed_at": utc_iso(d.client_signed_at),
+        "vendor_signer_name": d.vendor_signer_name,
+        "vendor_signed_at": utc_iso(d.vendor_signed_at),
         "declined_at": utc_iso(d.declined_at),
         "decline_reason": d.decline_reason,
         "voided_at": utc_iso(d.voided_at),
@@ -112,6 +115,10 @@ def _dict(d: ContractDocument, booking: Booking, db: Session, *, with_token: boo
     }
     if with_token:
         out["token"] = d.token
+        # The vendor's countersign screen (DECISIONS #34).
+        from app.services.countersign_service import consent_view
+
+        out["vendor_esign_consent"] = consent_view(vendor) if vendor else None
     else:
         # The client's signing page (DECISIONS #27).
         out["esign_consent"] = esign_consent.view()
@@ -205,6 +212,8 @@ def update_document(
     *, document_id: str, caller_user_id: str, title: str | None, sections: list | None, db: Session,
 ) -> dict:
     d, booking = _own_document(document_id, caller_user_id, db)
+    if d.status == "awaiting_vendor":
+        raise DocumentServiceError(400, "Your client has signed this, so it can no longer be edited")
     if d.status in ("signed", "declined", "voided"):
         raise DocumentServiceError(400, f"This document was {d.status} and can no longer be edited")
     if title is not None:
@@ -220,6 +229,8 @@ def update_document(
 
 def send_document(*, document_id: str, caller_user_id: str, email_client: bool, db: Session) -> dict:
     d, booking = _own_document(document_id, caller_user_id, db)
+    if d.status == "awaiting_vendor":
+        raise DocumentServiceError(400, "Your client has signed this, so it can't be sent")
     if d.status in ("signed", "declined", "voided"):
         raise DocumentServiceError(400, f"This document was {d.status} and can't be sent")
     vendor = db.query(Vendor).filter(Vendor.vendor_id == d.vendor_id).first()
@@ -233,6 +244,10 @@ def void_document(*, document_id: str, caller_user_id: str, db: Session) -> dict
     d, booking = _own_document(document_id, caller_user_id, db)
     if d.status == "signed":
         raise DocumentServiceError(400, "A signed document can't be voided")
+    if d.status == "awaiting_vendor":
+        raise DocumentServiceError(
+            400, "Your client has signed this — sign it, or decline to sign and tell them why",
+        )
     if d.status != "voided":
         d.status = "voided"
         d.voided_at = _now()
@@ -277,7 +292,7 @@ def _require_open(d: ContractDocument) -> None:
         raise DocumentServiceError(410, "This document was withdrawn by the vendor")
     if d.status == "declined":
         raise DocumentServiceError(410, "You declined this document")
-    if d.status == "signed":
+    if d.status in ("signed", "awaiting_vendor"):
         raise DocumentServiceError(400, "This document has already been signed")
 
 
@@ -326,9 +341,9 @@ def sign_by_token(
     except signing_evidence.SigningError as e:
         raise DocumentServiceError(e.status_code, e.detail)
     d.signer_name = signer_name.strip()[:255]
-    d.signed_at = _now()
-    d.status = "signed"
-    d.updated_at = d.signed_at
+    d.client_signed_at = _now()
+    d.status = "awaiting_vendor"
+    d.updated_at = d.client_signed_at
     snapshot = {
         "document_id": d.document_id,
         "booking_id": d.booking_id,
@@ -337,13 +352,11 @@ def sign_by_token(
         "sections": d.sections,
         "date_iso": booking.date_iso,
         "signer_name": d.signer_name,
-        "signed_at": d.signed_at.isoformat(),
+        "signed_at": d.client_signed_at.isoformat(),
         "evidence": evidence,
     }
     d.signed_snapshot = snapshot
-    d.signed_snapshot_sha256 = hashlib.sha256(
-        json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
+    d.signed_snapshot_sha256 = doc.fingerprint(snapshot)
     doc.record(db, booking, "document_signed", "client", {
         "document_id": d.document_id, "title": d.title, "signer_name": d.signer_name,
         "sha256": d.signed_snapshot_sha256, "ip": evidence["ip"],
@@ -355,17 +368,29 @@ def sign_by_token(
 
     from app.services.guest_booking_service import _tell_vendor
 
-    _send_signed_copies(d, booking, client_email, db)
+    # The signed copy goes to both once the vendor countersigns (DECISIONS #34).
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == d.vendor_id).first()
+    if client_email:
+        send_email(
+            to=client_email,
+            subject=f"You signed “{d.title}”",
+            html=(
+                f"<p>You signed the {KIND_LABEL.get(d.kind, 'document')} “{d.title}” with "
+                f"{_vendor_name(vendor, db) or 'your vendor'}. They sign next, and we'll email you the signed "
+                "copy, with both signatures, as soon as they do.</p>"
+            ),
+        )
     _tell_vendor(
-        booking, f"{d.signer_name} signed “{d.title}”",
-        f"For the booking on {booking.date_iso}.", "document_signed", db,
+        booking, f"{d.signer_name} signed “{d.title}” — add your signature",
+        f"For the booking on {booking.date_iso}.", "document_client_signed", db,
     )
     return _dict(d, booking, db, with_token=False)
 
 
-def _send_signed_copies(d: ContractDocument, booking: Booking, client_email: str | None, db: Session) -> None:
-    """Both sides get the signed PDF (DECISIONS #27). Best-effort, after
-    the signature is committed; each send that went out is on the timeline."""
+def send_signed_copies(d: ContractDocument, booking: Booking, client_email: str | None, db: Session) -> None:
+    """Both sides get the signed PDF (DECISIONS #27), once both have signed
+    (#34). Best-effort, after the countersignature is committed; each send
+    that went out is on the timeline."""
     from app.services import pdf_service
 
     try:
@@ -379,10 +404,11 @@ def _send_signed_copies(d: ContractDocument, booking: Booking, client_email: str
     label = KIND_LABEL.get(d.kind, "document")
     for to, who, html in (
         (client_email, "client",
-         f"<p>You signed the {label} “{d.title}” with {vendor_name}. Your signed copy is attached.</p>"),
+         f"<p>You and {vendor_name} have both signed the {label} “{d.title}”. Your signed copy is "
+         "attached.</p>"),
         (getattr(vendor_user, "email", None), "vendor",
-         f"<p>{d.signer_name} signed the {label} “{d.title}”. The signed copy is attached, with its "
-         f"signing certificate.</p>"),
+         f"<p>You and {d.signer_name} have both signed the {label} “{d.title}”. The signed copy is "
+         f"attached, with its signing certificate.</p>"),
     ):
         if not to:
             continue

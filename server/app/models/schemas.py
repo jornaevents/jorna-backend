@@ -25,6 +25,9 @@ class RejectionReason(str, Enum):
     # signed. Kept, not deleted, so the vendor's archived leads and the
     # client's plan both show it ended (cancelled_at is set too).
     CLIENT_CANCELLED = "client_cancelled"
+    # The client signed, and the vendor chose not to countersign
+    # (DECISIONS #34). Their reason is in vendor_decline_note.
+    VENDOR_DECLINED_SIGNATURE = "vendor_declined_signature"
 
 
 class PaymentStatus(str, Enum):

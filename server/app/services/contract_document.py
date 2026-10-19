@@ -536,22 +536,46 @@ def agreement(booking: Booking) -> dict:
     }
 
 
+def fingerprint(snapshot: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
 def freeze(booking: Booking, evidence: dict | None = None) -> None:
-    """At signing: keep exactly what was signed, and its fingerprint, so a
-    later dispute can be settled against the text rather than memory. The
-    signing evidence (signing_evidence.collect) goes inside, so the
-    fingerprint covers who signed from where, too."""
+    """At the client's signature: keep exactly what was signed, and its
+    fingerprint, so a later dispute can be settled against the text rather
+    than memory. The signing evidence (signing_evidence.collect) goes
+    inside, so the fingerprint covers who signed from where, too.
+    signer_name/signed_at here are the client's (DECISIONS #34)."""
     snapshot = {
         **agreement(booking),
         "signer_name": booking.signer_name,
-        "signed_at": booking.signed_at.isoformat(),
+        "signed_at": booking.client_signed_at.isoformat(),
     }
     if evidence is not None:
         snapshot["evidence"] = evidence
     booking.signed_snapshot = snapshot
-    booking.signed_snapshot_sha256 = hashlib.sha256(
-        json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
+    booking.signed_snapshot_sha256 = fingerprint(snapshot)
+
+
+def countersignature(snapshot: dict, sha256: str, *, signer_name: str, provider: str,
+                     signed_at: datetime, evidence: dict) -> tuple[dict, str]:
+    """The vendor's signature added to a snapshot the client already signed
+    (DECISIONS #34): it names the fingerprint the vendor signed, so the
+    final fingerprint covers both signatures and proves they're on the
+    same text. Shared by contracts and attached documents."""
+    signed = {
+        **snapshot,
+        "countersignature": {
+            "signer_name": signer_name,
+            "provider": provider,
+            "signed_at": signed_at.isoformat(),
+            "client_sha256": sha256,
+            "evidence": evidence,
+        },
+    }
+    return signed, fingerprint(signed)
 
 
 # ── Timeline ─────────────────────────────────────────────────────────
@@ -567,7 +591,8 @@ def _derived_events(booking: Booking) -> list[dict]:
         (booking.confirmed_at, "created", "vendor"),
         (booking.sent_at, "sent", "vendor"),
         (booking.viewed_at, "viewed", "client"),
-        (booking.signed_at, "signed", "client"),
+        (booking.client_signed_at or booking.signed_at, "signed", "client"),
+        (booking.vendor_signed_at, "countersigned", "vendor"),
         (booking.deposit_marked_paid_at, "payment_marked", "client"),
         (booking.deposit_confirmed_received_at, "payment_confirmed", "vendor"),
         (booking.manual_payment_marked_at, "payment_marked", "client"),

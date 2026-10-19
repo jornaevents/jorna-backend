@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from app.db.models import Booking, Lead, Negotiation, User
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -118,6 +119,14 @@ def test_signed_and_voided_leave_the_list_and_a_declined_request_is_archived():
     db.query(Booking).filter(Booking.booking_id == declined.booking_id).update({"status": "rejected"})
     db.commit()
     db.close()
+
+    # Signed by the client only, it's still a lead — the vendor's to sign
+    # (DECISIONS #34) — until they countersign.
+    waiting = next(i for i in _pipeline(v)["items"] if i["id"] == f"booking:{signed['booking_id']}")
+    assert (waiting["stage"], waiting["attention"], waiting["attention_reason"]) == (
+        "negotiation", "needs_you", "countersign",
+    )
+    countersign_token(signed["contract_token"])
 
     items = _pipeline(v)["items"]
     ids = {i["id"] for i in items}

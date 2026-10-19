@@ -5,6 +5,7 @@ told when their client signs or says they've paid.
 """
 
 from app.db.models import Booking, Lead
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -135,14 +136,17 @@ def test_vendor_is_told_when_the_client_signs_and_marks_payments(monkeypatch):
     token = contract["contract_token"]
 
     _sign(token)
+    # Payments wait for the vendor's countersignature (DECISIONS #34).
+    assert client.post(f"/guest-bookings/{token}/mark-deposit-paid").status_code == 400
+    countersign_token(token)
     client.post(f"/guest-bookings/{token}/mark-deposit-paid")
     client.post(f"/guest-bookings/{token}/mark-paid")
 
     assert [s["event"] for s in sent] == [
-        "contract_signed", "contract_deposit_marked_paid", "contract_marked_paid",
+        "contract_client_signed", "contract_deposit_marked_paid", "contract_marked_paid",
     ]
     assert all(s["vendor_user"].user_id == v["vendor_user_id"] for s in sent)
-    assert "signed" in sent[0]["title"]
+    assert "add your signature" in sent[0]["title"]
 
 
 def test_converting_a_lead_keeps_what_the_vendor_typed_over_the_lead():

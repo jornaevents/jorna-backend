@@ -54,8 +54,9 @@ def _has_signed_contract(booking: Booking) -> bool:
     plan must never delete one; ending it is a cancellation, which keeps it.
     Checked on the client's delete paths, not in _delete_booking_cascade:
     account deletion and the duplicate cleanup go through that too, and what
-    they owe a signed contract is its own decision."""
-    return booking.signed_at is not None
+    they owe a signed contract is its own decision. The client's own
+    signature counts, before the vendor's (DECISIONS #34)."""
+    return booking.client_signed_at is not None or booking.signed_at is not None
 
 
 def _latest_change_requests(bookings: list[Booking], db: Session):
@@ -236,7 +237,11 @@ def _booking_summary(
         # this dict only ever goes to the booking's own client.
         "contract_token": booking.contract_token,
         "contract_status": _contract_state(booking),
+        # Booked once both have signed (DECISIONS #34).
         "signed_at": utc_iso(booking.signed_at),
+        "client_signed_at": utc_iso(booking.client_signed_at),
+        "vendor_signer_name": booking.vendor_signer_name,
+        "vendor_signed_at": utc_iso(booking.vendor_signed_at),
         "hold_expires_at": utc_iso(booking.hold_expires_at),
         # The contract's payments, each with its due date and whether the
         # client marked it sent / the vendor confirmed it. Null on a booking

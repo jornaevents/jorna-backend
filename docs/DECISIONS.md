@@ -851,3 +851,39 @@ https://claude.ai/artifact/3iXq72ZaidefdZZ2gbGvkm). `GET /vendors/me/ledger?year
   `payment_marked` events, not the field. Each step is a `payment_not_received` event, and the
   booking-level payment fields are re-synced through the same path as every other change.
 
+
+## 34. The vendor countersigns after the client; it's booked only then (0078)
+
+Until this, only the client signed: the PDF's vendor line was blank under "Provider — issued this
+agreement", and sending the contract stood for the vendor's agreement (user, 2026-10-19). Now:
+
+- **The client signs first, then the vendor.** The client's signature (`client_signed_at`,
+  `signer_name`, the #27 evidence) freezes the contract and sets `contract_status`
+  `awaiting_vendor`. `signed_at` now means *both* have signed: it's set by the vendor's
+  countersignature, so everything that means "booked" — the date check, payments and their
+  reminders, the ledger, Bookings, the deposit's "on signing" date — starts there, unchanged.
+- **Frozen from the client's signature.** Nobody can edit, resend, void or archive it, or propose
+  changes; the client can't change details, sign again or decline. Those checks read
+  `client_signed_at`.
+- **The date stays held, with no expiry.** `commits_vendor_date` counts a client-signed contract;
+  `contract_state` never calls `awaiting_vendor` expired. Reminders go to the vendor a day and
+  three days after the client signed (`countersign_reminder` events, from the payment-reminder
+  sweep), then stop.
+- **The vendor signs signed in:** typed full legal name, plus the e-records consent — asked once per
+  wording (`vendors.esign_consent_version`) and copied into each signature — plus IP and browser.
+  No emailed code: the account is the proof. `POST /contracts/{id}/countersign`.
+- **Both signatures in one fingerprint.** The countersignature is added to the client's snapshot
+  under `countersignature` (name, provider, time, evidence, and `client_sha256`, the fingerprint
+  the vendor signed), and the snapshot is hashed again. The PDF shows both signature lines and a
+  "Countersigned by the provider" block on the certificate.
+- **The vendor may decline to sign**, with a reason (`POST /contracts/{id}/decline-signature`): the
+  contract is voided (`rejected_reason` `vendor_declined_signature`, the reason in
+  `vendor_decline_note`), the date is free, and the client is emailed the reason.
+- **The signed PDF goes out once, when both have signed.** The client's signature gets them a
+  "waiting for <vendor>" email with no attachment; the vendor gets a notification.
+- **Addenda and cancellation agreements follow the same rule** (`contract_documents`, same columns,
+  status `awaiting_vendor`, `POST /contract-documents/{id}/countersign` and `…/decline-signature`).
+- **Contracts signed before this are left as they were.** The migration sets `client_signed_at =
+  signed_at` and no vendor signature; their PDF keeps the "issued this agreement" line.
+- A contract the vendor countersigns isn't "new" on the Bookings badge (#30): countersigning sets
+  `vendor_seen_at`.

@@ -4,6 +4,7 @@ import pytest
 
 from app.db.models import ContractDocument
 from app.services import pdf_service
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -43,6 +44,7 @@ def _sign(c):
     token = c["contract_token"]
     client.patch(f"/guest-bookings/{token}", json={"guest_email": "meera@example.com"})
     assert client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Meera Iyer"}).status_code == 200
+    countersign_token(token)
 
 
 def test_the_vendor_downloads_a_contract_before_and_after_signing():

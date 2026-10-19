@@ -150,7 +150,12 @@ def _header(pdf: _Pdf, brand: str, title: str, subtitle: str, unsigned_note: str
     pdf.rule()
 
 
-def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str | None, sha: str | None):
+def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str | None, sha: str | None,
+                counter: dict | None = None, awaiting_vendor: bool = False):
+    """Both signature lines. The vendor's holds their countersignature
+    (DECISIONS #34); one the client has signed and the vendor hasn't yet
+    says so; and an agreement signed before vendors countersigned keeps
+    its original "issued this agreement" line."""
     # Kept together: a signature on a page of its own, away from what it
     # signs, reads as if it could belong to anything.
     if pdf.get_y() + 50 > pdf.h - pdf.b_margin:
@@ -161,6 +166,9 @@ def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str
     pdf.font(13, True, SOFT)
     pdf.set_xy(pdf.l_margin, y - 7)
     pdf.cell(width, 7, signer or "")
+    if counter:
+        pdf.set_xy(pdf.l_margin + width + 10, y - 7)
+        pdf.cell(width, 7, counter.get("signer_name") or "")
     pdf.set_draw_color(*INK)
     pdf.line(pdf.l_margin, y, pdf.l_margin + width, y)
     pdf.line(pdf.l_margin + width + 10, y, pdf.w - pdf.r_margin, y)
@@ -172,7 +180,13 @@ def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str
     pdf.font(8, color=FAINT)
     pdf.cell(width, 4.5, f"Signed electronically {signed_on(at)}" if signer else "Not signed yet")
     pdf.set_x(pdf.l_margin + width + 10)
-    pdf.cell(width, 4.5, "Provider — issued this agreement", new_x="LMARGIN", new_y="NEXT")
+    if counter:
+        provider_line = f"Signed electronically {signed_on(counter.get('signed_at'))}"
+    elif awaiting_vendor:
+        provider_line = "Not signed yet"
+    else:
+        provider_line = "Provider — issued this agreement"
+    pdf.cell(width, 4.5, provider_line, new_x="LMARGIN", new_y="NEXT")
     if sha:
         pdf.ln(6)
         pdf.font(7.5, color=FAINT)
@@ -186,8 +200,10 @@ def _signatures(pdf: _Pdf, client: str, vendor: str, signer: str | None, at: str
 
 # ── Signing certificate (docs/DECISIONS.md #27) ──────────────────────
 
-CONTRACT_EVENTS = ("sent", "resent", "emailed", "viewed", "details_updated", "code_sent", "signed", "copy_sent")
-DOCUMENT_EVENTS = ("document_sent", "document_emailed", "document_viewed", "code_sent", "document_signed", "copy_sent")
+CONTRACT_EVENTS = ("sent", "resent", "emailed", "viewed", "details_updated", "code_sent", "signed", "countersigned",
+                   "copy_sent")
+DOCUMENT_EVENTS = ("document_sent", "document_emailed", "document_viewed", "code_sent", "document_signed",
+                   "document_countersigned", "copy_sent")
 
 
 def _event_line(e: dict) -> str | None:
@@ -206,6 +222,8 @@ def _event_line(e: dict) -> str | None:
         return f"Signing code emailed to {d.get('email') or 'the client'}"
     if kind in ("signed", "document_signed"):
         return f"Signed by {d.get('signer_name') or 'the client'}{ip}"
+    if kind in ("countersigned", "document_countersigned"):
+        return f"Countersigned by {d.get('signer_name') or 'the provider'}{ip}"
     if kind == "details_updated":
         if d.get("email_to"):
             rest = [f for f in d.get("fields") or [] if f != "email"]
@@ -217,7 +235,7 @@ def _event_line(e: dict) -> str | None:
 
 
 def _certificate(pdf: _Pdf, title: str, signer: str, signed_at: str | None, sha: str | None,
-                 evidence: dict, events: list[dict]):
+                 evidence: dict, events: list[dict], counter: dict | None = None):
     """The last page: how this agreement was signed, for anyone checking
     it later. Everything above the event log is from the signed snapshot,
     so the fingerprint covers it."""
@@ -251,6 +269,19 @@ def _certificate(pdf: _Pdf, title: str, signer: str, signed_at: str | None, sha:
     field("IP address", evidence.get("ip"))
     field("Device", evidence.get("user_agent"))
     field("E-records consent", f"Given (version {consent['version']})" if consent else "Not given")
+    if counter:
+        # The vendor's signature, after the client's (DECISIONS #34).
+        theirs = counter.get("evidence") or {}
+        account = theirs.get("signed_in_as") or {}
+        their_consent = theirs.get("consent") or {}
+        pdf.eyebrow("Countersigned by the provider")
+        field("Signed by", f"{counter.get('signer_name')} (typed full legal name), for {counter.get('provider')}")
+        field("Signed at", signed_on(counter.get("signed_at")))
+        field("Signed in as", account.get("email"))
+        field("IP address", theirs.get("ip"))
+        field("Device", theirs.get("user_agent"))
+        field("E-records consent", f"Given (version {their_consent['version']})" if their_consent else "Not given")
+        field("Signed the version", f"SHA-256 {counter.get('client_sha256')}, as the client signed it")
     if sha:
         field("Fingerprint", f"SHA-256 {sha}")
     if consent.get("text"):
@@ -303,9 +334,11 @@ def _ordered_blocks(layout: list | None, clauses: list) -> list[tuple[str, dict 
 
 def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
                     signer: str | None, signed_at: str | None, sha: str | None,
-                    events: list[dict] | None = None) -> tuple[bytes, str]:
+                    events: list[dict] | None = None, awaiting_vendor: bool = False) -> tuple[bytes, str]:
     """`a` is contract_document.agreement()'s shape — a signed snapshot, or
-    the live booking's for an unsigned one."""
+    the live booking's for an unsigned one. A snapshot the vendor has
+    countersigned carries it under "countersignature" (DECISIONS #34)."""
+    counter = a.get("countersignature")
     client = a.get("client") or {}
     lines = a.get("line_items") or []
     title = a.get("document_title") or (
@@ -320,7 +353,8 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
     pdf = _Pdf(f"{title} — {vendor_name}")
     _header(
         pdf, vendor_name, title, when,
-        None if signer else "Not signed — this is the current version, not a signed agreement.",
+        f"Signed by the client — not yet signed by {vendor_name}, so not yet booked." if awaiting_vendor
+        else None if signer else "Not signed — this is the current version, not a signed agreement.",
     )
 
     for kind, clause in _ordered_blocks(a.get("document_layout"), a.get("terms_clauses") or []):
@@ -391,9 +425,9 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
             pdf.text_block(p, gap=0.5)
 
     pdf.rule()
-    _signatures(pdf, client.get("name") or "Client", vendor_name, signer, signed_at, sha)
+    _signatures(pdf, client.get("name") or "Client", vendor_name, signer, signed_at, sha, counter, awaiting_vendor)
     if signer and a.get("evidence"):
-        _certificate(pdf, title, signer, signed_at, sha, a["evidence"], events or [])
+        _certificate(pdf, title, signer, signed_at, sha, a["evidence"], events or [], counter)
     return bytes(pdf.output()), filename(title, a.get("date_iso"))
 
 
@@ -401,16 +435,21 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
 
 def render_document(d: dict, *, vendor_name: str, client_name: str | None, agreement_title: str | None,
                     signer: str | None, signed_at: str | None, sha: str | None,
-                    events: list[dict] | None = None) -> tuple[bytes, str]:
+                    events: list[dict] | None = None, awaiting_vendor: bool = False) -> tuple[bytes, str]:
     """`d` has kind, title, sections and date_iso — the signed snapshot, or
     the live document."""
+    counter = d.get("countersignature")
     kind = KIND_LABEL.get(d.get("kind"), "Document")
     title = d.get("title") or kind
     attached = f"{kind} to “{agreement_title}”" if agreement_title else kind
     subtitle = f"{attached} between {vendor_name} and {client_name or 'the client'}, for {pretty_day(d.get('date_iso'))}."
 
     pdf = _Pdf(f"{title} — {vendor_name}")
-    _header(pdf, vendor_name, title, subtitle, None if signer else "Not signed yet.")
+    _header(
+        pdf, vendor_name, title, subtitle,
+        f"Signed by the client — not yet signed by {vendor_name}." if awaiting_vendor
+        else None if signer else "Not signed yet.",
+    )
     for s in d.get("sections") or []:
         pdf.ln(1)
         pdf.font(11.5, True)
@@ -426,9 +465,9 @@ def render_document(d: dict, *, vendor_name: str, client_name: str | None, agree
         new_x="LMARGIN", new_y="NEXT",
     )
     pdf.rule()
-    _signatures(pdf, client_name or "Client", vendor_name, signer, signed_at, sha)
+    _signatures(pdf, client_name or "Client", vendor_name, signer, signed_at, sha, counter, awaiting_vendor)
     if signer and d.get("evidence"):
-        _certificate(pdf, title, signer, signed_at, sha, d["evidence"], events or [])
+        _certificate(pdf, title, signer, signed_at, sha, d["evidence"], events or [], counter)
     return bytes(pdf.output()), filename(title, d.get("date_iso"))
 
 
@@ -474,6 +513,7 @@ def contract_pdf(booking, db) -> tuple[bytes, str]:
         signer=snap.get("signer_name") if snap else None,
         signed_at=snap.get("signed_at") if snap else None,
         sha=booking.signed_snapshot_sha256 if snap else None,
+        awaiting_vendor=booking.client_signed_at is not None and booking.signed_at is None,
         events=[
             e for e in doc.timeline(booking, db, None)
             if e["kind"] in CONTRACT_EVENTS and not (e.get("detail") or {}).get("document_id")
@@ -497,6 +537,7 @@ def document_pdf(d, booking, db, client_name: str | None) -> tuple[bytes, str]:
         signer=snap.get("signer_name") if snap else None,
         signed_at=snap.get("signed_at") if snap else None,
         sha=d.signed_snapshot_sha256 if snap else None,
+        awaiting_vendor=d.status == "awaiting_vendor",
         events=[
             e for e in doc.timeline(booking, db, None)
             if e["kind"] in DOCUMENT_EVENTS and (e.get("detail") or {}).get("document_id") == d.document_id

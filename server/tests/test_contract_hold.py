@@ -7,6 +7,7 @@ and send/resend.
 from datetime import datetime, timedelta, timezone
 
 from app.db.models import Booking
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -144,8 +145,10 @@ def test_opening_the_link_marks_it_viewed_but_the_vendors_preview_doesnt():
     mine = client.get(f"/contracts/{contract['booking_id']}", headers=v["headers"]).json()
     assert mine["viewed_at"] is not None
 
-    # A viewed offer still holds, and signing moves it to signed.
-    assert _sign(token).json()["contract_status"] == "signed"
+    # A viewed offer still holds; the client's signature leaves it waiting on
+    # the vendor's, which signs it (DECISIONS #34).
+    assert _sign(token).json()["contract_status"] == "awaiting_vendor"
+    assert countersign_token(token)["contract_status"] == "signed"
 
 
 def test_declining_frees_the_date_tells_the_vendor_and_ends_the_offer(monkeypatch):

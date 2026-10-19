@@ -203,6 +203,12 @@ class Vendor(Base):
     # (contract_service.DEFAULT_HOLD_DAYS). See docs/DECISIONS.md #15.
     contract_hold_days = Column(Integer, nullable=True)
 
+    # The e-records consent this vendor gave when they first countersigned
+    # (0078, DECISIONS #34): asked once per wording (esign_consent.VERSION),
+    # then copied into each countersignature's evidence.
+    esign_consent_version = Column(String(20), nullable=True)
+    esign_consent_at = Column(DateTime, nullable=True)
+
     tags = relationship("Tag", secondary=vendor_tags, backref="vendors")
 
 
@@ -433,11 +439,18 @@ class Booking(Base):
     addon_rate_cents = Column(Integer, nullable=True)
     contract_terms = Column(JSON, nullable=True)
 
-    # Presence of signed_at *is* "signed" — no separate boolean, same
-    # pattern as manual_payment_marked_at above. Once set, the contract is
-    # immutable (see contract_service's guard).
+    # Presence of signed_at *is* "signed" — both sides, since 0078 (docs/
+    # DECISIONS.md #34): the client signs first (client_signed_at, and the
+    # contract waits as "awaiting_vendor"), then the vendor countersigns,
+    # which sets signed_at. Everything that means "booked" reads signed_at;
+    # the contract is immutable from client_signed_at (contract_service's
+    # guard). signer_name is the client's typed name.
     signer_name = Column(String(255), nullable=True)
     signed_at = Column(DateTime, nullable=True)
+    client_signed_at = Column(DateTime, nullable=True)
+    vendor_signer_name = Column(String(255), nullable=True)
+    vendor_signed_at = Column(DateTime, nullable=True)
+    vendor_sign_evidence = Column(JSON, nullable=True)
 
     # Where a contract stands as an offer — only ever set on a contract
     # (contract_token) booking. draft / sent / viewed / signed / declined /
@@ -553,12 +566,18 @@ class ContractDocument(Base):
     title = Column(String(200), nullable=False)
     sections = Column(JSON, nullable=False)  # [{key, title, body}]
     token = Column(String(64), unique=True, index=True, nullable=False)
-    # draft | sent | viewed | signed | declined | voided
+    # draft | sent | viewed | awaiting_vendor | signed | declined | voided.
+    # Signed by both, like a contract (0078): the client first
+    # (client_signed_at, awaiting_vendor), then the vendor (signed_at).
     status = Column(String(20), nullable=False, default="draft", server_default="draft")
     sent_at = Column(DateTime, nullable=True)
     viewed_at = Column(DateTime, nullable=True)
     signed_at = Column(DateTime, nullable=True)
     signer_name = Column(String(255), nullable=True)
+    client_signed_at = Column(DateTime, nullable=True)
+    vendor_signer_name = Column(String(255), nullable=True)
+    vendor_signed_at = Column(DateTime, nullable=True)
+    vendor_sign_evidence = Column(JSON, nullable=True)
     declined_at = Column(DateTime, nullable=True)
     decline_reason = Column(String(500), nullable=True)
     voided_at = Column(DateTime, nullable=True)

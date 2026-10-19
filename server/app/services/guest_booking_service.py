@@ -147,7 +147,12 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         "guest_email": booking.guest_email,
         "guest_phone": booking.guest_phone,
         "signer_name": booking.signer_name,
+        # Booked once both have signed (DECISIONS #34): signed_at is the
+        # vendor's countersignature; client_signed_at, the client's own.
         "signed_at": utc_iso(booking.signed_at),
+        "client_signed_at": utc_iso(booking.client_signed_at),
+        "vendor_signer_name": booking.vendor_signer_name,
+        "vendor_signed_at": utc_iso(booking.vendor_signed_at),
         "status": booking.status,
         "contract_status": contract_state(booking),
         "hold_expires_at": utc_iso(booking.hold_expires_at),
@@ -226,7 +231,7 @@ def fill_details(
     change it and the signing code then goes to the new inbox."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
-    if booking.signed_at is not None:
+    if booking.client_signed_at is not None:
         raise GuestBookingError(400, "This booking has already been signed and can no longer be edited")
     if guest_email is not None and guest_email.strip() and not _EMAIL.match(guest_email.strip()):
         raise GuestBookingError(422, "That email doesn't look right — check it and try again")
@@ -289,7 +294,7 @@ def send_signing_code(*, contract_token: str, db: Session) -> dict:
     """Email the client the code they sign with (DECISIONS #27)."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
-    if booking.signed_at is not None:
+    if booking.client_signed_at is not None:
         raise GuestBookingError(400, "This booking has already been signed")
     _require_open_offer(booking)
     try:
@@ -315,11 +320,17 @@ def sign_contract(
     the code we emailed them, and where they signed from (DECISIONS #27).
     The token is still the only credential to open the contract (#13).
     Requires an email on file: it's where the code goes, and where both
-    sides' signed copies are sent."""
+    sides' signed copies are sent.
+
+    The client signs first: the contract is then frozen and waits for the
+    vendor's countersignature (countersign_service), which is what books
+    it and sends both sides the signed PDF (DECISIONS #34)."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
     if booking.signed_at is not None:
         raise GuestBookingError(400, "This booking has already been signed")
+    if booking.client_signed_at is not None:
+        raise GuestBookingError(400, "You've already signed this — it's waiting for your vendor's signature")
     if not signer_name or not signer_name.strip():
         raise GuestBookingError(400, "Type your full legal name to sign")
     if not booking.guest_email:
@@ -358,8 +369,8 @@ def sign_contract(
     # unless the client signs the contract as it is.
     before_signing(booking, as_is=as_is, db=db)
     booking.signer_name = signer_name.strip()
-    booking.signed_at = datetime.now(timezone.utc)
-    booking.contract_status = "signed"
+    booking.client_signed_at = datetime.now(timezone.utc)
+    booking.contract_status = "awaiting_vendor"
     # Signing takes the version on the table; a proposal still open was
     # asking for a different one (docs/DECISIONS.md #23).
     close_open(db, booking, "withdrawn", "client")
@@ -378,16 +389,25 @@ def sign_contract(
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
     vendor_name = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
 
-    _send_signed_copies(booking, service, vendor, vendor_user, vendor_name, db)
+    # No PDF yet: the signed copy goes to both once the vendor has signed.
+    send_email(
+        to=booking.guest_email,
+        subject=f"You signed — waiting for {vendor_name}",
+        html=(
+            f"<p>You signed your contract with {vendor_name} for "
+            f"{service.name if service else 'their services'} on {_pretty_date(booking.date_iso)}.</p>"
+            f"<p>{vendor_name} signs next. Your date is held for you in the meantime, and we'll email "
+            "you the signed copy, with both signatures, as soon as they do.</p>"
+        ),
+    )
     notify_vendor_contract_event(
         vendor_user=vendor_user,
-        title=f"{booking.signer_name} signed your contract",
+        title=f"{booking.signer_name} signed — add your signature",
         body=(
-            f"{service.name if service else 'Your contract'} on {_pretty_date(booking.date_iso)} "
-            "is signed and booked."
-            + (" Their deposit is due next." if booking.deposit_percent is not None else "")
+            f"{service.name if service else 'Your contract'} on {_pretty_date(booking.date_iso)}. "
+            "It's booked once you sign too."
         ),
-        booking_id=booking.booking_id, event="contract_signed", db=db,
+        booking_id=booking.booking_id, event="contract_client_signed", db=db,
     )
 
     return _guest_dict(booking, service, vendor, vendor_user)
@@ -399,7 +419,7 @@ def decline_contract(*, contract_token: str, reason: str | None, db: Session) ->
     booking (REJECTED), with CLIENT_DECLINED saying who ended it."""
     booking = _by_token(contract_token, db)
     _require_live(booking)
-    if booking.signed_at is not None:
+    if booking.client_signed_at is not None:
         raise GuestBookingError(400, "This booking has already been signed")
 
     booking.status = BookingStatus.REJECTED.value
@@ -432,7 +452,8 @@ def _send_signed_copies(
     booking: Booking, service: Service | None, vendor: Vendor | None, vendor_user: User | None,
     vendor_name: str, db: Session,
 ) -> None:
-    """Both sides get the signed PDF, certificate included (DECISIONS #27).
+    """Both sides get the signed PDF, certificate included (DECISIONS #27),
+    once both have signed — sent from the vendor's countersignature (#34).
     Best-effort — a failed send must not fail the signature itself, which
     is already committed by the time this runs. Each send that went out is
     on the timeline with its delivery id."""
@@ -453,8 +474,9 @@ def _send_signed_copies(
             to=vendor_email,
             subject=f"Signed: {client}, {_pretty_date(booking.date_iso)}",
             html=(
-                f"<p>{client} signed your contract for "
-                f"{service.name if service else 'your services'} on {_pretty_date(booking.date_iso)}.</p>"
+                f"<p>You and {client} have both signed the contract for "
+                f"{service.name if service else 'your services'} on {_pretty_date(booking.date_iso)}. "
+                "It's booked.</p>"
                 "<p>The signed copy is attached, with its signing certificate. Keep it with your records.</p>"
             ),
             attachments=attachment,
@@ -495,7 +517,8 @@ def _send_signed_receipt(
     {payment_line}</p>
     <p>You'll pay {vendor_name} directly — Jorna doesn't handle the money.
     {pay_to_line}</p>
-    <p>Signed by {booking.signer_name} on {booking.signed_at.strftime('%B %d, %Y')}.
+    <p>Signed by {booking.signer_name} on {(booking.client_signed_at or booking.signed_at).strftime('%B %d, %Y')}
+    and by {booking.vendor_signer_name or vendor_name} on {booking.signed_at.strftime('%B %d, %Y')}.
     {"Your signed copy is attached." if attachments else ""}</p>
     """
     return send_email(
@@ -538,6 +561,8 @@ def _mark_scheduled(booking: Booking, ids: list[str], db: Session, paid_via: str
 def _require_signed(booking: Booking) -> None:
     _require_live(booking)
     if booking.signed_at is None:
+        if booking.client_signed_at is not None:
+            raise GuestBookingError(400, "Your vendor hasn't signed yet — payments start once they do")
         raise GuestBookingError(400, "This booking hasn't been signed yet")
 
 

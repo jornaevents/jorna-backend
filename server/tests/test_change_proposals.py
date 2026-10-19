@@ -473,7 +473,7 @@ def test_no_drafts_once_signed():
     c = _contract(v)
     db = TestingSessionLocal()
     b = db.query(Booking).filter(Booking.booking_id == c["booking_id"]).first()
-    b.signed_at = datetime.utcnow()
+    b.signed_at = b.client_signed_at = datetime.utcnow()
     db.commit()
     db.close()
     r = client.put(

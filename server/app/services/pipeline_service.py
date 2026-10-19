@@ -42,7 +42,7 @@ SUBJECT_ENQUIRY = "enquiry"
 # Contract states once the link has been sent. "expired" is derived on read
 # (contract_service.contract_state) but arrives here already resolved via
 # _booking_dict's contract_status.
-SENT_STATES = ("sent", "viewed", "declined", "expired")
+SENT_STATES = ("sent", "viewed", "declined", "expired", "awaiting_vendor")
 
 
 def _now() -> datetime:
@@ -71,6 +71,9 @@ def _attention(source: str, stage: str, d: dict) -> tuple[str | None, str | None
     """(needs_you | waiting | None, why). The order is the order a vendor
     should act in: a couple's proposed changes, then a counter, beat the
     contract's own state."""
+    # The client signed; it's booked once the vendor does too (DECISIONS #34).
+    if d.get("contract_status") == "awaiting_vendor":
+        return "needs_you", "countersign"
     negotiation = d.get("negotiation")
     if negotiation and negotiation["waiting_vendor"]:
         return "needs_you", "changes_proposed"
@@ -287,6 +290,8 @@ def set_booking_archived(*, booking_id: str, archived: bool, caller_user_id: str
         raise PipelineError(404, "Booking not found")
     if booking.signed_at is not None:
         raise PipelineError(400, "A signed booking isn't a lead and can't be archived")
+    if booking.client_signed_at is not None:
+        raise PipelineError(400, "Your client has signed this — sign it, or decline to sign, instead of archiving it")
     booking.vendor_archived_at = _now() if archived else None
     db.commit()
     db.refresh(booking)

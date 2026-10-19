@@ -5,6 +5,7 @@ the timeline, account templates, and emailing the link.
 """
 
 from app.db.models import Booking, ContractEvent, Lead, Service
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _created,
@@ -55,8 +56,12 @@ def _proposal(v, **overrides):
 
 
 def _sign(token: str, **extra):
+    """The client signs, and the vendor countersigns (DECISIONS #34)."""
     client.patch(f"/guest-bookings/{token}", json={"guest_email": "priya@example.com"})
-    return client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Priya Mehta", **extra})
+    signed = client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Priya Mehta", **extra})
+    if signed.status_code == 200:
+        countersign_token(token)
+    return signed
 
 
 def test_line_items_add_ons_and_discount_total_on_the_server():
@@ -220,7 +225,7 @@ def test_the_timeline_records_each_step_and_is_derived_for_older_contracts():
     client.post(f"/guest-bookings/{token}/mark-deposit-paid")
 
     kinds = [e["kind"] for e in client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["timeline"]]
-    assert kinds == ["created", "sent", "viewed", "edited", "signed", "payment_marked"]
+    assert kinds == ["created", "sent", "viewed", "edited", "signed", "countersigned", "payment_marked"]
 
     # A contract from before events existed still gets a timeline.
     db = TestingSessionLocal()
@@ -228,7 +233,7 @@ def test_the_timeline_records_each_step_and_is_derived_for_older_contracts():
     db.commit()
     db.close()
     derived = [e["kind"] for e in client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["timeline"]]
-    assert derived[:4] == ["created", "sent", "viewed", "signed"]
+    assert derived[:5] == ["created", "sent", "viewed", "signed", "countersigned"]
 
 
 def test_templates_live_on_the_account_and_stay_private():
