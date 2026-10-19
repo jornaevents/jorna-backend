@@ -10,6 +10,7 @@ import pytest
 
 from app.db.models import Booking, Service, User, Vendor
 from app.limiter import limiter
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 _created = {"users": [], "vendors": [], "services": [], "bookings": []}
@@ -142,7 +143,15 @@ def test_public_link_full_flow_read_fill_sign():
     signed = client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Priya Mehta"})
     assert signed.status_code == 200, signed.text
     assert signed.json()["signer_name"] == "Priya Mehta"
-    assert signed.json()["signed_at"] is not None
+    # Signed by the client, waiting on the vendor's countersignature before
+    # it's booked (DECISIONS #34).
+    assert signed.json()["client_signed_at"] is not None
+    assert signed.json()["signed_at"] is None
+    assert signed.json()["contract_status"] == "awaiting_vendor"
+    booked = countersign_token(token, "Arjun Rao")
+    assert booked["signed_at"] is not None
+    assert booked["vendor_signer_name"] == "Arjun Rao"
+    assert client.get(f"/guest-bookings/{token}").json()["contract_status"] == "signed"
 
 
 def test_signing_requires_an_email_on_file():

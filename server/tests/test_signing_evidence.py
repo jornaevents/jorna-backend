@@ -12,6 +12,7 @@ import pytest
 from app import config
 from app.db.models import Booking, ContractDocument, ContractEvent, SigningCode
 from app.services import esign_consent
+from tests.countersign_helpers import countersign_document, countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -64,7 +65,8 @@ def outbox():
     box = Outbox()
     with patch("app.services.signing_evidence.send_email", box), \
             patch("app.services.guest_booking_service.send_email", box), \
-            patch("app.services.document_service.send_email", box):
+            patch("app.services.document_service.send_email", box), \
+            patch("app.services.countersign_service.send_email", box):
         yield box
 
 
@@ -134,6 +136,11 @@ def test_both_sides_get_the_signed_pdf(outbox):
     _, c, token = _contract()
     client.post(f"/guest-bookings/{token}/signing-code")
     _sign(token, code=outbox.last_code(), **_consent())
+    # Once both have signed (DECISIONS #34): the client's signature alone
+    # gets them a "waiting for your vendor" note, no PDF.
+    assert not [m for m in outbox.sent if m.get("attachments")]
+    assert "waiting for" in outbox.sent[-1]["subject"]
+    countersign_token(token)
     copies = [m for m in outbox.sent if m.get("attachments")]
     assert {m["to"] for m in copies} == {"priya@example.com", f"{_vendor_email(c)}"}
     for m in copies:
@@ -272,6 +279,7 @@ def test_a_document_signs_with_its_own_code_and_both_sides_get_a_copy(required, 
     v, c, token = _contract()
     client.post(f"/guest-bookings/{token}/signing-code")
     _sign(token, code=outbox.last_code(), **_consent())
+    countersign_token(token)
     d = client.post(
         f"/contracts/{c['booking_id']}/documents",
         json={"kind": "addendum", "sections": SECTIONS, "send": True}, headers=v["headers"],
@@ -299,6 +307,8 @@ def test_a_document_signs_with_its_own_code_and_both_sides_get_a_copy(required, 
     ev = row.signed_snapshot["evidence"]
     db.close()
     assert ev["email_verified_at"] and ev["consent"]["version"] == esign_consent.VERSION
+    assert not [m for m in outbox.sent if m.get("attachments")]
+    countersign_document(d["document_id"])
     assert {m["to"] for m in outbox.sent if m.get("attachments")} == {"priya@example.com", _vendor_email(c)}
 
 

@@ -136,7 +136,12 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "guest_email": booking.guest_email,
         "guest_phone": booking.guest_phone,
         "signer_name": booking.signer_name,
+        # Booked once both have signed (DECISIONS #34): signed_at is the
+        # vendor's countersignature; client_signed_at, the client's own.
         "signed_at": _iso(booking.signed_at),
+        "client_signed_at": _iso(booking.client_signed_at),
+        "vendor_signer_name": booking.vendor_signer_name,
+        "vendor_signed_at": _iso(booking.vendor_signed_at),
         "status": booking.status,
         "payment_status": booking.payment_status,
         "contract_status": contract_state(booking),
@@ -154,7 +159,16 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         # Field-by-field negotiation (DECISIONS #26): whose turn, and how many
         # changes wait on each side. Null on the older proposal flow.
         "negotiation": _negotiation_summary(booking, db),
+        # The e-records consent the vendor's countersignature asks for, and
+        # whether they've already given it (DECISIONS #34).
+        "vendor_esign_consent": _vendor_consent(vendor),
     }
+
+
+def _vendor_consent(vendor: Vendor) -> dict:
+    from app.services.countersign_service import consent_view
+
+    return consent_view(vendor)
 
 
 def _negotiation_summary(booking: Booking, db: Session) -> dict | None:
@@ -469,7 +483,9 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
     """update_contract's checks and changes, without committing — shared
     with accepting a change proposal, which applies the client's terms the
     same way and has to fail as a whole."""
-    if booking.signed_at is not None:
+    # From the client's signature on: what the vendor countersigns is what
+    # the client signed (DECISIONS #34).
+    if booking.client_signed_at is not None:
         raise ContractError(400, "This contract has already been signed and can no longer be edited")
     if booking.contract_status == "declined":
         raise ContractError(400, "Your client declined this contract, so it can no longer be edited")
@@ -592,6 +608,10 @@ def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
     vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
     if booking.signed_at is not None:
         raise ContractError(400, "This contract has already been signed, so it can't be voided")
+    if booking.client_signed_at is not None:
+        raise ContractError(
+            400, "Your client has signed this — sign it, or decline to sign and tell them why",
+        )
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     if booking.status == BookingStatus.REJECTED.value:
         return _contract_dict(booking, service, vendor, db)
@@ -640,7 +660,7 @@ def send_contract(
     if not booking or not booking.contract_token:
         raise ContractError(404, "Contract not found")
     vendor = _own_vendor(vendor_id=booking.vendor_id, caller_user_id=caller_user_id, db=db)
-    if booking.signed_at is not None:
+    if booking.client_signed_at is not None:
         raise ContractError(400, "This contract has already been signed")
     if booking.contract_status == "declined":
         raise ContractError(400, "Your client declined this contract — start a new one to offer again")

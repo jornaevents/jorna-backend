@@ -8,6 +8,7 @@ import pytest
 
 from app.db.models import Booking
 from app.services.payment_reminder_service import send_payment_reminders
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _created,
@@ -48,7 +49,10 @@ def _signed_contract(v, *, date_iso: str, schedule: list[dict], move_to: str | N
         c = moved.json()
     signed = client.post(f"/guest-bookings/{c['contract_token']}/sign", json={"signer_name": "Priya Mehta"})
     assert signed.status_code == 200, signed.text
-    return signed.json() | {"booking_id": c["booking_id"], "contract_token": c["contract_token"]}
+    # Booked once the vendor countersigns (DECISIONS #34).
+    countersign_token(c["contract_token"])
+    booked = client.get(f"/guest-bookings/{c['contract_token']}").json()
+    return booked | {"booking_id": c["booking_id"], "contract_token": c["contract_token"]}
 
 
 def _sweep(when: date) -> int:

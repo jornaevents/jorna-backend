@@ -481,7 +481,7 @@ def state(booking: Booking, side: str, db: Session) -> dict:
         "revision": booking.revision,
         "locks": locks,
         "nudge": _round(booking) >= NUDGE_ROUND,
-        "can_sign": not waiting and booking.signed_at is None,
+        "can_sign": not waiting and booking.client_signed_at is None,
         "waiting_count": len(waiting),
         "terms": terms,
         "previous_terms": _revision_terms(db, booking, (booking.revision or 1) - 1),
@@ -505,7 +505,7 @@ def state(booking: Booking, side: str, db: Session) -> dict:
 def _require_open(booking: Booking) -> None:
     if not is_fields(booking):
         raise FieldNegotiationError(409, "This contract uses the earlier way of proposing changes")
-    if booking.signed_at is not None:
+    if booking.client_signed_at is not None:
         raise FieldNegotiationError(400, "This contract is signed, so it can't be changed now")
     if booking.contract_status in ("draft", "declined") or booking.status == "rejected":
         raise FieldNegotiationError(400, "This contract isn't open for changes")

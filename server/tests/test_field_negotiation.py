@@ -237,7 +237,7 @@ def test_signing_waits_for_nothing_open_unless_signed_as_it_is():
     # The vendor's open change is taken; the client's own ask is dropped.
     assert b.overtime_rate_cents == 20_000
     assert not b.discount_cents
-    assert b.signed_at is not None
+    assert b.client_signed_at is not None
 
 
 def test_the_client_can_add_one_of_the_vendors_packages():

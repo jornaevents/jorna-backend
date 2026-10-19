@@ -10,6 +10,7 @@ import pytest
 
 from app.db.models import Booking, Negotiation, Service, User, Vendor
 from app.limiter import limiter
+from tests.countersign_helpers import countersign
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
@@ -117,6 +118,11 @@ def test_nothing_is_owed_until_the_client_signs(world):
 
     signed = client.post(f"/guest-bookings/{req.contract_token}/sign", json={"signer_name": "Priya Mehta"})
     assert signed.status_code == 200, signed.text
+    # Still nothing owed until the vendor countersigns (DECISIONS #34).
+    waiting = client.post(f"/payments/bookings/{req.booking_id}/mark-deposit-paid", headers=w["client_h"])
+    assert waiting.status_code == 400
+    assert "vendor hasn't signed" in waiting.json()["detail"]
+    countersign(req.booking_id)
 
     # The in-app buttons pay down the schedule.
     deposit = client.post(f"/payments/bookings/{req.booking_id}/mark-deposit-paid", headers=w["client_h"])
@@ -260,6 +266,8 @@ def test_the_clients_plan_shows_each_payment_and_when_its_due(world):
     assert all(i["effective_due"] is None for i in before)  # nothing's owed unsigned
 
     client.post(f"/guest-bookings/{req.contract_token}/sign", json={"signer_name": "Priya Mehta"})
+    assert all(i["effective_due"] is None for i in summary()["payment_schedule"])  # until the vendor signs
+    countersign(req.booking_id)
     today = datetime.now(timezone.utc).date().isoformat()
     deposit, balance = summary()["payment_schedule"]
     assert deposit["effective_due"] == today

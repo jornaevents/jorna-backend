@@ -4,6 +4,7 @@ agreements attached to a signed booking (docs/DECISIONS.md #21)."""
 import pytest
 
 from app.db.models import Booking, ContractDocument
+from tests.countersign_helpers import countersign_document, countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -39,6 +40,7 @@ def _sign(contract: dict) -> None:
     token = contract["contract_token"]
     client.patch(f"/guest-bookings/{token}", json={"guest_email": "meera@example.com"})
     assert client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Meera Shah"}).status_code == 200
+    countersign_token(token)
 
 
 # ── Layout ───────────────────────────────────────────────────────────
@@ -157,7 +159,11 @@ def test_addendum_lifecycle_without_touching_the_booking():
     signed = client.post(f"/guest-documents/{d['token']}/sign", json={"signer_name": "Meera Shah"})
     assert signed.status_code == 200, signed.text
     assert signed.json()["signed_snapshot_sha256"]
+    # The client's signature waits on the vendor's (DECISIONS #34).
+    assert signed.json()["status"] == "awaiting_vendor"
     assert client.post(f"/guest-documents/{d['token']}/sign", json={"signer_name": "Again"}).status_code == 400
+    assert client.post(f"/contract-documents/{d['document_id']}/void", headers=v["headers"]).status_code == 400
+    assert countersign_document(d["document_id"])["status"] == "signed"
     assert client.post(f"/contract-documents/{d['document_id']}/void", headers=v["headers"]).status_code == 400
 
     after = client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()

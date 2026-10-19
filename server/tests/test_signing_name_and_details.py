@@ -10,6 +10,7 @@ import pytest
 
 from app.services import pdf_service
 from app.services.signing_evidence import name_check
+from tests.countersign_helpers import countersign_token
 from tests.test_api import client
 from tests.test_signing_evidence import (  # noqa: F401 — _clean, _isolate and outbox are fixtures
     _booking,
@@ -93,6 +94,7 @@ def test_the_certificate_shows_a_mismatch(outbox):
 def test_a_document_signature_is_checked_against_the_client_name(outbox):
     v, c, token = _contract()
     _sign_as(token, outbox, "Asha Mehta")
+    countersign_token(token)
     d = client.post(
         f"/contracts/{c['booking_id']}/documents",
         json={"kind": "addendum", "sections": [{"title": "Later finish", "body": "Until midnight."}], "send": True},

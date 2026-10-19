@@ -401,6 +401,36 @@ A signed record with signing evidence ends with a signing-certificate page (DECI
   email change adds `email_to` (the new address) and emails the old address a notice with the
   new one masked. An email that isn't `x@y.z`-shaped is 422.
 
+## Countersigning (DECISIONS #34)
+
+A contract or attached document the client has signed waits on the vendor's signature;
+it's booked (and `signed_at` set) only once the vendor countersigns.
+
+- Contract, booking and bundle responses carry `client_signed_at` (the client's
+  signature), `vendor_signer_name` and `vendor_signed_at`. `signed_at` is the
+  vendor's countersignature: set only when both have signed. Documents carry the same
+  fields.
+- `contract_status` (and a document's `status`) is `awaiting_vendor` between the two
+  signatures. The leads pipeline shows it as `needs_you` / `countersign`.
+- `GET /contracts/{booking_id}` (and a vendor's document) returns
+  `vendor_esign_consent: {version, text, given}`. When `given` is false, the countersign
+  call must send `consent: true` with that `version`.
+- `POST /contracts/{booking_id}/countersign` and
+  `POST /contract-documents/{document_id}/countersign` (vendor) take
+  `{signer_name, consent?, consent_version?}` and return the contract / document, signed.
+  Refusals:
+  - 400 before the client has signed, once already signed, for a blank name, or without consent when it's needed
+  - 409 for an out-of-date `consent_version`
+  - 404 for another vendor's contract
+- `POST /contracts/{booking_id}/decline-signature` and
+  `POST /contract-documents/{document_id}/decline-signature` (vendor) take `{reason}`
+  (required) and void it; the client is emailed the reason. `GET /guest-bookings/{token}`
+  then carries `rejected_reason: "vendor_declined_signature"` and the reason as
+  `vendor_decline_note`.
+- While `awaiting_vendor`, editing, sending, voiding and archiving the contract are 400, as
+  are the client's details, signing again and declining. Marking a payment sent is 400
+  until the vendor signs.
+
 ## Vendor categories
 
 Some categories require a subcategory at vendor registration (e.g. `music_entertainment`

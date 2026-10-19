@@ -11,6 +11,7 @@ import pytest
 
 from app.db.models import Booking, Service, User, Vendor
 from app.limiter import limiter
+from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 _created = {"users": [], "vendors": [], "services": [], "bookings": []}
@@ -80,6 +81,7 @@ def _setup_guest_contract(*, deposit_percent=50):
     client.patch(f"/guest-bookings/{token}", json={"guest_email": "guest@example.com"})
     signed = client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Guest Name"})
     assert signed.status_code == 200, signed.text
+    countersign_token(token)
 
     result["token"] = token
     result["booking_id"] = contract["booking_id"]

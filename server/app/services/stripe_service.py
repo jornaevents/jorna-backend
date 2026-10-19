@@ -1376,8 +1376,11 @@ def mark_deposit_paid(*, booking_id: str, caller_user_id: str, db: Session) -> d
 
 def _require_signed_contract(booking: Booking) -> None:
     """An accepted request is a proposal until the client signs it
-    (DECISIONS #17) — nothing is owed before then."""
+    (DECISIONS #17) — nothing is owed before then, nor until the vendor has
+    countersigned it (#34)."""
     if booking.contract_token and booking.signed_at is None:
+        if booking.client_signed_at is not None:
+            raise StripeError(400, "Your vendor hasn't signed yet — payments start once they do")
         raise StripeError(400, "Sign the contract first — the link is in the email your vendor sent")
 
 

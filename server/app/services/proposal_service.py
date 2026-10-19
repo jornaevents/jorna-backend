@@ -106,7 +106,7 @@ def latest_for(db: Session, booking_ids: list[str]) -> dict[str, ContractProposa
 def latest_status(db: Session, booking: Booking) -> str | None:
     """The most recent proposal's status, on a contract that can still
     change. Null otherwise, which is the ordinary case."""
-    if not booking.contract_token or booking.signed_at is not None:
+    if not booking.contract_token or booking.client_signed_at is not None:
         return None
     p = latest_for(db, [booking.booking_id]).get(booking.booking_id)
     return p.status if p else None
@@ -259,7 +259,7 @@ def propose(*, contract_token: str, base_revision: int, changes: dict, message: 
     _require_live(booking)
     if booking.negotiation_mode == "fields":
         raise GuestBookingError(409, "This contract is negotiated field by field — use its negotiation instead")
-    if booking.signed_at is not None:
+    if booking.client_signed_at is not None:
         raise GuestBookingError(400, "This contract is signed, so it can't be changed now")
     _require_open_offer(booking)
     if not booking.guest_email:
@@ -464,7 +464,7 @@ def save_draft(
     sending it runs the real checks."""
     if party not in PARTIES:
         raise ProposalError(400, "Unknown party")
-    if not booking.contract_token or booking.signed_at is not None:
+    if not booking.contract_token or booking.client_signed_at is not None:
         raise ProposalError(400, "This contract is signed, so it can't be changed now")
     if not isinstance(changes, dict):
         raise ProposalError(400, "Send the changes as an object")

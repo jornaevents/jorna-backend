@@ -36,7 +36,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import admin, bundles, calendar, bookings, change_requests, chatbot, checkin, contract_documents, contracts, conversations, events, feed, guest_bookings, guests, inquiries, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
+from app.routers import admin, bundles, calendar, bookings, change_requests, chatbot, checkin, contract_documents, contracts, conversations, countersign, events, feed, guest_bookings, guests, inquiries, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -267,7 +267,8 @@ async def _periodic_checkin_reminders():
 
 async def _periodic_payment_reminders():
     """Remind clients of scheduled payments coming due, and vendors of ones
-    overdue (services/payment_reminder_service.py).
+    overdue (services/payment_reminder_service.py) — and vendors of contracts
+    their client signed that they haven't yet (countersign_service.py).
 
     Same shape as the sweeps above. Hourly is plenty for day-granular due
     dates, and it's idempotent through the payment_reminder events each
@@ -275,11 +276,13 @@ async def _periodic_payment_reminders():
     """
     from app.db.database import SessionLocal
     from app.services.payment_reminder_service import send_payment_reminders
+    from app.services.countersign_service import send_countersign_reminders
 
     while True:
         try:
             with SessionLocal() as session:
                 send_payment_reminders(db=session)
+                send_countersign_reminders(db=session)
         except Exception as exc:
             logger.warning("Payment reminder sweep failed: %s", exc)
         await asyncio.sleep(_PAYMENT_REMINDER_INTERVAL_SECONDS)
@@ -462,6 +465,7 @@ app.include_router(contracts.router)
 app.include_router(guest_bookings.router)
 app.include_router(inquiries.router)
 app.include_router(contract_documents.router)
+app.include_router(countersign.router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -73,7 +73,9 @@ def commits_vendor_date(now: datetime | None = None):
     the client: signed holds the date for good, sent or viewed holds it
     tentatively until hold_expires_at, and a draft or a lapsed offer holds
     nothing. Before this, an unsigned contract blocked its date until someone
-    remembered to void it. docs/DECISIONS.md #15.
+    remembered to void it. docs/DECISIONS.md #15. One the client has signed
+    and the vendor hasn't yet holds it with no expiry: it's waiting on the
+    vendor, not the client (#34).
 
     Every availability question — double-booking, the calendar, the bundle
     builder — asks through this, so they can't disagree about a held date.
@@ -84,6 +86,7 @@ def commits_vendor_date(now: datetime | None = None):
         or_(
             Booking.contract_token.is_(None),
             Booking.signed_at.isnot(None),
+            Booking.client_signed_at.isnot(None),
             and_(
                 Booking.contract_status.in_(HOLDING_CONTRACT_STATUSES),
                 Booking.hold_expires_at > now,
@@ -433,7 +436,12 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "addon_rate_cents": booking.addon_rate_cents,
         "contract_terms": booking.contract_terms,
         "signer_name": booking.signer_name,
+        # Booked once both have signed (DECISIONS #34): signed_at is the
+        # vendor's countersignature; client_signed_at, the client's own.
         "signed_at": utc_iso(booking.signed_at),
+        "client_signed_at": utc_iso(booking.client_signed_at),
+        "vendor_signer_name": booking.vendor_signer_name,
+        "vendor_signed_at": utc_iso(booking.vendor_signed_at),
         # When the vendor first opened it (0075). Signed and still null: new
         # to them, and on the Bookings tab's badge (DECISIONS #30).
         "vendor_seen_at": utc_iso(booking.vendor_seen_at),
