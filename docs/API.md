@@ -431,6 +431,15 @@ it's booked (and `signed_at` set) only once the vendor countersigns.
   are the client's details, signing again and declining. Marking a payment sent is 400
   until the vendor signs.
 
+## Service taxonomy (DECISIONS #35)
+
+`GET /taxonomy` (public) returns `{version, groups: [{key, label, bundle, services: [{key, label,
+synonyms, popular, bundle, attributes: [attribute keys]}]}], attributes: {key: {key, label, type:
+single|multi|number|bool, options?: [{key, label}], unit?}}}`, in browse order. It sends `ETag:
+"<version>"` and `Cache-Control: public, max-age=300`; send the ETag back as `If-None-Match` to get
+a 304. `popular` is the order of the chips a picker shows before typing (null = not shown). Nothing
+stores service keys yet: `/vendors/categories` below is still what writes validate against.
+
 ## Vendor categories
 
 Some categories require a subcategory at vendor registration (e.g. `music_entertainment`
