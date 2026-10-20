@@ -887,3 +887,32 @@ agreement", and sending the contract stood for the vendor's agreement (user, 202
   signed_at` and no vendor signature; their PDF keeps the "issued this agreement" line.
 - A contract the vendor countersigns isn't "new" on the Bookings badge (#30): countersigning sets
   `vendor_seen_at`.
+
+## 35. Pickers choose a service from a three-level taxonomy (no migration yet)
+
+Category/subcategory meant different things per category ("DJ" was a subcategory, "Photographer" a
+whole category; Attire's subcategories described the outfit), and every picker showed the raw list
+(user, 2026-10-18/19; draft list https://claude.ai/code/artifact/3ec21a59-77f9-491a-9c84-b18f6e6bc0c6).
+
+- **Group → service → attribute.** A group is for browsing. A service is what someone books, and
+  every picker selects one. An attribute is a filter on a service and replaces free-form tags. The
+  test: if a client would book it separately, it's a service.
+- **Data in `app/taxonomy/data.py`, served by `GET /taxonomy`** (public, ETag). It holds 17 groups
+  and 73 services. Keys are unique across groups and services and never change once shipped.
+  `app/taxonomy` checks the data on import.
+- **Decided while editing the list (2026-10-20):**
+  - Instruments are separate services.
+  - Music and Entertainment are separate groups, with DJ in Entertainment.
+  - Venue type is an attribute of Venue, not its own service.
+  - The bundle builder fills 11 services: today's slots with Floral & Decor split, plus Bar &
+    bartending. The old Cultural Services slot becomes the Entertainment group.
+  - A vendor saved as plain `planning` (or any category with several services) is asked to pick,
+    not mapped.
+- **Today's data maps on.** `from_legacy(category, subcategory)` gives a stored pair's service, or
+  None where the vendor has to choose. `legacy_search` gives what an old `?category=` key now
+  covers, so old links keep finding the same vendors. Tests check every category, subcategory and
+  bundle slot in use today.
+- **This step changes nothing users see.** `/vendors/categories` keeps serving the old list for
+  older clients, and writes still validate against it. Next: store `service_key` on vendors and
+  packages (migration and backfill), move search and the bundle builder onto service keys, then the
+  web picker, then iOS.
