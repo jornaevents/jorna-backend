@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from app import taxonomy
 from app.config import ESCROW_ENABLED
 from app.db.models import Vendor, Service, User, Tag, VendorAvailability, vendor_tags
 from app.utils.location import calculate_distance_miles
@@ -39,6 +40,38 @@ class VendorError(Exception):
         super().__init__(detail)
 
 
+def apply_specialties(vendor: Vendor, *, specialties: list[str] | None, specializations: list[dict] | None) -> None:
+    """What a vendor sells, from either shape (DECISIONS #35). Service keys
+    win: the old pairs and category/subcategory are derived from them for
+    older clients and the search paths still on those columns. Old pairs
+    alone (an older client) set the keys they map to, keeping any the vendor
+    already picked inside a category the pairs leave ambiguous."""
+    if specialties is not None:
+        try:
+            keys = taxonomy.clean_specialties(specialties)
+        except taxonomy.TaxonomyError as e:
+            raise VendorError(400, str(e))
+        vendor.specialties = keys
+        vendor.specializations = taxonomy.pairs_from_specialties(keys)
+        if keys:
+            vendor.category, vendor.subcategory = taxonomy.legacy_pair(keys[0])
+    elif specializations is not None:
+        vendor.specializations = specializations
+        vendor.specialties = taxonomy.specialties_from_pairs(specializations, keep=vendor.specialties)
+
+
+def specialty_fields(vendor: Vendor) -> dict:
+    """specialties, and the categories that still need the vendor to say
+    which service (the "Pick your services" prompt)."""
+    pairs = vendor.specializations or (
+        [{"category": vendor.category, "subcategory": vendor.subcategory}] if vendor.category else []
+    )
+    return {
+        "specialties": vendor.specialties or [],
+        "service_picks_needed": taxonomy.picks_needed(pairs, vendor.specialties),
+    }
+
+
 def create_vendor(
     *,
     user_id: str,
@@ -46,6 +79,7 @@ def create_vendor(
     category: str | None = None,
     subcategory: str | None = None,
     specializations: list[dict] | None = None,
+    specialties: list[str] | None = None,
     years_experience: int | None = None,
     db: Session,
 ) -> dict:
@@ -73,6 +107,11 @@ def create_vendor(
         rating=0.0,
         num_events=0,
     )
+    if specialties is None and specializations is None and category and category != "other":
+        specializations_for_keys = [{"category": category, "subcategory": subcategory}]
+        vendor.specialties = taxonomy.specialties_from_pairs(specializations_for_keys)
+    else:
+        apply_specialties(vendor, specialties=specialties, specializations=specializations)
     db.add(vendor)
     db.commit()
     db.refresh(vendor)
@@ -83,6 +122,7 @@ def create_vendor(
         "category": vendor.category,
         "subcategory": vendor.subcategory,
         "specializations": vendor.specializations or [],
+        **specialty_fields(vendor),
         "years_experience": vendor.years_experience,
         "rating": vendor.rating,
         "num_events": vendor.num_events,
@@ -108,6 +148,7 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "category": v.category,
         "subcategory": v.subcategory,
         "specializations": v.specializations or [],
+        **specialty_fields(v),
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
@@ -157,6 +198,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "category": v.category,
         "subcategory": v.subcategory,
         "specializations": v.specializations or [],
+        **specialty_fields(v),
         "rating": v.rating,
         "num_events": v.num_events,
         "travel_radius_miles": v.travel_radius_miles,
@@ -248,6 +290,13 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
         resulting_zelle = update_data.get("zelle_contact", vendor.zelle_contact)
         if not resulting_venmo and not resulting_zelle:
             raise VendorError(400, "Add a Venmo handle or Zelle contact so clients can pay you")
+
+    if "specialties" in update_data or "specializations" in update_data:
+        apply_specialties(
+            vendor,
+            specialties=update_data.pop("specialties", None),
+            specializations=update_data.pop("specializations", None),
+        )
 
     for field, value in update_data.items():
         if field in ["bio", "category", "subcategory", "specializations", "travel_radius_miles",
@@ -360,6 +409,7 @@ def search_vendors(
     sort_by: str = "distance",
     limit: int = 20,
     offset: int = 0,
+    services: list[str] | None = None,
     db: Session,
 ) -> dict:
     """Search vendors offering a service. When coordinates are given, results are
@@ -408,6 +458,10 @@ def search_vendors(
         # Service-first: narrow to the exact specialty so e.g. a "dj" slot lists
         # DJ services only, not every music_entertainment service (dhol included).
         query = query.filter(Service.subcategory == subcategory)
+    if services is not None:
+        # The taxonomy's way (DECISIONS #35): packages that are one of these
+        # services, a group standing for all of its own.
+        query = query.filter(Service.service_key.in_(taxonomy.expand(*services)))
     # No coords → filter by the event's state string instead (best-effort).
     #
     # KNOWN GAP: for a venue this asks the wrong question — it matches the

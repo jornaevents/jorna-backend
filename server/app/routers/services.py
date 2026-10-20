@@ -97,6 +97,11 @@ class PackageDetails(BaseModel):
     sort_order: Optional[int] = None
     # "Most popular" — marking one package clears it from the vendor's others.
     is_popular: Optional[bool] = None
+    # The one service this package is, from GET /taxonomy (DECISIONS #35), and
+    # its filters ({attribute: value}). With service_key, category and
+    # subcategory are derived from it; without, from them.
+    service_key: Optional[str] = Field(default=None, max_length=50)
+    attributes: Optional[dict] = None
 
     @field_validator("inclusions")
     @classmethod
@@ -231,6 +236,8 @@ def create_service_route(
             overtime_rate_cents=body.overtime_rate_cents,
             sort_order=body.sort_order,
             is_popular=bool(body.is_popular),
+            service_key=body.service_key,
+            attributes=body.attributes,
             db=db,
         )
     except ServiceError as e:

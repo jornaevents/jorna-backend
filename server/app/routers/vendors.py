@@ -72,6 +72,9 @@ class CreateVendorRequest(BaseModel):
     # The full list a vendor picks during onboarding; category/subcategory
     # above mirror its first entry, since that's what search still filters on.
     specializations: Optional[list[VendorSpecializationItem]] = None
+    # Service keys from GET /taxonomy (DECISIONS #35) — what pickers send now.
+    # When given, specializations and category/subcategory are derived from it.
+    specialties: Optional[list[str]] = Field(default=None, max_length=20)
     years_experience: Optional[int] = Field(default=None, ge=0, le=99)
 
     @field_validator("subcategory")
@@ -107,6 +110,7 @@ class UpdateVendorRequest(BaseModel):
     category: Optional[VendorCategory] = None
     subcategory: Optional[str] = None
     specializations: Optional[list[VendorSpecializationItem]] = None
+    specialties: Optional[list[str]] = Field(default=None, max_length=20)
     travel_radius_miles: Optional[int] = None
     open_to_long_distance: Optional[bool] = None
     open_to_price_negotiation: Optional[bool] = None
@@ -181,6 +185,7 @@ def create_vendor_route(
                 if body.specializations is not None
                 else None
             ),
+            specialties=body.specialties,
             years_experience=body.years_experience,
             db=db,
         )
@@ -252,6 +257,9 @@ def vendor_search(
     sort_by: Optional[str] = Query("distance", description="Sort order: distance, rating, price"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    service: Optional[str] = Query(
+        None, description="Service or group keys from GET /taxonomy, comma-separated (e.g. 'dj,dhol' or 'beauty')",
+    ),
     db: Session = Depends(get_db),
 ):
     """Search for vendors offering a service. With coordinates, results are
@@ -272,6 +280,7 @@ def vendor_search(
         sort_by=sort_by or "distance",
         limit=limit,
         offset=offset,
+        services=[k.strip() for k in service.split(",") if k.strip()] if service else None,
         db=db,
     )
 

@@ -314,3 +314,26 @@ LEGACY_BUNDLE_SLOTS: dict[str, str] = {
     "floral_decor": "decor_florals",
     "cultural_services": "entertainment",
 }
+
+# The category older clients show for a service with no legacy pair of its
+# own (one new in the taxonomy) — the closest of today's categories, so a
+# vendor who picks "Qawwali group" still reads as Music & Entertainment there.
+GROUP_LEGACY: dict[str, str] = {
+    "venues": "venue",
+    "planning": "planning",
+    "food_drink": "catering",
+    "cakes_sweets": "cakes_desserts",
+    "photo_video": "photography",
+    "music": "music_entertainment",
+    "entertainment": "music_entertainment",
+    "decor_florals": "floral_decor",
+    "rentals_production": "rentals",
+    "beauty": "beauty",
+    "attire_jewelry": "attire",
+    "ceremony": "officiants",
+    "arrivals_transport": "transportation",
+    "stationery_gifts": "stationery",
+    "guest_services": "guest_hospitality",
+    "after_event": "post_wedding",
+    "more": "other",
+}

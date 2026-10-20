@@ -437,8 +437,20 @@ it's booked (and `signed_at` set) only once the vendor countersigns.
 synonyms, popular, bundle, attributes: [attribute keys]}]}], attributes: {key: {key, label, type:
 single|multi|number|bool, options?: [{key, label}], unit?}}}`, in browse order. It sends `ETag:
 "<version>"` and `Cache-Control: public, max-age=300`; send the ETag back as `If-None-Match` to get
-a 304. `popular` is the order of the chips a picker shows before typing (null = not shown). Nothing
-stores service keys yet: `/vendors/categories` below is still what writes validate against.
+a 304. `popular` is the order of the chips a picker shows before typing (null = not shown).
+
+Since 0080:
+
+- **Vendors** (`POST /vendors`, `PATCH /vendors/me`) take `specialties` (service keys, at most 20,
+  400 on an unknown key). When given, the old `specializations` and `category`/`subcategory` are
+  derived from it; old pairs alone still work and derive `specialties`. Vendor responses add
+  `specialties` and `service_picks_needed: [{category, choices: [service keys]}]`, the old
+  categories that don't say which service yet.
+- **Packages** (`POST /services`, `PATCH /services/{id}`) take `service_key` and `attributes`
+  (`{attribute key: option key | [option keys] | number | bool}`, checked against that service).
+  Responses add both. A null `service_key` is a package saved under a vague category.
+- **Search**: `GET /vendors/search?service=dj,dhol` filters packages by service. Group keys stand for
+  all of their services. `category`/`subcategory` still work.
 
 ## Vendor categories
 

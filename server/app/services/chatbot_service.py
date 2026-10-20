@@ -455,8 +455,9 @@ def _candidate_service_rows(
 ) -> list[tuple]:
     """Candidate (Service, Vendor, User) rows for a slot — the service-first unit.
 
-    Filters by the slot's Service.category (and Service.subcategory when the slot
-    specifies one, e.g. dj vs dhol). Applies, in order: the one-vendor-per-bundle
+    Filters by the slot's services in the taxonomy (dj vs dhol; a group slot
+    takes any of its services), or the old category match for a package
+    with no service_key yet. Applies, in order: the one-vendor-per-bundle
     dedup (skip vendors already used in this bundle), distance (a venue by where
     it stands, everyone else by their travel radius), already-booked vendors, and
     the per-category budget cap (kept only if some service survives).
@@ -465,16 +466,30 @@ def _candidate_service_rows(
     from app.db.models import Vendor, Service, User
     from app.utils.location import VENUE_MAX_DISTANCE_MILES, calculate_distance_miles
 
+    from sqlalchemy import and_, or_
+
+    from app import taxonomy
+
     flt = _slot_db_filter(cat)
     if not flt:
         return []
     db_category, db_subcategory = flt
+    # A slot is a service or a group in the taxonomy (DECISIONS #35) — e.g.
+    # the old Cultural Services slot is the Entertainment group. A package
+    # that doesn't know its service yet (null service_key) still matches the
+    # way it always did, on its category.
+    legacy = Service.category == db_category
+    if db_subcategory:
+        legacy = and_(legacy, Service.subcategory == db_subcategory)
 
     q = (
         db.query(Service, Vendor, User)
         .join(Vendor, Service.vendor_id == Vendor.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
-        .filter(Service.category == db_category)
+        .filter(or_(
+            Service.service_key.in_(taxonomy.expand(taxonomy.bundle_slot(cat) or cat)),
+            and_(Service.service_key.is_(None), legacy),
+        ))
         # AI bundles only pick fixed-price (non-negotiable) services, so the whole
         # bundle can be one-click confirmed with no per-service price step. A user
         # who wants a negotiable service adds it manually via the bundle editor.
@@ -482,8 +497,6 @@ def _candidate_service_rows(
         # Only packages a client can actually book (hidden/archived excluded).
         .filter(Service.status == "active")
     )
-    if db_subcategory:
-        q = q.filter(Service.subcategory == db_subcategory)
     rows = q.all()  # list of (Service, Vendor, User)
 
     # Dedup: a vendor fills at most one slot per generated bundle. A user who
