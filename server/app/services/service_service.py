@@ -3,6 +3,7 @@
 from typing import Optional
 from sqlalchemy.orm import Session
 
+from app import taxonomy
 from app.db.models import Booking, Service, Vendor, User
 from app.services.storage_service import delete_service_image, delete_service_video
 
@@ -49,6 +50,10 @@ def _service_dict(service: Service) -> dict:
         "overtime_rate_cents": service.overtime_rate_cents,
         "sort_order": service.sort_order,
         "is_popular": bool(service.is_popular),
+        # DECISIONS #35. Null service_key: saved under a category that doesn't
+        # say which service; the vendor is asked to pick.
+        "service_key": service.service_key,
+        "attributes": service.attributes or {},
     }
 
 
@@ -121,6 +126,8 @@ def create_service(
     overtime_rate_cents: Optional[int] = None,
     sort_order: Optional[int] = None,
     is_popular: bool = False,
+    service_key: Optional[str] = None,
+    attributes: Optional[dict] = None,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -132,11 +139,16 @@ def create_service(
     vendor = db.query(Vendor).filter(Vendor.user_id == user_id).first()
     if not vendor:
         raise ServiceError(403, "You must be a vendor to add services")
-    if not category:
+    if service_key:
+        category, subcategory = _from_service_key(service_key)
+    elif not category:
         category = vendor.category
         # Only inherit the vendor's subcategory alongside its category.
         if subcategory is None:
             subcategory = vendor.subcategory
+    if not service_key:
+        service_key = taxonomy.package_service(category, subcategory, vendor.specialties)
+    attributes = _clean_attributes(service_key, attributes)
     _require_venue_location(category, location, venue_latitude, venue_longitude)
     service = Service(
         vendor_id=vendor.vendor_id,
@@ -166,7 +178,10 @@ def create_service(
         overtime_rate_cents=overtime_rate_cents,
         sort_order=sort_order,
         is_popular=is_popular,
+        service_key=service_key,
+        attributes=attributes,
     )
+    _sells(vendor, service_key)
     db.add(service)
     db.flush()
     if is_popular:
@@ -174,6 +189,26 @@ def create_service(
     db.commit()
     db.refresh(service)
     return _service_dict(service)
+
+
+def _from_service_key(key: str) -> tuple[str, Optional[str]]:
+    if not taxonomy.is_service(key):
+        raise ServiceError(400, f"Unknown service '{key}'")
+    return taxonomy.legacy_pair(key)
+
+
+def _clean_attributes(service_key: Optional[str], attributes: Optional[dict]) -> Optional[dict]:
+    try:
+        return taxonomy.clean_attributes(service_key, attributes)
+    except taxonomy.TaxonomyError as e:
+        raise ServiceError(400, str(e))
+
+
+def _sells(vendor: Vendor, service_key: Optional[str]) -> None:
+    """A vendor who lists a package sells its service: it joins their
+    specialties, which also answers any "pick your services" for it."""
+    if service_key and service_key not in (vendor.specialties or []):
+        vendor.specialties = [*(vendor.specialties or []), service_key]
 
 
 def get_service(*, service_id: str, db: Session) -> dict:
@@ -264,6 +299,28 @@ def update_service(*, user_id: str, service_id: str, update_data: dict, db: Sess
     # Enforce the venue-location rule on the merged result (the update may have
     # switched the category to "venue" or cleared a venue's location). Validate
     # before mutating so a rejected update leaves the row untouched.
+    # Which service it is (DECISIONS #35): a service_key sets category and
+    # subcategory for older clients; a category/subcategory change from an
+    # older client works out the service again.
+    if update_data.get("service_key"):
+        update_data["category"], update_data["subcategory"] = _from_service_key(update_data["service_key"])
+    else:
+        update_data.pop("service_key", None)
+        if "category" in update_data or "subcategory" in update_data:
+            update_data["service_key"] = taxonomy.package_service(
+                update_data.get("category", service.category),
+                update_data.get("subcategory", service.subcategory),
+                vendor.specialties,
+            ) or (service.service_key if "category" not in update_data else None)
+    if "attributes" in update_data:
+        update_data["attributes"] = _clean_attributes(
+            update_data.get("service_key", service.service_key), update_data["attributes"],
+        )
+    elif update_data.get("service_key") and update_data["service_key"] != service.service_key:
+        # Another service's details don't apply to this one.
+        update_data["attributes"] = None
+    _sells(vendor, update_data.get("service_key"))
+
     def _merged(field):
         return update_data[field] if field in update_data else getattr(service, field)
     _require_venue_location(

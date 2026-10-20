@@ -25,6 +25,7 @@ or a Railway environment other than `staging`.
 import os
 import sys
 
+from app import taxonomy
 from app.config import DATABASE_URL
 from app.db.database import SessionLocal
 from app.db.models import Service, User, Vendor
@@ -151,12 +152,15 @@ def seed() -> None:
             )
             db.add(user)
             db.flush()
+            # The service its category/subcategory means (DECISIONS #35).
+            service_key = taxonomy.from_legacy(v["category"], v.get("subcategory"))
             vendor = Vendor(
                 user_id=user.user_id,
                 bio=v["bio"],
                 category=v["category"],
                 subcategory=v.get("subcategory"),
                 specializations=[{"category": v["category"], "subcategory": v.get("subcategory")}],
+                specialties=[service_key] if service_key else None,
                 rating=4.8,
                 num_events=0,
                 travel_radius_miles=100,
@@ -175,6 +179,7 @@ def seed() -> None:
                         price_unit=unit,
                         category=v["category"],
                         subcategory=v.get("subcategory"),
+                        service_key=service_key,
                         experience="Test listing — not a real service.",
                         description=desc,
                     )

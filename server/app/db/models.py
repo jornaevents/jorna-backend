@@ -118,6 +118,10 @@ class Vendor(Base):
     # this. A list of {"category": ..., "subcategory": ...} dicts, or null for
     # a vendor created before this column existed.
     specializations = Column(JSON, nullable=True)
+    # The service keys this vendor sells (0080, docs/DECISIONS.md #35) — what
+    # pickers now set. specializations and category/subcategory above are
+    # kept in step for older clients (taxonomy.pairs_from_specialties).
+    specialties = Column(JSON, nullable=True)
     rating = Column(Float, nullable=False)
     num_events = Column(Integer, nullable=False)
 
@@ -239,6 +243,12 @@ class Service(Base):
     media = Column(JSON, nullable=True)
     category = Column(String(50), nullable=True)
     subcategory = Column(String(50), nullable=True)
+    # The one service this package is (0080, DECISIONS #35), and its filters
+    # ({attribute: value}, taxonomy.clean_attributes). category/subcategory
+    # above are kept in step for older clients; null service_key = a package
+    # saved under a category that doesn't say which service (it's flagged).
+    service_key = Column(String(50), nullable=True, index=True)
+    attributes = Column(JSON, nullable=True)
     price_unit = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
     # This listing's own reviews, averaged. Kept alongside the vendor's rating

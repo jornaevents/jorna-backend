@@ -912,7 +912,17 @@ whole category; Attire's subcategories described the outfit), and every picker s
   None where the vendor has to choose. `legacy_search` gives what an old `?category=` key now
   covers, so old links keep finding the same vendors. Tests check every category, subcategory and
   bundle slot in use today.
-- **This step changes nothing users see.** `/vendors/categories` keeps serving the old list for
-  older clients, and writes still validate against it. Next: store `service_key` on vendors and
-  packages (migration and backfill), move search and the bundle builder onto service keys, then the
-  web picker, then iOS.
+- **Step 1 changed nothing users see.** `/vendors/categories` keeps serving the old list for older
+  clients.
+- **Step 2 (0080) stores it.**
+  - Vendors have `specialties` (service keys). Packages have `service_key` and `attributes`.
+  - Writes take either shape: service keys derive the old category/subcategory pairs, and old pairs
+    derive the keys. A package that names a service joins its vendor's specialties.
+  - The backfill maps exact pairs first, then a vague category through the vendor's one specialty in
+    it, with the mapping frozen in the migration. Anything still ambiguous stays null, and the vendor
+    sees it in `service_picks_needed` ("Pick your services").
+  - Search takes `?service=` (service or group keys).
+  - Bundle slots match by service, with the old category as the fallback for packages with no
+    service_key. So the Cultural Services slot now draws from the whole Entertainment group.
+  - The slot keys in the API are unchanged until the web picker ships. That's also when Bar &
+    bartending becomes a default slot.
