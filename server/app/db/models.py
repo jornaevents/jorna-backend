@@ -1034,7 +1034,9 @@ class ContentReport(Base):
 
 class UserBlock(Base):
     """blocker no longer wants to see blocked's content (messages, reviews,
-    listings). Enforced client-side from GET /users/me/blocks."""
+    listings). Messaging in two-person threads is refused server-side
+    (conversation_service._assert_not_blocked); the rest is filtered
+    client-side from GET /blocks."""
 
     __tablename__ = "user_blocks"
     __table_args__ = (UniqueConstraint("blocker_user_id", "blocked_user_id", name="uq_user_block"),)
