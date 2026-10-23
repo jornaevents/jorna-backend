@@ -5,8 +5,11 @@ GET    /blocks             — list users I've blocked
 POST   /blocks/{user_id}   — block a user
 DELETE /blocks/{user_id}   — unblock a user
 
-Blocking is enforced client-side: the app fetches /blocks and filters the
-blocked users' vendors, conversations, messages, and reviews out of view.
+The server refuses messaging across a block in either direction: opening an
+enquiry or booking thread, and sending into an existing two-person thread
+(conversation_service). Plan group chats are not affected. Everything else is
+filtered client-side: the app fetches /blocks and hides the blocked users'
+vendors, conversations, messages, and reviews.
 """
 
 from datetime import datetime, timezone
