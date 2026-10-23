@@ -613,12 +613,12 @@ def _subject_is_live(conv: Conversation, live_bundles: set[str], live_bookings: 
     return conv.bundle_id in live_bundles
 
 
-def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
-    """Return every conversation the caller is in, newest activity first."""
-    memberships = db.query(ConversationMember).filter(
+def _live_conversations(caller_user_id: str, db: Session) -> list[Conversation]:
+    """Every conversation the caller is in whose subject still exists — what
+    the inbox lists, and so what the unread badge may count."""
+    conv_ids = db.query(ConversationMember.conversation_id).filter(
         ConversationMember.user_id == caller_user_id
-    ).all()
-    conv_ids = [m.conversation_id for m in memberships]
+    )
     conversations = db.query(Conversation).filter(
         Conversation.conversation_id.in_(conv_ids)
     ).all()
@@ -635,10 +635,12 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
             Booking.booking_id.in_(booking_ids)
         ).all()
     } if booking_ids else set()
-    conversations = [
-        c for c in conversations if _subject_is_live(c, live_bundles, live_bookings)
-    ]
+    return [c for c in conversations if _subject_is_live(c, live_bundles, live_bookings)]
 
+
+def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
+    """Return every conversation the caller is in, newest activity first."""
+    conversations = _live_conversations(caller_user_id, db)
     unread = _unread_by_conversation([c.conversation_id for c in conversations], caller_user_id, db)
 
     result = []
@@ -861,36 +863,15 @@ def get_group_messages(
 
 
 def get_unread_count(*, caller_user_id: str, db: Session) -> dict:
-    """Return total unread group messages across all conversations."""
-    memberships = db.query(ConversationMember).filter(
-        ConversationMember.user_id == caller_user_id
-    ).all()
-    conv_ids = [m.conversation_id for m in memberships]
+    """Return total unread messages across the caller's inbox.
 
-    all_msg_ids = [
-        m.message_id for m in db.query(GroupMessage.message_id)
-        .filter(GroupMessage.conversation_id.in_(conv_ids))
-        .all()
-    ]
-    read_msg_ids = {
-        r.message_id for r in db.query(GroupMessageRead).filter(
-            GroupMessageRead.message_id.in_(all_msg_ids),
-            GroupMessageRead.user_id == caller_user_id,
-        ).all()
-    }
-    unread = len(set(all_msg_ids) - read_msg_ids)
-    # A flagged thread with nothing actually unread still counts once — the
-    # badge and the thread list must agree (see _unread_by_conversation).
-    for m in memberships:
-        if m.marked_unread_at is None:
-            continue
-        thread_msgs = {
-            r.message_id for r in db.query(GroupMessage.message_id)
-            .filter(GroupMessage.conversation_id == m.conversation_id).all()
-        }
-        if not (thread_msgs - read_msg_ids):
-            unread += 1
-    return {"unread_count": unread}
+    The same conversations list_conversations shows and the same per-row
+    counts, summed — so the badge never counts a thread whose bundle or
+    booking is gone, which the inbox hides.
+    """
+    conv_ids = [c.conversation_id for c in _live_conversations(caller_user_id, db)]
+    unread = _unread_by_conversation(conv_ids, caller_user_id, db)
+    return {"unread_count": sum(unread.values())}
 
 
 def mark_unread(*, conversation_id: str, caller_user_id: str, db: Session) -> dict:
