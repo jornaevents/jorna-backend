@@ -165,6 +165,46 @@ class TestOneUsersDigest:
         assert conv_id in html
 
 
+class TestWhereTheLinksGo:
+    """Vendors work in the vendor app and clients in the client app, so the
+    digest links each into the one they use."""
+
+    @pytest.fixture(autouse=True)
+    def _apps(self, monkeypatch):
+        monkeypatch.setattr(mds, "WEB_APP_URL", "https://vendor.example/app")
+        monkeypatch.setattr(mds, "CLIENT_WEB_APP_URL", "https://client.example/app")
+
+    def _reply(self, world, conv_id):
+        cs.send_group_message(
+            conversation_id=conv_id, content="Yes, we're free.",
+            caller_user_id=world["vendor_user"].user_id, db=world["db"],
+        )
+
+    def test_a_vendor_is_linked_to_the_vendor_app(self, chat_world, mocker):
+        sender = _mock_send(mocker)
+        conv_id = _thread(chat_world)
+        mds.send_message_digest(chat_world["vendor_user"], chat_world["db"])
+
+        kw = sender.call_args.kwargs
+        for body in (kw["html"], kw["text"]):
+            assert f"https://vendor.example/app/conversation/?id={conv_id}" in body
+            assert "https://vendor.example/app/messages/" in body
+            assert "client.example" not in body
+
+    def test_a_client_is_linked_to_the_client_app(self, chat_world, mocker):
+        sender = _mock_send(mocker)
+        conv_id = _thread(chat_world)
+        self._reply(chat_world, conv_id)
+        mds.send_message_digest(chat_world["client_user"], chat_world["db"])
+
+        kw = sender.call_args.kwargs
+        assert kw["to"] == chat_world["client_user"].email
+        for body in (kw["html"], kw["text"]):
+            assert f"https://client.example/app/conversation/?id={conv_id}" in body
+            assert "https://client.example/app/messages/" in body
+            assert "vendor.example" not in body
+
+
 class TestTheSweep:
     def test_a_user_with_unread_messages_is_swept_up(self, chat_world, mocker):
         """send_due_digests iterates every conversation member DB-wide, so this
