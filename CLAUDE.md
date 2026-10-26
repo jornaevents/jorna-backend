@@ -187,11 +187,12 @@ three repos). Open issues with `.github/ISSUE_TEMPLATE/bug_report.md` or
 backend change here usually needs a matching client-side issue/PR in
 `jorna-ios` and/or `jorna-website`.
 
-This repo is **not** on the board's native auto-add workflow — GitHub Free
-caps that at one source repo per project, and `jorna-website` has it
-instead. Add an issue to the board by hand: `gh project item-add 1 --owner
-jornaevents --url <issue-url>`, or via the issue's own "Projects" sidebar
-field. When doing real dev work here, keep the board current as you go
+This repo isn't on the board's native auto-add workflow — GitHub Free caps
+that at one source repo per project, and `jorna-website` has it. Instead
+`.github/workflows/add-to-board.yml` adds each new or reopened issue, using
+the `ADD_TO_BOARD_TOKEN` secret. If an issue still isn't on the board (the
+secret is missing or expired), add it by hand: `gh project item-add 1
+--owner jornaevents --url <issue-url>`. When doing real dev work here, keep the board current as you go
 (create/find the issue, add it, move its status) rather than leaving that
 to whoever opened the issue.
 
