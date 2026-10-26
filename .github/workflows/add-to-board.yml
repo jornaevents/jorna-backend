@@ -1,0 +1,24 @@
+name: Add issues to the Dev Board
+
+# GitHub Free lets the board's own auto-add follow one repo, and
+# jorna-website has it, so this repo adds its issues itself. The default
+# GITHUB_TOKEN can't write to an org project: ADD_TO_BOARD_TOKEN is a
+# fine-grained token with the org's Projects: read and write, and Issues: read
+# on this repo. Without it the job skips rather than failing every issue.
+
+on:
+  issues:
+    types: [opened, reopened, transferred]
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.ADD_TO_BOARD_TOKEN }}
+    steps:
+      - name: Add to the Jorna Dev Board
+        if: env.TOKEN != ''
+        uses: actions/add-to-project@v1
+        with:
+          project-url: https://github.com/orgs/jornaevents/projects/1
+          github-token: ${{ env.TOKEN }}
