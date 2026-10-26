@@ -83,8 +83,6 @@ descriptions of a contract they don't own.
   Sentry's SDK when `SENTRY_DSN` is set, tagging events with `environment`
   and a `release` (Railway's commit SHA) automatically. No-op locally unless
   you set `SENTRY_DSN`.
-- `ig_scraper/` is a standalone Instagram vendor-data scraper, unrelated to
-  the FastAPI app's runtime — it doesn't get imported by `server/`.
 - Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
 ## Diagnosing a failed Railway deploy

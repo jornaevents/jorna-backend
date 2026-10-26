@@ -92,5 +92,3 @@ copy for new resources).
   are a decoy.
 - `server/tests/` — one file per feature area, mirrors the router/service
   list above almost 1:1. See `docs/TESTING.md`.
-- `ig_scraper/` — standalone Instagram scraper for sourcing vendor leads;
-  not imported by the FastAPI app.

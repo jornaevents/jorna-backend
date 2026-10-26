@@ -926,3 +926,16 @@ whole category; Attire's subcategories described the outfit), and every picker s
     service_key. So the Cultural Services slot now draws from the whole Entertainment group.
   - The slot keys in the API are unchanged until the web picker ships. That's also when Bar &
     bartending becomes a default slot.
+
+## 36. No Instagram scraping; the handle is just a link
+
+Vendors can still give an Instagram handle, and it's shown on their profile as a link. Nothing
+fetches their profile any more (user, 2026-10-26).
+
+- Removed `POST /admin/scraper/run` (Apify, unlocked by `SCRAPER_API_KEY` for a weekly
+  cron-job.org call), `GET /vendors/instagram-linked`, `POST /vendors/{id}/instagram-enrich`, and
+  the standalone `ig_scraper/`. `APIFY_API_TOKEN` and `SCRAPER_API_KEY` aren't read anywhere now.
+- It had already stopped adding post photos to packages (Instagram's image links expire within
+  days). It still wrote hashtags to `vendors.instagram_tags` and an empty bio.
+- Tags it already wrote stay, and bundle scoring still reads them. The column and that data can go
+  in a later migration if they're no longer wanted.
