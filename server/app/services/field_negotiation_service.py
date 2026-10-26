@@ -395,6 +395,15 @@ def _rows(db: Session, booking: Booking) -> list[NegotiationField]:
     return db.query(NegotiationField).filter(NegotiationField.booking_id == booking.booking_id).all()
 
 
+def _may_send(booking: Booking, side: str, db: Session) -> bool:
+    """Your turn, or the vendor's change to an agreed contract: with nothing
+    waiting on the client, the vendor can open a round instead of editing the
+    contract out from under it (2026-10-26 test)."""
+    if _turn(booking) == side:
+        return True
+    return side == "vendor" and not any(r.state == WAITING["client"] for r in _rows(db, booking))
+
+
 def _turn(booking: Booking) -> str:
     return booking.negotiation_turn or "client"
 
@@ -410,6 +419,31 @@ def _revision_terms(db: Session, booking: Booking, revision: int | None) -> dict
         ContractRevision.booking_id == booking.booking_id, ContractRevision.revision == revision,
     ).first()
     return row.terms if row else None
+
+
+_NO_ASK = object()
+
+
+def _own_last_ask(db: Session, booking: Booking, key: str, side: str):
+    """What `side` last asked for on `key` since it was last settled, or
+    _NO_ASK. Keep means "mine": the client's own ask when they keep, the
+    vendor's when they do — not the contract's value, which is the vendor's
+    position and turned a client's keep into giving way (2026-10-26 test)."""
+    sends = (
+        db.query(NegotiationSend)
+        .filter(NegotiationSend.booking_id == booking.booking_id)
+        .order_by(NegotiationSend.round.desc())
+        .all()
+    )
+    for s in sends:
+        for a in s.answers or []:
+            if a.get("key") != key:
+                continue
+            if a.get("action") == "accept":
+                return _NO_ASK
+            if s.side == side and a.get("action") in ("change", "counter", "keep", "reopen"):
+                return a.get("value")
+    return _NO_ASK
 
 
 def _may_change(side: str, key: str, locks: list[str]) -> bool:
@@ -480,7 +514,8 @@ def state(booking: Booking, side: str, db: Session) -> dict:
         "turn": _turn(booking),
         "revision": booking.revision,
         "locks": locks,
-        "nudge": _round(booking) >= NUDGE_ROUND,
+        "nudge": _round(booking) >= NUDGE_ROUND and bool(waiting),
+        "may_send": _may_send(booking, side, db),
         "can_sign": not waiting and booking.client_signed_at is None,
         "waiting_count": len(waiting),
         "terms": terms,
@@ -491,7 +526,7 @@ def state(booking: Booking, side: str, db: Session) -> dict:
             "round": last.round, "side": last.side, "message": last.message,
             "answers": last.answers, "sent_at": utc_iso(last.sent_at),
         } if last else None,
-        "packages": packages_for(booking, side, db) if _turn(booking) == side else [],
+        "packages": packages_for(booking, side, db) if _may_send(booking, side, db) else [],
         "draft": {
             "round": draft.base_revision, "answers": (draft.changes or {}).get("answers", []),
             "message": draft.message, "updated_at": utc_iso(draft.updated_at),
@@ -545,7 +580,7 @@ def send(
     _require_open(booking)
     if side not in SIDES:
         raise FieldNegotiationError(400, "Unknown side")
-    if _turn(booking) != side:
+    if not _may_send(booking, side, db):
         raise FieldNegotiationError(409, f"It's the {_other(side)}'s turn — wait for their answer")
     if base_round != _round(booking):
         raise FieldNegotiationError(409, "The contract moved on since you opened it — review the latest round first")
@@ -593,7 +628,8 @@ def send(
                         raise FieldNegotiationError(403, f"{label(key, terms)} can't be changed")
                     value = validate(key, a.get("value"), terms, booking.vendor_id, db)
                 else:
-                    value = r.agreed_value
+                    asked = _own_last_ask(db, booking, key, side)
+                    value = r.agreed_value if asked is _NO_ASK else asked
                 r.state, r.proposed_value, r.proposed_by, r.note = theirs, value, side, note
             r.round, r.updated_at = next_round, now
             record.append({"key": key, "action": action, "value": r.proposed_value, "note": note})

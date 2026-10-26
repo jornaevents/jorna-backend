@@ -216,6 +216,38 @@ def test_keep_mine_lets_the_other_side_ask_again():
     assert _field(r.json(), "discount")["state"] == "waiting_vendor"
 
 
+def test_the_clients_keep_holds_their_own_ask_not_the_contracts():
+    # 2026-10-26: a client who kept their 7 days was recorded as keeping the
+    # vendor's 30, and the vendor's Accept then settled 30.
+    v = _setup_vendor()
+    c = _contract(v, cancellation_window_hours=30 * 24)
+    _client_send(c, 1, [{"key": "policy.cancellation", "action": "change", "value": 7 * 24}])
+    _vendor_send(c, v, 2, [{"key": "policy.cancellation", "action": "keep"}])
+    r = _client_send(c, 3, [{"key": "policy.cancellation", "action": "keep"}])
+    assert r.status_code == 200, r.text
+    assert _field(r.json(), "policy.cancellation")["proposed"] == 7 * 24
+    r = _vendor_send(c, v, 4, [{"key": "policy.cancellation", "action": "accept"}])
+    assert r.status_code == 200, r.text
+    assert _booking(c).cancellation_window_hours == 7 * 24
+
+
+def test_the_vendors_keep_holds_their_own_change():
+    v = _setup_vendor()
+    c = _contract(v)
+    _client_send(c, 1, [{"key": "discount", "action": "change", "value": 10_000}])
+    _vendor_send(c, v, 2, [
+        {"key": "discount", "action": "keep"},
+        {"key": "line:lights.quantity", "action": "change", "value": 4},
+    ])
+    _client_send(c, 3, [
+        {"key": "discount", "action": "accept"},
+        {"key": "line:lights.quantity", "action": "counter", "value": 3},
+    ])
+    r = _vendor_send(c, v, 4, [{"key": "line:lights.quantity", "action": "keep"}])
+    assert r.status_code == 200, r.text
+    assert _field(r.json(), "line:lights.quantity")["proposed"] == 4
+
+
 def test_signing_waits_for_nothing_open_unless_signed_as_it_is():
     v = _setup_vendor()
     c = _contract(v)
@@ -440,3 +472,46 @@ def test_a_send_says_whether_the_client_was_emailed_and_each_field_remembers_you
     s = client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()
     assert _field(s, "line:pkg.price")["your_last_ask"] == 120_000
     assert _field(s, "line:pkg.price")["proposed"] == 130_000
+
+
+def test_an_edit_cant_move_an_agreed_value_after_sending():
+    # 2026-10-26: overtime changed by a plain edit after everything was
+    # agreed, and the client was still told "Everything is agreed".
+    v = _setup_vendor()
+    c = _contract(v)
+    r = client.patch(f"/contracts/{c['booking_id']}", json={"overtime_rate_cents": 25_000}, headers=v["headers"])
+    assert r.status_code == 409, r.text
+    assert "Overtime rate" in r.json()["detail"]
+    assert _booking(c).overtime_rate_cents == 15_000
+    # Wording isn't negotiated field by field, so it still edits.
+    r = client.patch(f"/contracts/{c['booking_id']}", json={"document_title": "Meera's sangeet"}, headers=v["headers"])
+    assert r.status_code == 200, r.text
+
+
+def test_the_vendor_can_open_a_round_when_nothing_waits_on_the_client():
+    v = _setup_vendor()
+    c = _contract(v)
+    s = client.get(f"/contracts/{c['booking_id']}/negotiation", headers=v["headers"]).json()
+    assert (s["turn"], s["may_send"]) == ("client", True)
+    r = _vendor_send(c, v, 1, [{"key": "policy.overtime", "action": "change", "value": 25_000}])
+    assert r.status_code == 200, r.text
+    s = client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()
+    assert _field(s, "policy.overtime")["state"] == "waiting_client"
+    assert s["can_sign"] is False
+    # With an ask waiting on the client, the vendor waits.
+    r = _vendor_send(c, v, 2, [{"key": "discount", "action": "change", "value": 1_000}])
+    assert r.status_code == 409
+
+
+def test_the_nudge_waits_for_something_open():
+    v = _setup_vendor()
+    c = _contract(v)
+    rnd = 1
+    for _ in range(3):
+        _client_send(c, rnd, [{"key": "discount", "action": "change" if rnd == 1 else "counter", "value": 1_000 * rnd}])
+        rnd += 1
+        _vendor_send(c, v, rnd, [{"key": "discount", "action": "counter", "value": 500 * rnd}])
+        rnd += 1
+    r = _client_send(c, rnd, [{"key": "discount", "action": "accept"}])
+    assert r.status_code == 200, r.text
+    assert (r.json()["round"], r.json()["waiting_count"], r.json()["nudge"]) == (8, 0, False)

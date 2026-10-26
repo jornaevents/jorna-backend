@@ -939,3 +939,30 @@ fetches their profile any more (user, 2026-10-26).
   days). It still wrote hashtags to `vendors.instagram_tags` and an empty bio.
 - Tags it already wrote stay, and bundle scoring still reads them. The column and that data can go
   in a later migration if they're no longer wanted.
+
+## 37. Contract trust fixes from the 2026-10-26 staging test
+
+A full staging run of contracts turned up places where the client was misled
+or signed something different from what was agreed. Fixed here (no migration):
+
+- **Cancelling a signed booking takes a reason.** `PUT /bookings/{id}/status`
+  to `rejected` on a booking both sides signed needs `note`. It's kept in
+  `vendor_decline_note` and logged as a `cancelled` contract event, so the
+  client's link can say who cancelled and why instead of "withdrew this offer,
+  nothing was signed".
+- **Keep means "mine" for both sides.** A `keep` re-sends that side's own last
+  ask since the field was last settled, falling back to the contract's value
+  only when they never asked. Before, a client's keep re-sent the contract's
+  (the vendor's) value, so keeping their own ask gave it up.
+- **Agreed values move only through the negotiation.** For a sent
+  field-by-field contract, `PATCH /contracts/{id}` is refused (409) when it
+  would change a negotiable value. Wording, the title and new sections still
+  edit. With nothing waiting on the client, the vendor may send a round on the
+  client's turn (`may_send` in the state), so changing an agreed value is
+  always possible. The round-6 nudge shows only while something is open.
+- **The vendor's countersignature is checked.** A name that doesn't match the
+  vendor's account name (same first and last word, as for clients) is refused
+  unless the request sets `name_confirmed`. The result is recorded in the
+  signing evidence either way.
+- **Documents can't be sent with blanks.** An addendum or cancellation
+  agreement with `___` left in any section is refused on send.

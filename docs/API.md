@@ -101,7 +101,8 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
 - `PUT /bookings/{id}/status` takes an optional `note` (≤500) with
   `rejected`: the vendor's reason, stored as `vendor_decline_note`, returned
   on the vendor's and the client's booking payloads, and emailed to the
-  client.
+  client. Cancelling a booking both sides signed requires it (400 without),
+  and logs a `cancelled` contract event with `{reason}`.
 - `POST /leads` and `PATCH /leads/{id}` return 422 for an email that doesn't
   look like one, a phone that isn't 7–15 digits, an event date in the past,
   or a `guest_count` outside 1–100,000. Leads carry `event_type`,
@@ -182,7 +183,7 @@ Addenda and cancellations attached to an agreed booking:
 - `GET /contracts/{booking_id}/documents` → `{items, total}`.
 - `POST /contracts/{booking_id}/documents` `{kind, title?, sections:[{title, body}], send?, email_client?}` → 201.
 - `PATCH /contract-documents/{id}` `{title?, sections?}`; this is refused once signed, declined or voided.
-- `POST /contract-documents/{id}/send` `{email_client?}`.
+- `POST /contract-documents/{id}/send` `{email_client?}`. 400 while any section still has a `___` blank (also on create with `send: true`).
 - `POST /contract-documents/{id}/void`; a signed document gets a 400.
 - Public routes (no auth, rate-limited):
   - `GET /guest-documents/{token}?preview=`: a draft gets a 404, and the first open marks it viewed.
@@ -360,7 +361,13 @@ Vendor routes (403 for another vendor's contract):
 - `GET /contracts/{booking_id}/negotiation`.
 - `POST /contracts/{booking_id}/negotiation/send`.
 - `PUT|DELETE /contracts/{booking_id}/negotiation/draft`.
-- `PATCH /contracts/{booking_id}` is a 409 while any field is waiting.
+- `PATCH /contracts/{booking_id}` is a 409 while any field is waiting, and,
+  once the contract is sent, whenever it would change a negotiable value
+  (change it through `negotiation/send` instead). The vendor may send when
+  nothing waits on the client, even on the client's turn: `may_send` in the
+  state says so. `nudge` is true only from round 6 while something is open.
+- `keep` re-sends the sender's own last ask on that field since it was last
+  settled; the contract's value only if they never asked.
 - `PATCH /vendors/me` `{negotiation_locks: ["prices"|"event"|"policies"|"clauses"]}`;
   copied onto each contract when it's first sent.
 
@@ -391,6 +398,8 @@ A signed record with signing evidence ends with a signing-certificate page (DECI
   - 400 once the email has changed since the code was sent
   - 400 after 5 wrong codes
   - 409 for an out-of-date `consent_version`
+  - 409 when `signer_name` isn't the vendor's account name (same first and last word) and
+    `name_confirmed` isn't true; `name_on_contract` / `name_matches` go in the evidence
   - with `SIGNING_REQUIRE_CODE` on, 400 without a code or without `consent: true`
 - A signature whose name doesn't match the client's name still signs. The snapshot's evidence
   has `name_on_contract` and `name_matches`, and the signed event's detail has
@@ -417,8 +426,8 @@ it's booked (and `signed_at` set) only once the vendor countersigns.
   call must send `consent: true` with that `version`.
 - `POST /contracts/{booking_id}/countersign` and
   `POST /contract-documents/{document_id}/countersign` (vendor) take
-  `{signer_name, consent?, consent_version?}` and return the contract / document, signed.
-  Refusals:
+  `{signer_name, consent?, consent_version?, name_confirmed?}` and return the contract /
+  document, signed. Refusals:
   - 400 before the client has signed, once already signed, for a blank name, or without consent when it's needed
   - 409 for an out-of-date `consent_version`
   - 404 for another vendor's contract

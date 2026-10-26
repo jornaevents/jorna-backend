@@ -215,3 +215,24 @@ def test_only_the_vendor_can_attach_or_edit():
     assert client.patch(
         f"/contract-documents/{d['document_id']}", json={"title": "Mine now"}, headers=other["headers"],
     ).status_code == 404
+
+
+def test_a_document_with_a_blank_left_cant_be_sent():
+    # 2026-10-26: a client signed a cancellation that stopped at
+    # "handled as follows:".
+    v = _setup_vendor()
+    c = _create_contract(v, guest_email="meera@example.com")
+    _sign(c)
+    blank = [{"title": "Payments and refunds", "body": "Payments made so far are handled as follows: ___"}]
+    r = client.post(
+        f"/contracts/{c['booking_id']}/documents",
+        json={"kind": "cancellation", "sections": blank, "send": True}, headers=v["headers"],
+    )
+    assert r.status_code == 400 and "Payments and refunds" in r.json()["detail"]
+    draft = client.post(
+        f"/contracts/{c['booking_id']}/documents",
+        json={"kind": "cancellation", "sections": blank, "send": False}, headers=v["headers"],
+    )
+    assert draft.status_code in (200, 201), draft.text
+    sent = client.post(f"/contract-documents/{draft.json()['document_id']}/send", json={}, headers=v["headers"])
+    assert sent.status_code == 400
