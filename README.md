@@ -60,7 +60,6 @@ server/
   tests/               pytest suite (SQLite, no external services)
 docs/                  architecture, module map, API surface, decisions, testing
 .github/workflows/     CI and the production deploy
-ig_scraper/            standalone Instagram scraper, not part of the app
 src/, index.html, vite.config.ts, package.json
                        an old Figma-generated prototype — not the real web app
 ```

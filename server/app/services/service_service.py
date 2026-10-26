@@ -347,11 +347,9 @@ def media_url(entry) -> Optional[str]:
     Rows written before typed media existed still hold bare strings; a
     migration backfills them to {"url", "type", "thumbnail_url"} on deploy,
     but reading defensively here means a row that somehow slips through
-    still matches by URL instead of silently never being found. Public (not
-    `_media_url`) because the Instagram-enrichment scraper (admin.py) needs
-    the same defensive read when deduping against a service's existing media —
-    it's what wrote un-typed rows *after* the migration ran, in the first
-    place (see 0056_rebackfill_service_media.py).
+    still matches by URL instead of silently never being found. The
+    Instagram scraper (removed, DECISIONS #36) is what wrote un-typed rows
+    *after* the migration ran (see 0056_rebackfill_service_media.py).
     """
     if isinstance(entry, dict):
         return entry.get("url")
