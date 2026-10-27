@@ -474,3 +474,8 @@ categories get added often enough that a prose copy would drift immediately.
   `allow_held_clash` (bool). Without it, a date another unsigned offer is holding is a 409
   whose detail contains "has this date held"; a signed booking is always a 409. A draft
   (`draft: true`, or editing one) skips the clash and past-payment checks until it's sent.
+- `POST /guest-bookings/{token}/payments/{installment_id}/unmark` (client, 10/minute): takes
+  back their own "sent" mark; 400 once the vendor confirmed it or if it isn't marked.
+- Documents return `vendor_decline_reason` when the vendor refused to countersign.
+- The `negotiation_sent` timeline event's detail has `answers: [{key, label, action, value}]`.
+- Vendor bookings carry `last_activity_at`: the latest contract timeline event (null without a contract).

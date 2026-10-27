@@ -260,3 +260,22 @@ def test_a_non_vendor_has_no_ledger():
     headers = make_auth_headers(u)
     db.close()
     assert client.get("/vendors/me/ledger", headers=headers).status_code == 403
+
+
+def test_the_client_can_take_back_their_own_sent_until_the_vendor_confirms():
+    # 2026-10-26: a mistaken "I've sent this" had no way back.
+    v = _setup_vendor()
+    c, (first, second, *_) = _contract(v)
+    token = c["contract_token"]
+    assert _mark(c, first).status_code == 200
+    assert _row(_ledger(v), first)["status"] == "client_says_sent"
+
+    r = client.post(f"/guest-bookings/{token}/payments/{first}/unmark")
+    assert r.status_code == 200, r.text
+    assert _row(_ledger(v), first)["status"] != "client_says_sent"
+    assert client.post(f"/guest-bookings/{token}/payments/{first}/unmark").status_code == 400
+
+    _mark(c, second)
+    _confirm(v, c, second)
+    r = client.post(f"/guest-bookings/{token}/payments/{second}/unmark")
+    assert r.status_code == 400 and "already confirmed" in r.json()["detail"]

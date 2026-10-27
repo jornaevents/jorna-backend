@@ -273,6 +273,9 @@ def test_declining_a_document_leaves_the_booking_as_it_was(outbox, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "voided"
     assert "Midnight doesn't work after all." in outbox[-1]["html"]
+    # The reason shows on the document, not just "Void" (2026-10-26).
+    listed = client.get(f"/contracts/{c['booking_id']}/documents", headers=v["headers"]).json()["items"]
+    assert listed[0]["vendor_decline_reason"] == "Midnight doesn't work after all."
     assert client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["contract_status"] == "signed"
 
 

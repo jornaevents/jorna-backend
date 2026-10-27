@@ -42,7 +42,7 @@ from app.utils.timeutil import utc_iso
 logger = logging.getLogger(__name__)
 
 DUE_SOON = timedelta(days=7)
-PAYMENT_EVENTS = ("payment_marked", "payment_confirmed", "payment_reminder", "payment_not_received")
+PAYMENT_EVENTS = ("payment_marked", "payment_confirmed", "payment_reminder", "payment_not_received", "payment_unmarked")
 RECEIVED_STATUSES = ("confirmed_paid", "released", "paid")
 
 
@@ -114,6 +114,9 @@ def _client_marked(events: list[ContractEvent]) -> bool:
         elif e.kind == "payment_not_received" and (
             detail.get("step") == "unmarked" or not detail.get("kept_mark", True)
         ):
+            marked = False
+        elif e.kind == "payment_unmarked":
+            # The client took back their own "I've sent this".
             marked = False
     return marked
 

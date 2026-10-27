@@ -240,3 +240,12 @@ def test_a_draft_saves_over_a_clash_and_a_past_payment_and_send_checks_them():
     _created["bookings"].append(draft.json()["booking_id"])
     sent = client.post(f"/contracts/{draft.json()['booking_id']}/send", headers=v["headers"])
     assert sent.status_code == 400  # the past payment, checked on send
+
+
+def test_a_contracts_last_activity_is_its_latest_timeline_event():
+    v = _setup_vendor()
+    c = _create_contract(v, date_iso="2027-10-23")
+    client.patch(f"/contracts/{c['booking_id']}", json={"document_title": "Renamed"}, headers=v["headers"])
+    rows = client.get(f"/bookings/vendor/{v['vendor_id']}", headers=v["headers"]).json()["items"]
+    row = next(r for r in rows if r["booking_id"] == c["booking_id"])
+    assert row["last_activity_at"] and row["last_activity_at"] >= c["sent_at"]

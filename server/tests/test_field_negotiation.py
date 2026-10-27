@@ -552,3 +552,17 @@ def test_an_item_left_out_takes_no_price_ask_with_it():
         {"key": "line:lights.price", "action": "change", "value": 5_000},
     ])
     assert r.status_code == 400 and "being left out" in r.json()["detail"]
+
+
+def test_the_timeline_names_what_each_answer_was():
+    v = _setup_vendor()
+    c = _contract(v)
+    _client_send(c, 1, [{"key": "event.guests", "action": "change", "value": 180}])
+    db = TestingSessionLocal()
+    e = (
+        db.query(ContractEvent)
+        .filter(ContractEvent.booking_id == c["booking_id"], ContractEvent.kind == "negotiation_sent")
+        .first()
+    )
+    db.close()
+    assert e.detail["answers"] == [{"key": "event.guests", "label": "Guest count", "action": "change", "value": 180}]

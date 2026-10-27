@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app import config
 from app.config import WEB_APP_URL
-from app.db.models import Booking, ContractDocument, User, Vendor
+from app.db.models import Booking, ContractDocument, ContractEvent, User, Vendor
 from app.models.schemas import BookingStatus
 from app.services import contract_document as doc
 from app.services import esign_consent, signing_evidence
@@ -83,6 +83,16 @@ def _vendor_name(vendor: Vendor | None, db: Session) -> str | None:
     return f"{user.f_name} {user.l_name}".strip() if user else None
 
 
+def _vendor_refusal(d: ContractDocument, db: Session) -> str | None:
+    events = (
+        db.query(ContractEvent)
+        .filter(ContractEvent.booking_id == d.booking_id, ContractEvent.kind == "document_signature_declined")
+        .order_by(ContractEvent.at.desc())
+        .all()
+    )
+    return next(((e.detail or {}).get("reason") for e in events if (e.detail or {}).get("document_id") == d.document_id), None)
+
+
 def _dict(d: ContractDocument, booking: Booking, db: Session, *, with_token: bool = True) -> dict:
     vendor = db.query(Vendor).filter(Vendor.vendor_id == d.vendor_id).first()
     out = {
@@ -103,6 +113,9 @@ def _dict(d: ContractDocument, booking: Booking, db: Session, *, with_token: boo
         "vendor_signed_at": utc_iso(d.vendor_signed_at),
         "declined_at": utc_iso(d.declined_at),
         "decline_reason": d.decline_reason,
+        # The vendor's reason for not countersigning, kept on its event (no
+        # column needed): a refused document showed only "Void" (2026-10-26).
+        "vendor_decline_reason": _vendor_refusal(d, db) if d.status == "voided" and d.client_signed_at else None,
         "voided_at": utc_iso(d.voided_at),
         "signed_snapshot_sha256": d.signed_snapshot_sha256,
         "created_at": utc_iso(d.created_at),

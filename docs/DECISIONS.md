@@ -982,3 +982,10 @@ or signed something different from what was agreed. Fixed here (no migration):
   include_held=False)`).
 - **The PDF prints the cancellation window in the Cancellation section**,
   ahead of the vendor's own wording, instead of under "Policies".
+- **A client can take back their own "I've sent this"** until the vendor
+  confirms it (`POST /guest-bookings/{token}/payments/{id}/unmark`, logged
+  as `payment_unmarked`); after that it's the vendor's to correct.
+- **The timeline names what each negotiation answer was**: the
+  `negotiation_sent` event carries `answers: [{key, label, action, value}]`.
+- **A refused document carries its reason** as `vendor_decline_reason`, read
+  from its `document_signature_declined` event.
