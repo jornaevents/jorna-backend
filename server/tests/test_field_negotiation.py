@@ -515,3 +515,40 @@ def test_the_nudge_waits_for_something_open():
     r = _client_send(c, rnd, [{"key": "discount", "action": "accept"}])
     assert r.status_code == 200, r.text
     assert (r.json()["round"], r.json()["waiting_count"], r.json()["nudge"]) == (8, 0, False)
+
+
+def test_the_client_cant_leave_out_the_only_package():
+    # 2026-10-26: the client could ask, and the vendor learned only when
+    # their Accept was refused.
+    v = _setup_vendor()
+    c = _contract(v)
+    r = _client_send(c, 1, [{"key": "line:pkg.included", "action": "change", "value": False}])
+    assert r.status_code == 400 and "at least one of the vendor's packages" in r.json()["detail"]
+    # An add-on or custom item can still go.
+    r = _client_send(c, 1, [{"key": "line:lights.included", "action": "change", "value": False}])
+    assert r.status_code == 200, r.text
+
+
+def test_locked_prices_keep_packages_in():
+    v = _setup_vendor()
+    client.patch("/vendors/me", json={"negotiation_locks": ["prices"]}, headers=v["headers"])
+    c = _contract(v, line_items=[
+        {"id": "pkg", "kind": "package", "service_id": v["service_id"], "unit_price_cents": 140_000, "quantity": 1},
+        {"id": "pkg2", "kind": "package", "service_id": v["service_id"], "unit_price_cents": 20_000, "quantity": 1},
+    ], payment_schedule=[
+        {"id": "dep", "label": "Deposit", "amount_cents": 60_000, "due_type": "on_signing"},
+        {"id": "bal", "label": "Final balance", "amount_cents": 100_000, "due_type": "before_event", "due_days": 14},
+    ])
+    assert client.post(f"/contracts/{c['booking_id']}/send", json={}, headers=v["headers"]).status_code == 200
+    r = _client_send(c, 1, [{"key": "line:pkg2.included", "action": "change", "value": False}])
+    assert r.status_code == 403 and "fixed their prices" in r.json()["detail"]
+
+
+def test_an_item_left_out_takes_no_price_ask_with_it():
+    v = _setup_vendor()
+    c = _contract(v)
+    r = _client_send(c, 1, [
+        {"key": "line:lights.included", "action": "change", "value": False},
+        {"key": "line:lights.price", "action": "change", "value": 5_000},
+    ])
+    assert r.status_code == 400 and "being left out" in r.json()["detail"]
