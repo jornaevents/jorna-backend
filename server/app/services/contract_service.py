@@ -202,6 +202,31 @@ def _check_dates(date_iso: str, date_end: str | None) -> None:
         raise ContractError(400, "The end date is before the start date")
 
 
+HELD_CLASH = "has this date held"
+
+
+def _check_clash(
+    *, vendor_id: str, date_iso: str, date_end: str | None, time_start: str | None, time_end: str | None,
+    db: Session, exclude: str | None = None, allow_held: bool = False,
+    booked: str = "You already have a booking that overlaps this date/time",
+) -> None:
+    """A signed or ordinary booking blocks the date. Another offer that's
+    only holding it doesn't, once the vendor says to send anyway — whoever
+    signs first books it (decision C, 2026-10-26). The web asks on the 409
+    whose detail carries HELD_CLASH."""
+    window = dict(vendor_id=vendor_id, date_iso=date_iso, date_end=date_end,
+                  time_start=time_start, time_end=time_end, exclude_booking_id=exclude, db=db)
+    if vendor_has_conflicting_booking(**window, include_held=False):
+        raise ContractError(409, booked)
+    if allow_held:
+        return
+    held = vendor_has_conflicting_booking(**window)
+    if held is not None:
+        who = held.guest_name or held.signer_name or "Another client"
+        until = f" until {held.hold_expires_at.strftime('%b')} {held.hold_expires_at.day}" if held.hold_expires_at else ""
+        raise ContractError(409, f"{who} {HELD_CLASH}{until}. Send anyway? Whoever signs first books it.")
+
+
 def _check_schedule(schedule: list[dict] | None, date_iso: str) -> None:
     """Reject a payment the vendor scheduled for a day that has already gone
     ("400 days before" an event 250 days out). Same day of UTC slack as
@@ -293,6 +318,7 @@ def create_contract(
     guest_count: int | None = None,
     location: str | None = None,
     draft: bool = False,
+    allow_held_clash: bool = False,
     hold_days: int | None = None,
     line_items: list | None = None,
     discount_cents: int | None = None,
@@ -318,8 +344,9 @@ def create_contract(
     contract_status: sent unless draft=True, holding for hold_days (or the
     vendor's default) — see send_contract and docs/DECISIONS.md #15.
 
-    A draft still has to fit the calendar as it stands: there's no point
-    writing an offer for a date that's already taken.
+    A draft skips the send-time checks — a payment date already past, a
+    clash — so unfinished work can be kept; sending it runs them
+    (send_contract). allow_held_clash sends over another offer's hold.
     """
     vendor = _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
 
@@ -343,17 +370,15 @@ def create_contract(
         layout, clauses = None, doc.normalize_clauses(terms_clauses)
 
     _check_dates(date_iso, date_end)
-    _check_schedule(schedule, date_iso)
     guest_email = (guest_email or "").strip() or None
     if email_client and not draft and not guest_email:
         raise ContractError(400, "Add your client's email to send it to them")
-
-    conflict = vendor_has_conflicting_booking(
-        vendor_id=vendor.vendor_id, date_iso=date_iso, date_end=date_end,
-        time_start=time_start, time_end=time_end, db=db,
-    )
-    if conflict:
-        raise ContractError(409, "You already have a booking that overlaps this date/time")
+    if not draft:
+        _check_schedule(schedule, date_iso)
+        _check_clash(
+            vendor_id=vendor.vendor_id, date_iso=date_iso, date_end=date_end,
+            time_start=time_start, time_end=time_end, db=db, allow_held=allow_held_clash,
+        )
 
     booking = Booking(
         user_id=None,
@@ -469,7 +494,8 @@ def update_contract(
 
     terms_before = doc.terms(booking) if fields.is_fields(booking) and booking.sent_at else None
     agreed = fields.fields_of(terms_before) if terms_before is not None else None
-    apply_update(booking, vendor, update_data, db)
+    allow_held = bool(update_data.pop("allow_held_clash", False))
+    apply_update(booking, vendor, update_data, db, allow_held=allow_held)
     if agreed is not None:
         # Agreed values only move through the negotiation, where the client
         # sees each change and answers it; an edit changed overtime under a
@@ -496,7 +522,7 @@ def update_contract(
     return _contract_dict(booking, service, vendor, db)
 
 
-def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Session) -> None:
+def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Session, *, allow_held: bool = False) -> None:
     """update_contract's checks and changes, without committing — shared
     with accepting a change proposal, which applies the client's terms the
     same way and has to fail as a whole."""
@@ -519,16 +545,16 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
     # A moved date has to clear the same checks a new contract does —
     # otherwise editing was a way around the double-booking guard.
     schedule_fields = ("date_iso", "date_end", "time_start", "time_end")
+    draft = booking.contract_status == "draft"
     if any(f in update_data for f in schedule_fields):
         new = {f: update_data.get(f, getattr(booking, f)) for f in schedule_fields}
         _check_dates(new["date_iso"], new["date_end"])
-        conflict = vendor_has_conflicting_booking(
-            vendor_id=booking.vendor_id, date_iso=new["date_iso"], date_end=new["date_end"],
-            time_start=new["time_start"], time_end=new["time_end"],
-            exclude_booking_id=booking.booking_id, db=db,
-        )
-        if conflict:
-            raise ContractError(409, "You already have a booking that overlaps this date/time")
+        if not draft:
+            _check_clash(
+                vendor_id=booking.vendor_id, date_iso=new["date_iso"], date_end=new["date_end"],
+                time_start=new["time_start"], time_end=new["time_end"], db=db,
+                exclude=booking.booking_id, allow_held=allow_held,
+            )
 
     # ── What's being sold, and for how much ──
     total_before = booking.amount_cents
@@ -584,8 +610,10 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
     if "payment_schedule" in update_data:
         # Against the date as it now stands. A moved date alone doesn't
         # re-check an existing schedule: "days before" payments move with it,
-        # and a client's date ask has no say over the schedule.
-        _check_schedule(booking.payment_schedule, booking.date_iso)
+        # and a client's date ask has no say over the schedule. A draft is
+        # checked when it's sent.
+        if not draft:
+            _check_schedule(booking.payment_schedule, booking.date_iso)
 
     # Re-derive the snapshot rather than trust a client-supplied deposit_amount_cents.
     if not booking.payment_schedule and ("deposit_percent" in update_data or booking.amount_cents != total_before):
@@ -664,7 +692,7 @@ def void_contract(*, booking_id: str, caller_user_id: str, db: Session) -> dict:
 
 def send_contract(
     *, booking_id: str, caller_user_id: str, db: Session,
-    hold_days: int | None = None, email_client: bool = False,
+    hold_days: int | None = None, email_client: bool = False, allow_held_clash: bool = False,
 ) -> dict:
     """Send a draft, or resend an offer — including one whose hold lapsed —
     restarting the hold from now. The date has to still be free: a lapsed
@@ -693,13 +721,12 @@ def send_contract(
     # (contract_document.effective_due).
     if booking.sent_at is None:
         _check_schedule(booking.payment_schedule, booking.date_iso)
-    conflict = vendor_has_conflicting_booking(
+    _check_clash(
         vendor_id=booking.vendor_id, date_iso=booking.date_iso, date_end=booking.date_end,
-        time_start=booking.time_start, time_end=booking.time_end,
-        exclude_booking_id=booking.booking_id, db=db,
+        time_start=booking.time_start, time_end=booking.time_end, db=db,
+        exclude=booking.booking_id, allow_held=allow_held_clash,
+        booked="That date is booked now — move this contract to another date first",
     )
-    if conflict:
-        raise ContractError(409, "That date is booked now — move this contract to another date first")
 
     resend = booking.sent_at is not None
     _start_hold(booking, vendor, hold_days)
