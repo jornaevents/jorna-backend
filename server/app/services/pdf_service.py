@@ -470,12 +470,26 @@ def render_document(d: dict, *, vendor_name: str, client_name: str | None, agree
         pdf.multi_cell(0, 6, s.get("title") or "", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(0.5)
         pdf.text_block(s.get("body") or "")
+    changes = d.get("changes")
+    if changes:
+        # An addendum's priced lines (DECISIONS #38): the signed copy says
+        # what moves and the total it lands on.
+        pdf.eyebrow("Changes to what's included")
+        for li in changes.get("added") or []:
+            qty = li.get("quantity") or 1
+            label = f"Add: {li.get('name')}" + (f" × {qty:g}" if qty != 1 else "")
+            pdf.row(label, money(li.get("total_cents")))
+        for name in changes.get("removed") or []:
+            pdf.row(f"Remove: {name}", "")
+        if changes.get("total_after") is not None:
+            pdf.row("New total", f"{money(changes.get('total_before'))} → {money(changes['total_after'])}", bold=True)
     pdf.ln(2)
     pdf.font(8.5, color=FAINT)
     pdf.multi_cell(
         0, 4.5,
-        "This document is part of the written agreement for the booking above. Signing it doesn't by "
-        "itself change the booking's price, date or payments.",
+        "This document is part of the written agreement for the booking above. "
+        + ("Once both sign, the booking's total and remaining payments change as above." if changes else
+           "Signing it doesn't by itself change the booking's price, date or payments."),
         new_x="LMARGIN", new_y="NEXT",
     )
     pdf.rule()
@@ -539,7 +553,11 @@ def document_pdf(d, booking, db, client_name: str | None) -> tuple[bytes, str]:
     from app.services import contract_document as doc
 
     snap = d.signed_snapshot
+    from app.services.document_service import changes_view
+
     live = {"kind": d.kind, "title": d.title, "sections": d.sections, "date_iso": booking.date_iso}
+    if (changes := changes_view(d, booking, db)):
+        live["changes"] = changes
     agreement_title = booking.document_title or (
         f"{_service_name(booking, db)} agreement" if booking.service_id else None
     )

@@ -575,6 +575,10 @@ class ContractDocument(Base):
     kind = Column(String(20), nullable=False)  # addendum | cancellation
     title = Column(String(200), nullable=False)
     sections = Column(JSON, nullable=False)  # [{key, title, body}]
+    # An addendum's priced changes (0081, DECISIONS #38): lines to add, and
+    # contract line ids to take out. Applied to the booking once both sign.
+    line_items = Column(JSON, nullable=True)
+    removed_line_ids = Column(JSON, nullable=True)
     token = Column(String(64), unique=True, index=True, nullable=False)
     # draft | sent | viewed | awaiting_vendor | signed | declined | voided.
     # Signed by both, like a contract (0078): the client first

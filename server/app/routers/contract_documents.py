@@ -36,6 +36,10 @@ class DocumentCreateRequest(BaseModel):
     kind: str  # addendum | cancellation
     title: Optional[str] = Field(default=None, max_length=200)
     sections: list[dict] = Field(max_length=30)
+    # An addendum's priced changes (DECISIONS #38): custom items to add
+    # ({name, unit_price_cents, quantity}) and contract line ids to remove.
+    line_items: Optional[list[dict]] = Field(default=None, max_length=10)
+    removed_line_ids: Optional[list[str]] = Field(default=None, max_length=30)
     # Send it now (status sent, link live) rather than keep it a draft.
     send: bool = False
     email_client: bool = False
@@ -44,6 +48,8 @@ class DocumentCreateRequest(BaseModel):
 class DocumentUpdateRequest(BaseModel):
     title: Optional[str] = Field(default=None, max_length=200)
     sections: Optional[list[dict]] = Field(default=None, max_length=30)
+    line_items: Optional[list[dict]] = Field(default=None, max_length=10)
+    removed_line_ids: Optional[list[str]] = Field(default=None, max_length=30)
 
 
 class DocumentSendRequest(BaseModel):
@@ -83,6 +89,7 @@ def create_document_route(
         return create_document(
             booking_id=booking_id, caller_user_id=current_user.user_id, kind=body.kind,
             title=body.title, sections=body.sections, send=body.send, email_client=body.email_client, db=db,
+            line_items=body.line_items, removed_line_ids=body.removed_line_ids,
         )
     except DocumentServiceError as e:
         raise _http(e)
@@ -97,6 +104,8 @@ def update_document_route(
         return update_document(
             document_id=document_id, caller_user_id=current_user.user_id,
             title=body.title, sections=body.sections, db=db,
+            line_items=body.line_items, removed_line_ids=body.removed_line_ids,
+            changes_sent=bool({"line_items", "removed_line_ids"} & body.model_fields_set),
         )
     except DocumentServiceError as e:
         raise _http(e)
