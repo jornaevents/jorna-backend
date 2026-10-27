@@ -966,3 +966,8 @@ or signed something different from what was agreed. Fixed here (no migration):
   signing evidence either way.
 - **Documents can't be sent with blanks.** An addendum or cancellation
   agreement with `___` left in any section is refused on send.
+- **A contract keeps a package.** A negotiation send that would leave no
+  package once agreed is refused (400), so the client can't ask for what the
+  vendor could never accept. With prices locked, the client can't leave out a
+  package (403); add-ons and custom items can still go. Asking to change the
+  price or quantity of an item left out in the same send is refused (400).

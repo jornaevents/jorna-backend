@@ -571,6 +571,27 @@ def _check_total_if_agreed(current: dict, rows: dict, settled: dict) -> None:
         raise FieldNegotiationError(400, "That would bring the total to $0 or less — change the price or the discount")
 
 
+def _check_packages_if_agreed(terms: dict, current: dict, rows: dict, settled: dict) -> None:
+    """Refuse a send that would leave no package once agreed (decision E,
+    2026-10-26): the vendor's editor never sends one without, and a client's
+    "leave it out" used to be refused only when the vendor tried to accept."""
+    values = dict(current)
+    for key, r in rows.items():
+        if r.state != SETTLED:
+            values[key] = r.proposed_value
+    values.update(settled)
+    kept = [
+        li for li in terms.get("line_items") or []
+        if li.get("kind") == "package" and values.get(f"line:{li['id']}.included") is not False
+    ]
+    added = [
+        v for k, v in values.items()
+        if k.startswith("line:new:") and isinstance(v, dict) and v.get("service_id") and not v.get("addon_id")
+    ]
+    if not kept and not added:
+        raise FieldNegotiationError(400, "A contract needs at least one of the vendor's packages — keep one in")
+
+
 def send(
     booking: Booking, vendor: Vendor, side: str, *,
     base_round: int, answers: list, message: str | None, db: Session,
@@ -655,6 +676,12 @@ def send(
         if side == "client" and key.startswith("line:new:") and "prices" in locks:
             a = {**a, "value": {k: v for k, v in (a.get("value") or {}).items() if k != "unit_price_cents"}}
         value = validate(key, a.get("value"), terms, booking.vendor_id, db)
+        if side == "client" and key.endswith(".included") and value is False and "prices" in locks:
+            line = next((li for li in terms.get("line_items") or [] if f"line:{li['id']}.included" == key), None)
+            if line is not None and line.get("kind") == "package":
+                # Decision D: with prices fixed, a package can't be dropped to
+                # get round them; add-ons and custom items still can.
+                raise FieldNegotiationError(403, f"{label(key, terms)} can't be left out — the vendor fixed their prices")
         if value == current.get(key):
             raise FieldNegotiationError(400, f"{label(key, terms)} is already {'that' if value is not None else 'empty'}")
         if r is None:
@@ -665,11 +692,21 @@ def send(
         r.round, r.note, r.updated_at = next_round, note, now
         record.append({"key": key, "action": action, "value": value, "note": note})
 
+    # Leaving an item out makes asks about its price or quantity moot.
+    dropped = {
+        x["key"][: -len(".included")] for x in record
+        if x["key"].endswith(".included") and x.get("value") is False
+    }
+    moot = [x["key"] for x in record if x["key"].rsplit(".", 1)[0] in dropped and not x["key"].endswith(".included")]
+    if moot:
+        raise FieldNegotiationError(400, f"{label(moot[0], terms)} can't change while that item is being left out")
+
     left = [k for k, r in rows.items() if r.state == mine]
     if left:
         names = ", ".join(label(k, terms) for k in left[:3])
         raise FieldNegotiationError(400, f"Answer everything waiting on you first: {names}")
     _check_total_if_agreed(current, rows, settled)
+    _check_packages_if_agreed(terms, current, rows, settled)
 
     _settle(booking, vendor, settled, db)
     booking.negotiation_round = next_round
