@@ -28,6 +28,7 @@ from app.services.guest_booking_service import (
     decline_contract,
     mark_full_paid,
     mark_installment_paid,
+    unmark_installment,
     mark_deposit_paid,
 )
 
@@ -193,6 +194,18 @@ def mark_installment_paid_route(
             contract_token=contract_token, installment_id=installment_id, db=db,
             paid_via=body.paid_via if body else None,
         )
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post(
+    "/{contract_token}/payments/{installment_id}/unmark",
+    summary="Client: take back their own 'sent' before the vendor confirms it",
+)
+@limiter.limit("10/minute")
+def unmark_installment_route(request: Request, contract_token: str, installment_id: str, db: Session = Depends(get_db)):
+    try:
+        return unmark_installment(contract_token=contract_token, installment_id=installment_id, db=db)
     except GuestBookingError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

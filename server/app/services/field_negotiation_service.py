@@ -723,6 +723,12 @@ def send(
     doc.record(db, booking, "negotiation_sent", side, {
         "round": next_round, "keys": [x["key"] for x in record],
         "settled": sorted(settled), "revision": booking.revision,
+        # What each answer was, named, so the timeline can say "accepted 180
+        # guests, kept 30 days" rather than "accepted 2 changes" (2026-10-26).
+        "answers": [
+            {"key": x["key"], "label": label(x["key"], terms, x.get("value")), "action": x["action"], "value": x.get("value")}
+            for x in record
+        ],
     })
     db.commit()
     db.refresh(booking)
