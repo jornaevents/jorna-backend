@@ -300,6 +300,17 @@ def _dispatch_status_notification(
 
 # ── Response serialization ────────────────────────────────────────────
 
+def _last_activity(booking: Booking, db: Session) -> str | None:
+    if not booking.contract_token:
+        return None
+    from sqlalchemy import func
+
+    from app.db.models import ContractEvent
+
+    latest = db.query(func.max(ContractEvent.at)).filter(ContractEvent.booking_id == booking.booking_id).scalar()
+    return utc_iso(latest) if latest else None
+
+
 def _booking_dict(booking: Booking, db: Session) -> dict:
     """Return a booking as a dict, including negotiation preference flags from both parties."""
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
@@ -385,6 +396,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # Field-by-field negotiation (DECISIONS #26): whose turn, and how many
         # changes wait on each side. Null on the older proposal flow.
         "negotiation": _negotiation_summary(booking, db),
+        # The latest thing on the contract's timeline — what the Contracts
+        # list sorts and shows as "last modified"; it used to miss edits,
+        # proposals and payments (2026-10-26).
+        "last_activity_at": _last_activity(booking, db),
         "status": booking.status,
         # The vendor's note when they declined this request (DECISIONS #28).
         "vendor_decline_note": booking.vendor_decline_note,

@@ -478,3 +478,4 @@ categories get added often enough that a prose copy would drift immediately.
   back their own "sent" mark; 400 once the vendor confirmed it or if it isn't marked.
 - Documents return `vendor_decline_reason` when the vendor refused to countersign.
 - The `negotiation_sent` timeline event's detail has `answers: [{key, label, action, value}]`.
+- Vendor bookings carry `last_activity_at`: the latest contract timeline event (null without a contract).
