@@ -268,6 +268,8 @@ def countersign_document(
         "document_id": d.document_id, "title": d.title, "signer_name": name,
         "sha256": d.signed_snapshot_sha256, "client_sha256": client_sha, "ip": evidence["ip"],
     })
+    # Signed by both: an addendum's priced lines change the booking now.
+    document_service.apply_addendum(d, booking, db)
     db.commit()
     db.refresh(d)
 

@@ -479,3 +479,6 @@ categories get added often enough that a prose copy would drift immediately.
 - Documents return `vendor_decline_reason` when the vendor refused to countersign.
 - The `negotiation_sent` timeline event's detail has `answers: [{key, label, action, value}]`.
 - Vendor bookings carry `last_activity_at`: the latest contract timeline event (null without a contract).
+- Documents (`POST /contracts/{id}/documents`, `PATCH /contract-documents/{id}`) take
+  `line_items: [{name, unit_price_cents, quantity}]` and `removed_line_ids` on an addendum,
+  and return `changes`, `total_before`, `total_after` (DECISIONS #38).

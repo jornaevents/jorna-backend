@@ -989,3 +989,21 @@ or signed something different from what was agreed. Fixed here (no migration):
   `negotiation_sent` event carries `answers: [{key, label, action, value}]`.
 - **A refused document carries its reason** as `vendor_decline_reason`, read
   from its `document_signature_declined` event.
+
+## 38. An addendum can change what's sold (0081)
+
+Decision B (user, 2026-10-26): an addendum may carry priced changes, and once
+both sides sign, the booking follows.
+
+- `contract_documents.line_items` (custom items to add: name, price,
+  quantity) and `removed_line_ids` (contract lines to take out); only an
+  addendum takes them. Both nullable — every earlier document is text only.
+- Nothing moves until the vendor countersigns. Then the booking's items and
+  total change, and the difference lands on what's still unpaid, latest
+  payment first. An addition with nothing left to pay becomes a new payment
+  due the day it's signed. A reduction larger than what's still unpaid is
+  refused (refund it directly), and removing the last package is refused.
+  Payment marks are kept. `addendum_applied` goes on the timeline.
+- The document returns `changes` ({added, removed, total_before,
+  total_after}) for the client to see before signing; the signed snapshot and
+  the PDF carry it. A text-only document's snapshot is unchanged.

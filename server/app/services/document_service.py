@@ -83,6 +83,25 @@ def _vendor_name(vendor: Vendor | None, db: Session) -> str | None:
     return f"{user.f_name} {user.l_name}".strip() if user else None
 
 
+def _totals_view(d: ContractDocument, booking: Booking, db: Session) -> dict:
+    """What the client sees before signing: "Total goes from $1,360 to
+    $1,660". Once signed it's already applied, so the booking says it."""
+    if not d.line_items and not d.removed_line_ids:
+        return {"total_before": None, "total_after": None}
+    if d.status == "signed":
+        applied = db.query(ContractEvent).filter(
+            ContractEvent.booking_id == booking.booking_id, ContractEvent.kind == "addendum_applied",
+        ).all()
+        mine = next((e.detail for e in applied if (e.detail or {}).get("document_id") == d.document_id), None)
+        if mine:
+            return {"total_before": mine.get("total_before"), "total_after": mine.get("total_after")}
+    try:
+        effect = _effect(d, booking, db)
+    except DocumentServiceError:
+        return {"total_before": booking.amount_cents, "total_after": None}
+    return {"total_before": effect["total_before"], "total_after": effect["total_after"]}
+
+
 def _vendor_refusal(d: ContractDocument, db: Session) -> str | None:
     events = (
         db.query(ContractEvent)
@@ -101,6 +120,10 @@ def _dict(d: ContractDocument, booking: Booking, db: Session, *, with_token: boo
         "kind": d.kind,
         "title": d.title,
         "sections": d.sections,
+        "line_items": d.line_items,
+        "removed_line_ids": d.removed_line_ids,
+        **_totals_view(d, booking, db),
+        "changes": changes_view(d, booking, db),
         "status": d.status,
         "sent_at": utc_iso(d.sent_at),
         "viewed_at": utc_iso(d.viewed_at),
@@ -175,6 +198,119 @@ def _agreed(booking: Booking) -> bool:
 BLANK = "___"
 
 
+# ── An addendum's priced lines (0081, DECISIONS #38) ─────────────────
+
+MAX_ADDED_LINES = 10
+
+
+def _changes(kind: str, raw_lines: list | None, removed: list | None, booking: Booking) -> tuple[list | None, list | None]:
+    """Validate an addendum's added lines (custom items: a name, a price and a
+    quantity) and the contract lines it removes. A cancellation carries none."""
+    if not raw_lines and not removed:
+        return None, None
+    if kind != "addendum":
+        raise DocumentServiceError(400, "Only an addendum can change what's sold")
+    if raw_lines and len(raw_lines) > MAX_ADDED_LINES:
+        raise DocumentServiceError(400, f"An addendum can add at most {MAX_ADDED_LINES} items")
+    lines = []
+    for r in raw_lines or []:
+        name = (r.get("name") or "").strip()[:200]
+        price, qty = r.get("unit_price_cents"), r.get("quantity", 1)
+        if not name:
+            raise DocumentServiceError(400, "Every added item needs a name")
+        if not isinstance(price, int) or isinstance(price, bool) or price < 0:
+            raise DocumentServiceError(400, f"“{name}” needs a price")
+        if not isinstance(qty, (int, float)) or isinstance(qty, bool) or not (0 < qty <= 100_000):
+            raise DocumentServiceError(400, f"“{name}” needs a quantity above zero")
+        lines.append({"kind": "custom", "name": name, "unit_price_cents": price, "quantity": qty})
+    have = {li["id"] for li in booking.line_items or []}
+    gone = [str(x) for x in removed or []]
+    if any(x not in have for x in gone):
+        raise DocumentServiceError(400, "That item isn't on the contract")
+    return lines or None, gone or None
+
+
+def _effect(d: ContractDocument, booking: Booking, db: Session) -> dict | None:
+    """The booking as it would be once this addendum is signed: its items,
+    total and payment schedule. None for a text-only document."""
+    if not d.line_items and not d.removed_line_ids:
+        return None
+    removed = set(d.removed_line_ids or [])
+    kept = [li for li in booking.line_items or [] if li["id"] not in removed]
+    try:
+        items, primary = doc.normalize_line_items(kept + list(d.line_items or []), vendor_id=booking.vendor_id, db=db)
+        _, total = doc.totals(items, booking.discount_cents)
+    except doc.DocumentError as e:
+        raise DocumentServiceError(400, e.detail)
+    before = booking.amount_cents or 0
+    schedule = [dict(i) for i in booking.payment_schedule or []]
+    delta = total - before
+    # The difference lands on what's still to pay, latest first; more than
+    # that can't come off, and an addition with nothing left to pay is a
+    # new payment due when it's signed.
+    open_rows = [i for i in schedule if not i.get("confirmed_at") and not i.get("marked_paid_at")]
+    if delta < 0 and -delta > sum(i["amount_cents"] for i in open_rows):
+        raise DocumentServiceError(400, "That takes off more than is still to be paid — refund it directly instead")
+    if delta > 0 and not open_rows:
+        # Due the day the addendum is signed: "on signing" would count from
+        # the contract's signature and read as long overdue.
+        schedule.append({"label": d.title[:80], "amount_cents": delta, "due_type": "date",
+                         "due_date": _now().date().isoformat()})
+    else:
+        for i in reversed(open_rows):
+            if delta == 0:
+                break
+            take = delta if delta > 0 else max(delta, -(i["amount_cents"] - 1))
+            i["amount_cents"] += take
+            delta -= take
+    return {"items": items, "primary": primary, "total_before": before, "total_after": total, "schedule": schedule}
+
+
+def changes_view(d: ContractDocument, booking: Booking, db: Session) -> dict | None:
+    """An addendum's priced changes in the words its signed copy and PDF use:
+    what's added, what's removed, and the total before and after."""
+    if not d.line_items and not d.removed_line_ids:
+        return None
+    names = {li["id"]: li["name"] for li in booking.line_items or []}
+    totals = _totals_view(d, booking, db)
+    return {
+        "added": [
+            {"name": li["name"], "quantity": li["quantity"], "unit_price_cents": li["unit_price_cents"],
+             "total_cents": round(li["unit_price_cents"] * li["quantity"])}
+            for li in d.line_items or []
+        ],
+        "removed": [names.get(x, "An item") for x in d.removed_line_ids or []],
+        "total_before": totals["total_before"],
+        "total_after": totals["total_after"],
+    }
+
+
+def apply_addendum(d: ContractDocument, booking: Booking, db: Session) -> None:
+    """Both sides signed: the booking's items, total and schedule follow the
+    addendum (decision B, 2026-10-26)."""
+    effect = _effect(d, booking, db)
+    if effect is None:
+        return
+    booking.line_items, booking.service_id = effect["items"], effect["primary"]
+    booking.amount_cents = effect["total_after"]
+    if booking.payment_schedule:
+        # normalize_schedule drops payment marks (a new contract has none);
+        # a signed booking's payments keep theirs.
+        marks = {i["id"]: i for i in booking.payment_schedule}
+        schedule = doc.normalize_schedule(effect["schedule"], total_cents=effect["total_after"])
+        for i in schedule:
+            old = marks.get(i["id"], {})
+            for key in ("marked_paid_at", "confirmed_at", "paid_via"):
+                if old.get(key):
+                    i[key] = old[key]
+        booking.payment_schedule = schedule
+        doc.sync_legacy_payment_fields(booking)
+    doc.record(db, booking, "addendum_applied", "system", {
+        "document_id": d.document_id, "title": d.title,
+        "total_before": effect["total_before"], "total_after": effect["total_after"],
+    })
+
+
 def _deliver(d: ContractDocument, booking: Booking, vendor: Vendor, db: Session, email_client: bool) -> None:
     # The starters leave blanks for what only the vendor knows; a client
     # signed "Payments made so far are handled as follows:" with nothing
@@ -182,6 +318,7 @@ def _deliver(d: ContractDocument, booking: Booking, vendor: Vendor, db: Session,
     unfilled = next((s for s in d.sections or [] if BLANK in f"{s.get('title', '')} {s.get('body', '')}"), None)
     if unfilled is not None:
         raise DocumentServiceError(400, f"Fill in the blank ({BLANK}) in “{unfilled.get('title') or 'a section'}” before sending")
+    _effect(d, booking, db)  # the booking may have moved since it was drafted
     now = _now()
     d.status = "viewed" if d.viewed_at else "sent"
     d.sent_at = now
@@ -208,6 +345,7 @@ def _deliver(d: ContractDocument, booking: Booking, vendor: Vendor, db: Session,
 def create_document(
     *, booking_id: str, caller_user_id: str, kind: str, title: str | None, sections: list,
     send: bool, email_client: bool, db: Session,
+    line_items: list | None = None, removed_line_ids: list | None = None,
 ) -> dict:
     booking, vendor = _own_booking(booking_id, caller_user_id, db)
     if kind not in KINDS:
@@ -220,6 +358,8 @@ def create_document(
         title=_title(title, kind), sections=_sections(sections), token=secrets.token_urlsafe(24),
         status="draft", created_at=now, updated_at=now,
     )
+    d.line_items, d.removed_line_ids = _changes(kind, line_items, removed_line_ids, booking)
+    _effect(d, booking, db)  # refuses a change that can't apply
     db.add(d)
     db.flush()
     doc.record(db, booking, "document_created", "vendor", {"document_id": d.document_id, "kind": kind, "title": d.title})
@@ -232,6 +372,7 @@ def create_document(
 
 def update_document(
     *, document_id: str, caller_user_id: str, title: str | None, sections: list | None, db: Session,
+    line_items: list | None = None, removed_line_ids: list | None = None, changes_sent: bool = False,
 ) -> dict:
     d, booking = _own_document(document_id, caller_user_id, db)
     if d.status == "awaiting_vendor":
@@ -242,6 +383,9 @@ def update_document(
         d.title = _title(title, d.kind)
     if sections is not None:
         d.sections = _sections(sections)
+    if changes_sent:
+        d.line_items, d.removed_line_ids = _changes(d.kind, line_items, removed_line_ids, booking)
+        _effect(d, booking, db)
     d.updated_at = _now()
     doc.record(db, booking, "document_edited", "vendor", {"document_id": d.document_id})
     db.commit()
@@ -372,6 +516,7 @@ def sign_by_token(
         "kind": d.kind,
         "title": d.title,
         "sections": d.sections,
+        **({"changes": changes} if (changes := changes_view(d, booking, db)) else {}),
         "date_iso": booking.date_iso,
         "signer_name": d.signer_name,
         "signed_at": d.client_signed_at.isoformat(),
