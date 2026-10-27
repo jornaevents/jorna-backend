@@ -199,3 +199,44 @@ def test_voiding_records_when():
     voided = client.post(f"/contracts/{contract['booking_id']}/void", headers=v["headers"]).json()
     assert voided["contract_status"] == "voided"
     assert voided["voided_at"] is not None
+
+
+def _offer(v, date_iso, **extra):
+    return client.post(
+        "/contracts",
+        json={"service_id": v["service_id"], "date_iso": date_iso,
+              "time_start": "19:00", "time_end": "23:00", "amount_cents": 100_000, **extra},
+        headers=v["headers"],
+    )
+
+
+def test_a_held_date_takes_a_second_offer_once_the_vendor_confirms():
+    # Decision C (2026-10-26): only a signed date blocks.
+    v = _setup_vendor()
+    _create_contract(v, date_iso="2027-10-20", guest_name="Priya Sharma")
+    held = _offer(v, "2027-10-20")
+    assert held.status_code == 409 and "Priya Sharma has this date held until" in held.json()["detail"]
+    second = _offer(v, "2027-10-20", allow_held_clash=True)
+    assert second.status_code == 201, second.text
+
+
+def test_a_signed_date_blocks_even_when_confirmed():
+    v = _setup_vendor()
+    first = _create_contract(v, date_iso="2027-10-21")
+    assert _sign(first["contract_token"]).status_code == 200
+    r = _offer(v, "2027-10-21", allow_held_clash=True)
+    assert r.status_code == 409 and "already have a booking" in r.json()["detail"]
+
+
+def test_a_draft_saves_over_a_clash_and_a_past_payment_and_send_checks_them():
+    v = _setup_vendor()
+    _create_contract(v, date_iso="2027-10-22", guest_name="Priya Sharma")
+    past = (_now() - timedelta(days=3)).date().isoformat()
+    draft = _offer(v, "2027-10-22", draft=True, payment_schedule=[
+        {"label": "Deposit", "amount_cents": 50_000, "due_type": "date", "due_date": past},
+        {"label": "Balance", "amount_cents": 50_000, "due_type": "before_event", "due_days": 14},
+    ])
+    assert draft.status_code == 201, draft.text
+    _created["bookings"].append(draft.json()["booking_id"])
+    sent = client.post(f"/contracts/{draft.json()['booking_id']}/send", headers=v["headers"])
+    assert sent.status_code == 400  # the past payment, checked on send

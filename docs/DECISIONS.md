@@ -971,3 +971,14 @@ or signed something different from what was agreed. Fixed here (no migration):
   vendor could never accept. With prices locked, the client can't leave out a
   package (403); add-ons and custom items can still go. Asking to change the
   price or quantity of an item left out in the same send is refused (400).
+- **Drafts keep unfinished work.** Creating or editing a draft skips the
+  send-time checks — a payment date already past, a date clash — and
+  sending it runs them.
+- **Only a signed date blocks (decision C).** A date another unsigned offer
+  is holding gives a 409 naming who and until when ("… has this date held
+  until Nov 2. Send anyway?"); `allow_held_clash: true` on create, send or
+  edit sends anyway, and whoever signs first books it. A signed contract or
+  an ordinary booking still blocks (`vendor_has_conflicting_booking(...,
+  include_held=False)`).
+- **The PDF prints the cancellation window in the Cancellation section**,
+  ahead of the vendor's own wording, instead of under "Policies".

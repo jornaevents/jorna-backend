@@ -357,7 +357,16 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
         else None if signer else "Not signed — this is the current version, not a signed agreement.",
     )
 
-    for kind, clause in _ordered_blocks(a.get("document_layout"), a.get("terms_clauses") or []):
+    clauses = a.get("terms_clauses") or []
+    cancellation = next(
+        (c for c in clauses if c.get("key") == "cancellation"),
+        next((c for c in clauses if re.match(r"cancell?ation\b", (c.get("title") or "").strip(), re.I)), None),
+    )
+    window_text = (
+        f"Cancelling within {round(a['cancellation_window_hours'] / 24)} days of the event may forfeit what's been paid."
+        if a.get("cancellation_window_hours") is not None else None
+    )
+    for kind, clause in _ordered_blocks(a.get("document_layout"), clauses):
         if kind == "parties":
             pdf.eyebrow("Parties")
             pdf.row(f"Provider: {vendor_name}", "")
@@ -405,10 +414,15 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
             pdf.font(11.5, True)
             pdf.multi_cell(0, 6, clause.get("title") or "", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(0.5)
+            # The window belongs in the Cancellation section, ahead of the
+            # vendor's own words — one place says what cancelling costs, as
+            # on the client's page (web ContractPaper, 2026-10-26).
+            if clause is cancellation and window_text:
+                pdf.text_block(window_text, gap=0.5)
             pdf.text_block(clause.get("body") or "")
 
     policies = []
-    if a.get("cancellation_window_hours") is not None:
+    if a.get("cancellation_window_hours") is not None and cancellation is None:
         policies.append(
             f"Cancelling within {round(a['cancellation_window_hours'] / 24)} days of the event "
             "may forfeit what's been paid."

@@ -469,3 +469,8 @@ price filters for discovery instead of a fixed subcategory list. Check
 `app/models/schemas.py`'s `VendorCategory` enum and `app/services/vendor_service.py`
 for the current authoritative list rather than hand-maintaining one here —
 categories get added often enough that a prose copy would drift immediately.
+
+- Contracts: `POST /contracts`, `POST /contracts/{id}/send` and `PATCH /contracts/{id}` take
+  `allow_held_clash` (bool). Without it, a date another unsigned offer is holding is a 409
+  whose detail contains "has this date held"; a signed booking is always a 409. A draft
+  (`draft: true`, or editing one) skips the clash and past-payment checks until it's sent.

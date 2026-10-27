@@ -164,6 +164,7 @@ def vendor_has_conflicting_booking(
     time_start: str | None = None,
     time_end: str | None = None,
     exclude_booking_id: str | None = None,
+    include_held: bool = True,
 ) -> Booking | None:
     """Return an existing booking that commits *vendor_id*'s date (see
     commits_vendor_date — approved/paid, or a contract that's signed or still
@@ -208,6 +209,15 @@ def vendor_has_conflicting_booking(
     )
     if exclude_booking_id:
         query = query.filter(Booking.booking_id != exclude_booking_id)
+    if not include_held:
+        # Only what's agreed: an ordinary booking, or a contract the client
+        # has signed. An unsigned offer's hold is a warning, not a wall
+        # (contract_service._check_clash, DECISIONS #37).
+        query = query.filter(or_(
+            Booking.contract_token.is_(None),
+            Booking.signed_at.isnot(None),
+            Booking.client_signed_at.isnot(None),
+        ))
 
     # The query answers "which days collide"; booking_blocks settles the hours,
     # where a null date_end and a midnight-crossing window are easier to read

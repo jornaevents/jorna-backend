@@ -66,6 +66,8 @@ class ContractTermsRequest(BaseModel):
     location: Optional[str] = None
     # Save without sending: a draft holds no date until POST .../send.
     draft: bool = False
+    # Send over another unsigned offer's hold on the date (DECISIONS #37).
+    allow_held_clash: bool = False
     # Override the vendor's hold window for this one contract.
     hold_days: Optional[int] = Field(default=None, ge=1, le=60)
     guest_count: Optional[int] = Field(default=None, ge=1)
@@ -115,6 +117,8 @@ class ContractUpdateRequest(BaseModel):
     proposal_id: Optional[str] = None
     # With proposal_id: a note to the client sent with the new version.
     proposal_note: Optional[str] = Field(default=None, max_length=1000)
+    # A moved date may land on another unsigned offer's hold (DECISIONS #37).
+    allow_held_clash: Optional[bool] = None
 
 
 @router.post("/contracts", summary="Author a guest booking/contract", status_code=201)
@@ -197,6 +201,7 @@ def void_contract_route(
 class SendContractRequest(BaseModel):
     hold_days: Optional[int] = Field(default=None, ge=1, le=60)
     email_client: bool = False
+    allow_held_clash: bool = False
 
 
 @router.post("/contracts/{booking_id}/send", summary="Send a draft or resend an offer, restarting its date hold")
@@ -211,6 +216,7 @@ def send_contract_route(
             booking_id=booking_id, caller_user_id=current_user.user_id, db=db,
             hold_days=body.hold_days if body else None,
             email_client=body.email_client if body else False,
+            allow_held_clash=body.allow_held_clash if body else False,
         )
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
