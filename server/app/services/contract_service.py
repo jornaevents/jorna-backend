@@ -465,7 +465,24 @@ def update_contract(
         # neither side is surprised by a value that moved under an ask.
         raise ContractError(409, "Changes are being negotiated — answer them in the negotiation instead")
     proposal = proposal_service.open_for_vendor(booking, proposal_id, db) if proposal_id else None
+    from app.services import field_negotiation_service as fields
+
+    terms_before = doc.terms(booking) if fields.is_fields(booking) and booking.sent_at else None
+    agreed = fields.fields_of(terms_before) if terms_before is not None else None
     apply_update(booking, vendor, update_data, db)
+    if agreed is not None:
+        # Agreed values only move through the negotiation, where the client
+        # sees each change and answers it; an edit changed overtime under a
+        # contract the client was told was "all agreed" (2026-10-26 test).
+        # Wording, titles and new sections still edit here.
+        # A section added now has no agreed value to move, so it's an edit
+        # like its wording.
+        after = fields.fields_of(doc.terms(booking))
+        moved = sorted(k for k in agreed if agreed[k] != after.get(k))
+        if moved:
+            names = ", ".join(fields.label(k, terms_before) for k in moved[:3])
+            db.rollback()
+            raise ContractError(409, f"Change {names} in the negotiation, so your client sees it and answers")
     if proposal is not None:
         proposal_service.mark_revised(booking, vendor, proposal, db, note=proposal_note)
     else:

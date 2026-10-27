@@ -40,7 +40,7 @@ def _client_signs(c, name="Priya Mehta"):
 
 def _countersign(v, c, **body):
     return client.post(
-        f"/contracts/{c['booking_id']}/countersign", json={"signer_name": "Arjun Rao", **body}, headers=v["headers"],
+        f"/contracts/{c['booking_id']}/countersign", json={"signer_name": "Arjun Kapoor", **body}, headers=v["headers"],
     )
 
 
@@ -136,21 +136,21 @@ def test_the_vendor_countersigns_once_with_consent_and_its_booked(outbox):
     assert _countersign(v, c, signer_name="  ", **CONSENT).status_code == 400
 
     r = client.post(
-        f"/contracts/{c['booking_id']}/countersign", json={"signer_name": "Arjun Rao", **CONSENT},
+        f"/contracts/{c['booking_id']}/countersign", json={"signer_name": "Arjun Kapoor", **CONSENT},
         headers={**v["headers"], "user-agent": "Vendor Chrome"},
     )
     assert r.status_code == 200, r.text
     booked = r.json()
     assert booked["contract_status"] == "signed"
     assert booked["signed_at"] and booked["vendor_signed_at"] == booked["signed_at"]
-    assert booked["vendor_signer_name"] == "Arjun Rao"
+    assert booked["vendor_signer_name"] == "Arjun Kapoor"
     assert booked["vendor_esign_consent"]["given"] is True
     assert booked["signed_snapshot_sha256"] != client_sha
 
     b = _booking(c["booking_id"])
     counter = b.signed_snapshot["countersignature"]
     assert counter["client_sha256"] == client_sha
-    assert counter["signer_name"] == "Arjun Rao"
+    assert counter["signer_name"] == "Arjun Kapoor"
     assert counter["evidence"]["user_agent"] == "Vendor Chrome"
     assert counter["evidence"]["signed_in_as"]["user_id"] == v["vendor_user_id"]
     assert counter["evidence"]["consent"]["version"] == esign_consent.VERSION
@@ -164,7 +164,7 @@ def test_the_vendor_countersigns_once_with_consent_and_its_booked(outbox):
     copies = [m for m in outbox if m.get("attachments")]
     assert len(copies) == 2
     receipt = next(m for m in copies if m["to"] == "priya@example.com")
-    assert "Arjun Rao" in receipt["html"] and "Priya Mehta" in receipt["html"]
+    assert "Arjun Kapoor" in receipt["html"] and "Priya Mehta" in receipt["html"]
 
     # Payments can start; signing twice can't.
     assert client.post(f"/guest-bookings/{c['contract_token']}/mark-deposit-paid").status_code == 200
@@ -248,13 +248,13 @@ def test_a_document_the_client_signed_waits_for_the_vendor(outbox, monkeypatch):
     assert client.post(f"/contract-documents/{did}/send", json={}, headers=v["headers"]).status_code == 400
     assert client.post(f"/contract-documents/{did}/void", headers=v["headers"]).status_code == 400
 
-    signed = client.post(f"/contract-documents/{did}/countersign", json={"signer_name": "Arjun Rao"}, headers=v["headers"])
+    signed = client.post(f"/contract-documents/{did}/countersign", json={"signer_name": "Arjun Kapoor"}, headers=v["headers"])
     assert signed.status_code == 200, signed.text
-    assert signed.json()["status"] == "signed" and signed.json()["vendor_signer_name"] == "Arjun Rao"
+    assert signed.json()["status"] == "signed" and signed.json()["vendor_signer_name"] == "Arjun Kapoor"
     assert {m["to"] for m in outbox if m.get("attachments")} == {"priya@example.com", outbox[-1]["to"]}
     db = TestingSessionLocal()
     row = db.query(ContractDocument).filter(ContractDocument.document_id == did).first()
-    assert row.signed_snapshot["countersignature"]["signer_name"] == "Arjun Rao"
+    assert row.signed_snapshot["countersignature"]["signer_name"] == "Arjun Kapoor"
     db.close()
 
 
@@ -335,7 +335,7 @@ def test_the_pdf_signature_lines_follow_the_signatures(outbox, monkeypatch):
 
     assert _countersign(v, c, **CONSENT).status_code == 200
     signer, counter, awaiting = provider_line(c)
-    assert counter["signer_name"] == "Arjun Rao" and awaiting is False
+    assert counter["signer_name"] == "Arjun Kapoor" and awaiting is False
 
     # Signed before vendors countersigned: the old "issued" line, not "awaiting".
     old = _create_contract(v, date_iso="2027-12-18")
@@ -347,3 +347,41 @@ def test_the_pdf_signature_lines_follow_the_signatures(outbox, monkeypatch):
     db.close()
     signer, counter, awaiting = provider_line(old)
     assert (counter, awaiting) == (None, False)
+
+
+def test_a_name_that_isnt_the_vendors_signs_only_once_confirmed():
+    # 2026-10-26: "Mickey Mouse" countersigned a real contract unasked.
+    v = _setup_vendor()
+    c = _create_contract(v)
+    _client_signs(c)
+    r = _countersign(v, c, signer_name="Mickey Mouse", name_confirmed=False, **CONSENT)
+    assert r.status_code == 409 and "isn't the name on your account" in r.json()["detail"]
+    assert _booking(c["booking_id"]).vendor_signed_at is None
+    r = _countersign(v, c, signer_name="Mickey Mouse", name_confirmed=True, **CONSENT)
+    assert r.status_code == 200, r.text
+    assert _booking(c["booking_id"]).vendor_sign_evidence["name_matches"] is False
+
+
+def test_the_vendors_own_name_signs_without_asking():
+    v = _setup_vendor()
+    c = _create_contract(v)
+    _client_signs(c)
+    r = _countersign(v, c, signer_name="arjun  kapoor", name_confirmed=False, **CONSENT)
+    assert r.status_code == 200, r.text
+    assert _booking(c["booking_id"]).vendor_sign_evidence["name_matches"] is True
+
+
+def test_cancelling_a_signed_booking_takes_a_reason_the_client_sees():
+    # 2026-10-26: the client's link said "withdrew this offer, nothing was
+    # signed" after a signed, deposit-paid booking was cancelled.
+    v = _setup_vendor()
+    c = _signed_booking(v)
+    url = f"/bookings/{c['booking_id']}/status"
+    r = client.put(url, json={"status": "rejected"}, headers=v["headers"])
+    assert r.status_code == 400 and "why" in r.json()["detail"]
+    r = client.put(url, json={"status": "rejected", "note": "Family emergency"}, headers=v["headers"])
+    assert r.status_code == 200, r.text
+    seen = client.get(f"/guest-bookings/{c['contract_token']}").json()
+    assert seen["signed_at"] and seen["rejected_reason"] == "vendor_withdrew"
+    assert seen["vendor_decline_note"] == "Family emergency"
+    assert [e.detail for e in _events(c["booking_id"], "cancelled")] == [{"reason": "Family emergency"}]

@@ -1192,6 +1192,11 @@ def update_booking_status(
             and booking.status == BookingStatus.APPROVED.value
         )
         _refund_client_on_cancel = False
+        # Ending an agreement both sides signed takes a reason: the client is
+        # told why on their link and in the timeline, instead of a bare
+        # "withdrawn" that reads as if nothing was ever agreed.
+        if cancelling and booking.signed_at is not None and not (note or "").strip():
+            raise BookingError(400, "Say why you're cancelling — your client sees it.")
         if cancelling:
             from app.services.bundle_service import _money_has_moved
 
@@ -1255,8 +1260,12 @@ def update_booking_status(
             if cancelling
             else RejectionReason.VENDOR_DECLINED.value
         )
-        if not cancelling:
+        if not cancelling or booking.signed_at is not None:
             booking.vendor_decline_note = (note or "").strip()[:500] or None
+        if cancelling and booking.signed_at is not None:
+            from app.services import contract_document as doc
+
+            doc.record(db, booking, "cancelled", "vendor", {"reason": booking.vendor_decline_note})
         # An accepted request's proposal goes with it, so its link says
         # withdrawn rather than still waiting for a signature.
         if booking.contract_token and booking.signed_at is None:

@@ -107,6 +107,24 @@ def _typed_name(signer_name: str | None) -> str:
     return name[:255]
 
 
+def _check_name(name: str, user: User | None, confirmed: bool) -> dict:
+    """The typed name against the vendor's own. A different name can still
+    sign (an account in a business's name, a legal name the profile lacks),
+    but only once the vendor says so — "Mickey Mouse" signed a real contract
+    in the 2026-10-26 test with nothing asked. Recorded either way, as the
+    client's signature is (signing_evidence.name_check)."""
+    from app.services.signing_evidence import name_check
+
+    on_account = _display_name(user) if user and (user.f_name or user.l_name) else None
+    check = name_check(name, on_account)
+    if check["name_matches"] is False and not confirmed:
+        raise CountersignError(
+            409, f"That isn't the name on your account ({check['name_on_contract']}). "
+            "Check it, or confirm you're signing as this name.",
+        )
+    return check
+
+
 def _reason(reason: str | None) -> str:
     text = (reason or "").strip()
     if not text:
@@ -139,7 +157,7 @@ def _contract_result(booking: Booking, vendor: Vendor, db: Session) -> dict:
 
 def countersign_contract(
     *, booking_id: str, caller_user_id: str, signer_name: str | None, db: Session,
-    consent: bool = False, consent_version: str | None = None, client: dict | None = None,
+    consent: bool = False, consent_version: str | None = None, client: dict | None = None, name_confirmed: bool = False,
 ) -> dict:
     """The vendor signs what the client signed. It's booked from here: the
     deposit's "on signing" date, reminders and the ledger all count from
@@ -147,7 +165,8 @@ def countersign_contract(
     booking, vendor = _awaiting_booking(booking_id, caller_user_id, db)
     name = _typed_name(signer_name)
     user = _vendor_user(vendor, db)
-    evidence = _evidence(vendor, user, client, _consent(vendor, consent, consent_version))
+    evidence = {**_evidence(vendor, user, client, _consent(vendor, consent, consent_version)),
+                **_check_name(name, user, name_confirmed)}
 
     now = datetime.now(timezone.utc)
     client_sha = booking.signed_snapshot_sha256
@@ -223,14 +242,15 @@ def _awaiting_document(document_id: str, caller_user_id: str, db: Session) -> tu
 
 def countersign_document(
     *, document_id: str, caller_user_id: str, signer_name: str | None, db: Session,
-    consent: bool = False, consent_version: str | None = None, client: dict | None = None,
+    consent: bool = False, consent_version: str | None = None, client: dict | None = None, name_confirmed: bool = False,
 ) -> dict:
     from app.services import document_service
 
     d, booking, vendor = _awaiting_document(document_id, caller_user_id, db)
     name = _typed_name(signer_name)
     user = _vendor_user(vendor, db)
-    evidence = _evidence(vendor, user, client, _consent(vendor, consent, consent_version))
+    evidence = {**_evidence(vendor, user, client, _consent(vendor, consent, consent_version)),
+                **_check_name(name, user, name_confirmed)}
 
     now = _now()
     client_sha = d.signed_snapshot_sha256

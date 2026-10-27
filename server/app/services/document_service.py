@@ -159,7 +159,16 @@ def _agreed(booking: Booking) -> bool:
     return booking.status in (BookingStatus.APPROVED.value, BookingStatus.PAYMENT_CONFIRMED.value)
 
 
+BLANK = "___"
+
+
 def _deliver(d: ContractDocument, booking: Booking, vendor: Vendor, db: Session, email_client: bool) -> None:
+    # The starters leave blanks for what only the vendor knows; a client
+    # signed "Payments made so far are handled as follows:" with nothing
+    # after it in the 2026-10-26 test. Same rule as a contract's sections.
+    unfilled = next((s for s in d.sections or [] if BLANK in f"{s.get('title', '')} {s.get('body', '')}"), None)
+    if unfilled is not None:
+        raise DocumentServiceError(400, f"Fill in the blank ({BLANK}) in “{unfilled.get('title') or 'a section'}” before sending")
     now = _now()
     d.status = "viewed" if d.viewed_at else "sent"
     d.sent_at = now
