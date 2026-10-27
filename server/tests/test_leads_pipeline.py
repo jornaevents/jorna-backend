@@ -308,3 +308,23 @@ def test_a_request_on_a_plan_the_client_hasnt_sent_isnt_a_lead_yet():
     assert item is not None
     assert (item["attention"], item["attention_reason"]) == ("needs_you", "new_request")
     assert pipe["counts"]["needs_you"] == 1
+
+
+def test_messages_tags_agree_with_the_pipeline_stage():
+    """Messages' status tags (pipeline_service.booking_stage) and this page must
+    never call the same booking two different things."""
+    from app.services.pipeline_service import booking_stage
+
+    v = _setup_vendor()
+    request = _request(v, _client_user())
+    draft = _create_contract(v, draft=True, date_iso="2027-11-20")
+    sent = _create_contract(v, date_iso="2027-12-04")
+
+    pipe = _pipeline(v)
+    db = TestingSessionLocal()
+    try:
+        for booking_id in (request.booking_id, draft["booking_id"], sent["booking_id"]):
+            row = db.query(Booking).filter(Booking.booking_id == booking_id).one()
+            assert booking_stage(row) == _item(pipe, booking_id)["stage"]
+    finally:
+        db.close()

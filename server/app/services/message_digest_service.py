@@ -47,10 +47,15 @@ def _unread_for_user(user_id: str, since: datetime, db: Session) -> list[GroupMe
     """Every message still unread by this user, in a thread they're on, sent
     since `since`. Sender's own messages never appear: send_group_message
     marks a message read for its own sender the moment it's created."""
+    from app.services.conversation_service import hidden_conversation_ids
+
     conv_ids = [
         m.conversation_id
         for m in db.query(ConversationMember).filter(ConversationMember.user_id == user_id).all()
     ]
+    # Nothing the inbox hides (a plan chat while they're off) is emailed about.
+    hidden = hidden_conversation_ids(conv_ids, db)
+    conv_ids = [cid for cid in conv_ids if cid not in hidden]
     if not conv_ids:
         return []
     return (

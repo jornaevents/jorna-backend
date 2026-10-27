@@ -16,10 +16,13 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import config as app_config
 from app.db.models import (
     Booking, Bundle, Conversation, ConversationMember,
     GroupMessage, GroupMessageRead, Service, User, UserBlock, Vendor,
 )
+from app.services.booking_service import sent_to_vendor
+from app.services.pipeline_service import booking_stage
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,77 @@ def _display_name(conv: Conversation, members: list[User], caller_user_id: str, 
     return who
 
 
+def shown_in_inbox(conv: Conversation) -> bool:
+    """Whether a conversation shows in inboxes, badges and digests. Plan chats
+    hide while PLAN_CHATS_ENABLED is off; the rows stay, so they come back
+    when it's turned on again."""
+    return app_config.PLAN_CHATS_ENABLED or conv.subject_type != SUBJECT_BUNDLE
+
+
+def hidden_conversation_ids(conv_ids: list[str], db: Session) -> set[str]:
+    """Of these conversations, the ones shown_in_inbox leaves out — for the
+    counts that work from ids rather than rows (the badge, the digest)."""
+    if app_config.PLAN_CHATS_ENABLED or not conv_ids:
+        return set()
+    return {
+        cid for (cid,) in db.query(Conversation.conversation_id).filter(
+            Conversation.conversation_id.in_(conv_ids),
+            Conversation.subject_type == SUBJECT_BUNDLE,
+        ).all()
+    }
+
+
+def _booking_tags(conversations: list[Conversation], db: Session) -> dict[str, list[dict]]:
+    """conversation_id → a status tag per booking the couple has with that
+    vendor, oldest first. Only two-person threads get tags: a plan chat has no
+    single couple-and-vendor pair to look up.
+
+    A tag follows the pair, not the thread's own booking_id, because the
+    client and vendor are meant to share one thread whatever they book. Only
+    bookings the vendor has actually been sent count — a request still on an
+    unsent draft plan isn't one yet (booking_service.sent_to_vendor). Two
+    queries for the whole list, however long it is.
+    """
+    pairs = {
+        c.conversation_id: (c.client_user_id, c.vendor_id)
+        for c in conversations
+        if c.subject_type != SUBJECT_BUNDLE and c.client_user_id and c.vendor_id
+    }
+    if not pairs:
+        return {}
+
+    clients = {client for client, _ in pairs.values()}
+    vendors = {vendor for _, vendor in pairs.values()}
+    bookings = sent_to_vendor(
+        db.query(Booking).filter(Booking.user_id.in_(clients), Booking.vendor_id.in_(vendors))
+    ).all()
+    services = {
+        s.service_id: s.name
+        for s in db.query(Service).filter(
+            Service.service_id.in_({b.service_id for b in bookings})
+        ).all()
+    } if bookings else {}
+
+    by_pair: dict[tuple[str, str], list[Booking]] = {}
+    for b in bookings:
+        by_pair.setdefault((b.user_id, b.vendor_id), []).append(b)
+    for group in by_pair.values():
+        group.sort(key=lambda b: (b.created_at or datetime.min, b.booking_id))
+
+    return {
+        conv_id: [
+            {
+                "booking_id": b.booking_id,
+                "stage": booking_stage(b),
+                "service_id": b.service_id,
+                "service_name": services.get(b.service_id),
+            }
+            for b in by_pair.get(pair, [])
+        ]
+        for conv_id, pair in pairs.items()
+    }
+
+
 def _conversation_dict(
     conv: Conversation,
     members: list[User],
@@ -133,8 +207,10 @@ def _conversation_dict(
     *,
     caller_user_id: str | None = None,
     unread_count: int = 0,
+    tags: list[dict] | None = None,
     db: Session | None = None,
 ) -> dict:
+    tags = tags or []
     return {
         "conversation_id": conv.conversation_id,
         "subject_type": conv.subject_type,
@@ -142,6 +218,11 @@ def _conversation_dict(
         "booking_id": conv.booking_id,
         "vendor_id": conv.vendor_id,
         "type": conv.type,
+        # Messages' two tabs: a thread is under Bookings once the couple has
+        # sent this vendor a booking request (or it's a plan's chat, which
+        # only exists for a sent plan), under Enquiries while it's questions.
+        "tab": "bookings" if tags or conv.subject_type == SUBJECT_BUNDLE else "enquiries",
+        "tags": tags,
         "name": (
             _display_name(conv, members, caller_user_id, db)
             if caller_user_id and db is not None
@@ -636,10 +717,12 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
         ).all()
     } if booking_ids else set()
     conversations = [
-        c for c in conversations if _subject_is_live(c, live_bundles, live_bookings)
+        c for c in conversations
+        if _subject_is_live(c, live_bundles, live_bookings) and shown_in_inbox(c)
     ]
 
     unread = _unread_by_conversation([c.conversation_id for c in conversations], caller_user_id, db)
+    tags = _booking_tags(conversations, db)
 
     result = []
     for conv in conversations:
@@ -658,6 +741,7 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
             conv, members, last_msg,
             caller_user_id=caller_user_id,
             unread_count=unread.get(conv.conversation_id, 0),
+            tags=tags.get(conv.conversation_id),
             db=db,
         ))
 
@@ -693,6 +777,7 @@ def get_conversation(*, conversation_id: str, caller_user_id: str, db: Session) 
         conv, members, last_msg,
         caller_user_id=caller_user_id,
         unread_count=unread.get(conversation_id, 0),
+        tags=_booking_tags([conv], db).get(conversation_id),
         db=db,
     )
 
@@ -865,6 +950,9 @@ def get_unread_count(*, caller_user_id: str, db: Session) -> dict:
     memberships = db.query(ConversationMember).filter(
         ConversationMember.user_id == caller_user_id
     ).all()
+    # The badge counts only what the inbox shows.
+    hidden = hidden_conversation_ids([m.conversation_id for m in memberships], db)
+    memberships = [m for m in memberships if m.conversation_id not in hidden]
     conv_ids = [m.conversation_id for m in memberships]
 
     all_msg_ids = [

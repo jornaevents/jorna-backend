@@ -128,6 +128,13 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   two-person thread — 201 new, 200 when the thread already has an open lead.
 - `POST /conversations/{id}/unread` counts the thread as unread for the
   caller until they next open it (`GET …/messages` at offset 0).
+- `GET /conversations` and `GET /conversations/{id}` (and the other routes
+  that return a conversation) add `tab` (`enquiries` | `bookings`) and
+  `tags`: one `{booking_id, stage, service_id, service_name}` per booking
+  the couple has sent this vendor, oldest first; `stage` is `inquiry` |
+  `negotiation` | `booked` | `closed` (DECISIONS #37). Plan chats have no
+  tags and are left out of the list, the unread count and the digest while
+  `PLAN_CHATS_ENABLED` is `false`.
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`. Copying a contract link should call
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it

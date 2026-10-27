@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Booking, Conversation, ConversationMember, Lead, User, Vendor
 from app.models.schemas import BookingStatus, RejectionReason
 from app.services.booking_service import _booking_dict, sent_to_vendor
+from app.services.contract_service import contract_state
 from app.utils.timeutil import utc_iso
 
 
@@ -47,6 +48,30 @@ SENT_STATES = ("sent", "viewed", "declined", "expired", "awaiting_vendor")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def booking_stage(b: Booking) -> str:
+    """Where one booking stands, in the words Leads and Messages share:
+    inquiry | negotiation | booked | closed.
+
+    The live stages are the Leads page's own rule (see _booking_item): a
+    contract that has gone to the couple is a negotiation, anything before
+    that an inquiry. Messages also needs the two ends Leads drops: a signed
+    contract (or an approved request from before contracts) is booked, and a
+    declined, cancelled or voided one is closed.
+    """
+    if b.cancelled_at is not None or b.status == BookingStatus.REJECTED.value:
+        return "closed"
+    if b.signed_at is not None:
+        return "booked"
+    if b.contract_token:
+        state = contract_state(b)
+        if state == "voided":
+            return "closed"
+        return "negotiation" if state in SENT_STATES else "inquiry"
+    if b.status in (BookingStatus.APPROVED.value, BookingStatus.PAYMENT_CONFIRMED.value):
+        return "booked"
+    return "inquiry"
 
 
 def _vendor_for(caller_user_id: str, db: Session) -> Vendor:

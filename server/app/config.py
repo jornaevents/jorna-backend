@@ -76,6 +76,14 @@ INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 # endpoints/boot checks are skipped. See docs/DECISIONS.md #12.
 ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
 
+# ── Messages ─────────────────────────────────────────────────────────
+# Plan group chats (a bundle's "All parties" and "Vendors only"). V1 of
+# Messages is client–vendor only, so these are to be hidden from the inbox,
+# the unread badge and the message digest — not deleted, so turning this back
+# on brings them back as they were. Defaults on so a deploy changes nothing;
+# set it to "false" once the web apps' Enquiries/Bookings tabs are live.
+PLAN_CHATS_ENABLED: bool = os.getenv("PLAN_CHATS_ENABLED", "true").strip().lower() != "false"
+
 # New contracts negotiate field by field (docs/DECISIONS.md #26) instead of
 # by whole proposal (#23). Off until the web workspace for it ships; turning
 # it on only affects contracts created afterwards.

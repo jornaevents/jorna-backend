@@ -939,3 +939,23 @@ fetches their profile any more (user, 2026-10-26).
   days). It still wrote hashtags to `vendors.instagram_tags` and an empty bio.
 - Tags it already wrote stay, and bundle scoring still reads them. The column and that data can go
   in a later migration if they're no longer wanted.
+
+## 37. Messages tags a thread by booking stage; plan chats can be hidden
+
+V1 of Messages is client–vendor chat only (product feedback, 2026-10-27). A two-person thread
+says where the couple stands with that vendor, and the inbox splits into two tabs.
+
+- **Tags.** Each conversation carries `tags`: one per booking the couple has sent that vendor,
+  oldest first, each `{booking_id, stage, service_id, service_name}`. The stage is
+  `pipeline_service.booking_stage`: `inquiry` and `negotiation` are the Leads page's own rule
+  (a contract that has gone to the couple is a negotiation), plus `booked` (countersigned, or
+  an approved request from before contracts) and `closed` (declined, cancelled or voided).
+  A test pins Messages and Leads to the same stage for the same booking.
+- **Tabs.** `tab` is `bookings` once there's a tag (or for a plan chat), `enquiries` before.
+- **The pair, not the thread.** Tags come from the couple and vendor, not the thread's own
+  `booking_id`, because they're meant to share one thread whatever they book. Requests on an
+  unsent draft plan don't count yet (`booking_service.sent_to_vendor`). Nobody sets a tag by hand.
+- **Plan chats.** `PLAN_CHATS_ENABLED` (default on) hides a plan's "All parties" and "Vendors
+  only" chats from the inbox, the unread badge and the message digest when set to `false`.
+  The rows stay and are still readable by id, so turning it back on restores them. Turn it off
+  once the web apps' tabs are live.
