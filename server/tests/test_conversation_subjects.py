@@ -278,6 +278,214 @@ class TestBookingThreadBundleId:
         assert second["bundle_id"] == bundle.bundle_id
 
 
+# ── A booking continues the question (DECISIONS #39) ─────────────────
+
+
+class TestBookingContinuesTheQuestion:
+    """A client who asked first and then booked keeps one thread, not two."""
+
+    def _open(self, world, booking=None, user=None):
+        booking = booking or world["booking"]
+        return client.post(f"/conversations/booking/{booking.booking_id}",
+                           headers=make_auth_headers(user or world["client_user"]))
+
+    def _booking(self, world, **fields):
+        db = world["db"]
+        b = Booking(
+            user_id=world["client_user"].user_id, vendor_id=world["vendor"].vendor_id,
+            service_id=world["service"].service_id, time_start="10:00", time_end="18:00",
+            location="Hall", date_iso="2026-12-05", status="pending", **fields,
+        )
+        db.add(b)
+        db.commit()
+        db.refresh(b)
+        return b
+
+    def _bundle(self, world):
+        from app.db.models import Bundle
+
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=world["client_user"].user_id, name="Wedding",
+                        status="confirmed", created_at=now, updated_at=now)
+        world["db"].add(bundle)
+        world["db"].commit()
+        world["db"].refresh(bundle)
+        return bundle
+
+    def _threads(self, world):
+        return world["db"].query(Conversation).filter(
+            Conversation.client_user_id == world["client_user"].user_id,
+            Conversation.vendor_id == world["vendor"].vendor_id,
+        ).all()
+
+    def test_opening_the_booking_returns_the_question_thread(self, world):
+        question = _ask(world).json()["conversation_id"]
+
+        for user in (world["client_user"], world["vendor_user"]):
+            resp = self._open(world, user=user)
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["conversation_id"] == question
+            assert resp.json()["subject_type"] == "enquiry"
+            assert resp.json()["booking_id"] is None
+        assert len(self._threads(world)) == 1
+
+    def test_without_a_question_a_booking_thread_is_made_as_before(self, world):
+        resp = self._open(world)
+        assert resp.json()["subject_type"] == "booking"
+        assert resp.json()["booking_id"] == world["booking"].booking_id
+        assert "Wedding Photography" in resp.json()["name"]
+
+    def test_a_booking_that_already_has_its_thread_keeps_it(self, world):
+        """Nothing that exists moves: a thread opened before the question stays the booking's."""
+        booking_thread = self._open(world).json()["conversation_id"]
+        _ask(world)
+        assert self._open(world).json()["conversation_id"] == booking_thread
+
+    def test_a_second_booking_continues_the_same_question_thread(self, world):
+        question = _ask(world).json()["conversation_id"]
+        second = self._booking(world)
+        assert self._open(world).json()["conversation_id"] == question
+        assert self._open(world, booking=second).json()["conversation_id"] == question
+        assert len(self._threads(world)) == 1
+
+    def test_a_question_to_another_vendor_is_not_reused(self, world):
+        _ask(world, vendor_id=world["vendor2"].vendor_id)
+        resp = self._open(world)
+        assert resp.json()["subject_type"] == "booking"
+
+    def test_another_clients_question_is_not_reused(self, world):
+        db = world["db"]
+        other = _user(db, "otherclient", uuid.uuid4().hex[:8])
+        theirs = client.post("/conversations/enquiry", json={
+            "vendor_id": world["vendor"].vendor_id, "content": "Hi!",
+        }, headers=make_auth_headers(other)).json()["conversation_id"]
+        resp = self._open(world)
+        assert resp.json()["conversation_id"] != theirs
+        assert resp.json()["subject_type"] == "booking"
+
+    def test_a_stranger_still_cant_open_it(self, world):
+        _ask(world)
+        assert self._open(world, user=world["other_vendor_user"]).status_code == 403
+
+    def test_a_block_still_refuses_it(self, world):
+        _ask(world)
+        db = world["db"]
+        db.add(UserBlock(
+            blocker_user_id=world["vendor_user"].user_id,
+            blocked_user_id=world["client_user"].user_id,
+            created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        assert self._open(world).status_code == 403
+
+    def test_a_guest_booking_still_has_no_thread(self, world):
+        guest = self._booking(world)
+        guest.user_id = None
+        world["db"].commit()
+        assert self._open(world, booking=guest).status_code == 400
+
+    def test_the_question_thread_doesnt_take_on_the_bookings_plan(self, world):
+        """A question thread is about the client and vendor, not one plan;
+        the plan rides on each offer instead."""
+        _ask(world)
+        bundle = self._bundle(world)
+        world["booking"].bundle_id = bundle.bundle_id
+        world["db"].commit()
+        assert self._open(world).json()["bundle_id"] is None
+
+    def test_reusing_it_doesnt_count_as_a_new_question(self, world):
+        """The daily and unanswered caps count questions opened, not bookings."""
+        _ask(world)
+        self._open(world)
+        enquiries = [t for t in self._threads(world) if t.subject_type == "enquiry"]
+        assert len(enquiries) == 1
+
+    def test_leads_points_the_request_at_the_question_thread(self, world):
+        question = _ask(world).json()["conversation_id"]
+        self._open(world)
+        pipe = client.get("/leads/pipeline", headers=make_auth_headers(world["vendor_user"]))
+        assert pipe.status_code == 200, pipe.text
+        item = next(i for i in pipe.json()["items"] if i["booking_id"] == world["booking"].booking_id)
+        assert item["conversation_id"] == question
+
+
+class TestMessagesSayWhichBooking:
+    """Offers and event lines carry their booking, since their thread may not."""
+
+    @pytest.fixture(autouse=True)
+    def _old_price_offers(self, monkeypatch):
+        from app.services import negotiation_service
+
+        monkeypatch.setattr(negotiation_service, "NEW_NEGOTIATIONS_OPEN", True)
+
+    def _messages(self, world, conv_id):
+        return client.get(f"/conversations/{conv_id}/messages",
+                          headers=make_auth_headers(world["client_user"])).json()["items"]
+
+    def test_an_offer_lands_in_the_question_thread_and_names_its_booking(self, world):
+        question = _ask(world).json()["conversation_id"]
+        resp = client.post("/negotiations", json={
+            "booking_id": world["booking"].booking_id, "amount_cents": 180000,
+        }, headers=make_auth_headers(world["client_user"]))
+        assert resp.status_code in (200, 201), resp.text
+
+        msgs = self._messages(world, question)
+        assert [m["kind"] for m in msgs] == ["text", "offer"]
+        meta = msgs[-1]["meta"]
+        assert meta["booking_id"] == world["booking"].booking_id
+        assert meta["bundle_id"] is None
+        # What the card already used is still there.
+        assert (meta["amount_cents"], meta["action"]) == (180000, "offer")
+
+    def test_an_offer_in_a_booking_thread_names_its_booking_and_plan(self, world):
+        from app.db.models import Bundle
+
+        db = world["db"]
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=world["client_user"].user_id, name="Wedding",
+                        status="confirmed", created_at=now, updated_at=now)
+        db.add(bundle)
+        db.commit()
+        world["booking"].bundle_id = bundle.bundle_id
+        db.commit()
+
+        client.post("/negotiations", json={
+            "booking_id": world["booking"].booking_id, "amount_cents": 180000,
+        }, headers=make_auth_headers(world["client_user"]))
+        thread = client.post(f"/conversations/booking/{world['booking'].booking_id}",
+                             headers=make_auth_headers(world["client_user"])).json()
+        meta = self._messages(world, thread["conversation_id"])[-1]["meta"]
+        assert (meta["booking_id"], meta["bundle_id"]) == (world["booking"].booking_id, bundle.bundle_id)
+
+    def test_an_event_line_names_its_booking_and_keeps_its_own_details(self, world):
+        from app.services.conversation_service import post_system_message
+
+        question = _ask(world).json()["conversation_id"]
+        post_system_message(
+            booking_id=world["booking"].booking_id, sender_user_id=world["client_user"].user_id,
+            content="The client marked this booking as paid.", meta={"kind": "manual_payment_marked"},
+            db=world["db"],
+        )
+        line = self._messages(world, question)[-1]
+        assert line["kind"] == "system"
+        assert line["meta"] == {
+            "kind": "manual_payment_marked", "booking_id": world["booking"].booking_id, "bundle_id": None,
+        }
+
+    def test_an_event_line_with_no_details_still_names_its_booking(self, world):
+        from app.services.conversation_service import post_system_message
+
+        post_system_message(
+            booking_id=world["booking"].booking_id, sender_user_id=world["vendor_user"].user_id,
+            content="Date change accepted.", meta=None, db=world["db"],
+        )
+        thread = client.post(f"/conversations/booking/{world['booking'].booking_id}",
+                             headers=make_auth_headers(world["client_user"])).json()
+        assert self._messages(world, thread["conversation_id"])[-1]["meta"] == {
+            "booking_id": world["booking"].booking_id, "bundle_id": None,
+        }
+
+
 # ── The inbox ─────────────────────────────────────────────────────────
 
 
