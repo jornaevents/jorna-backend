@@ -83,20 +83,24 @@ class RegisterRequest(BaseModel):
     # one for the exact case it was written for.
     password: str
 
-    username: str = Field(..., min_length=3, max_length=30)
+    # Optional since 2026-10-29: the vendor sign-up asks for name, email, phone
+    # and password only (its "Based in" moves to onboarding). A missing username
+    # is derived from the email, as Google sign-up already does; the rest are
+    # nullable on the user and filled in later.
+    username: Optional[str] = Field(None, min_length=3, max_length=30)
     phone: Optional[str] = None
     f_name: str = Field(..., min_length=1, max_length=50)
     l_name: str = Field(..., min_length=1, max_length=50)
-    age: int = Field(..., ge=13, le=120)
-    location: str = Field(..., min_length=1, max_length=100)
+    age: Optional[int] = Field(None, ge=13, le=120)
+    location: Optional[str] = Field(None, min_length=1, max_length=100)
     # Where that location is. Optional because a typed city that matched nothing
     # has no coordinates to send — but without them a vendor can't be placed
     # relative to an event, and being unplaceable is what keeps them out of
     # search results and bundles.
     latitude: Optional[float] = Field(None, ge=-90, le=90)
     longitude: Optional[float] = Field(None, ge=-180, le=180)
-    gender: str = Field(..., min_length=1, max_length=20)
-    language: str = Field(..., min_length=1, max_length=50)
+    gender: Optional[str] = Field(None, min_length=1, max_length=20)
+    language: Optional[str] = Field(None, min_length=1, max_length=50)
     supabase_user_id: Optional[str] = None
     supabase_access_token: Optional[str] = None
 
@@ -107,8 +111,8 @@ class RegisterRequest(BaseModel):
 
     @field_validator("username")
     @classmethod
-    def username_format(cls, v: str) -> str:
-        if not re.match(r"^[a-zA-Z0-9_]+$", v):
+    def username_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.match(r"^[a-zA-Z0-9_]+$", v):
             raise ValueError("Username may only contain letters, digits, and underscores")
         return v
 
