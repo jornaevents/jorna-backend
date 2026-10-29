@@ -132,6 +132,11 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   list them. Defaults to `true`.
 - `POST /conversations/{id}/unread` counts the thread as unread for the
   caller until they next open it (`GET …/messages` at offset 0).
+- `POST /conversations/booking/{booking_id}` returns the booking's own
+  thread if it has one, else the client's question (`enquiry`) thread with
+  that vendor, else a new booking thread (DECISIONS #39) — so the returned
+  thread's `booking_id` can be null. Offer and `system` messages carry
+  `meta.booking_id` and `meta.bundle_id`.
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`. Copying a contract link should call
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it

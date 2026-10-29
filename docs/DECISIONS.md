@@ -1007,3 +1007,21 @@ both sides sign, the booking follows.
 - The document returns `changes` ({added, removed, total_before,
   total_after}) for the client to see before signing; the signed snapshot and
   the PDF carry it. A text-only document's snapshot is unchanged.
+
+## 39. A booking continues the client's question thread
+
+A client who asks a vendor a question and then books them used to end up with
+two threads: the question, and a new one the first time anyone opened the
+booking's chat (the Message button, the first price offer or payment line).
+
+- `open_booking_thread` returns the booking's own thread if it already has
+  one (nothing that exists moves), else the client's question thread with
+  that vendor, else creates a booking thread as before. No migration:
+  threads that are already duplicated stay as they are.
+- A reused question thread has no `booking_id` of its own, so price offers
+  and event lines (`post_offer_message`, `post_system_message`) carry
+  `booking_id` and `bundle_id` in their `meta`. The web apps' offer cards
+  link from those (jorna-website #222), falling back to the thread's own
+  booking for older messages. That PR ships first.
+- The reverse order — booking first, then "Ask a question" — still opens a
+  separate question thread; left for later.

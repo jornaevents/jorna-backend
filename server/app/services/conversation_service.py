@@ -432,6 +432,11 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
     The plan's group chat has every vendor on it, so it is the wrong room for
     "can you arrive an hour earlier?" — a question about one booking, asked in
     front of five other businesses. Idempotent: opening is how you get to it.
+
+    The booking's own thread if it has one; otherwise the client's question
+    thread with this vendor, when they asked before booking, so the booking
+    continues that conversation instead of starting a second one beside it
+    (docs/DECISIONS.md #39). Only with neither is a booking thread created.
     """
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
@@ -447,6 +452,10 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
     conv = db.query(Conversation).filter(
         Conversation.subject_type == SUBJECT_BOOKING,
         Conversation.booking_id == booking_id,
+    ).first() or db.query(Conversation).filter(
+        Conversation.subject_type == SUBJECT_ENQUIRY,
+        Conversation.vendor_id == booking.vendor_id,
+        Conversation.client_user_id == booking.user_id,
     ).first()
     if not conv:
         conv = _create_thread(
@@ -458,7 +467,11 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
             bundle_id=booking.bundle_id,
             db=db,
         )
-    elif conv.bundle_id is None and booking.bundle_id is not None:
+    elif (
+        conv.subject_type == SUBJECT_BOOKING
+        and conv.bundle_id is None
+        and booking.bundle_id is not None
+    ):
         # Self-heal a thread created before bundle_id was tracked here — every
         # open is a chance to backfill it, on top of (not instead of) the
         # one-time migration for threads nobody happens to open again.
@@ -469,6 +482,13 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
     return get_conversation(
         conversation_id=conv.conversation_id, caller_user_id=caller_user_id, db=db
     )
+
+
+def _booking_ref(booking: Booking) -> dict:
+    """Which booking an offer or event line is about. Its thread may be the
+    client's question thread, which has no booking of its own, so the
+    message carries it — the web apps' offer cards link from this."""
+    return {"booking_id": booking.booking_id, "bundle_id": booking.bundle_id}
 
 
 def post_offer_message(
@@ -494,7 +514,7 @@ def post_offer_message(
             caller_user_id=sender_user_id,
             db=db,
             kind="offer",
-            meta=meta,
+            meta={**meta, **_booking_ref(booking)},
             skip_limits=True,
         )
     except Exception as exc:
@@ -528,7 +548,7 @@ def post_system_message(
             caller_user_id=sender_user_id,
             db=db,
             kind="system",
-            meta=meta,
+            meta={**(meta or {}), **_booking_ref(booking)},
             skip_limits=True,
         )
     except Exception as exc:
