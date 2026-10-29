@@ -862,14 +862,23 @@ def get_group_messages(
     }
 
 
-def get_unread_count(*, caller_user_id: str, db: Session) -> dict:
+def get_unread_count(
+    *, caller_user_id: str, db: Session, include_plan_chats: bool = True
+) -> dict:
     """Return total unread messages across the caller's inbox.
 
     The same conversations list_conversations shows and the same per-row
     counts, summed — so the badge never counts a thread whose bundle or
     booking is gone, which the inbox hides.
+
+    `include_plan_chats=False` leaves out plan group chats, for an inbox that
+    doesn't list them (the vendor app's Messages): a badge must not count
+    messages its reader has nowhere to open.
     """
-    conv_ids = [c.conversation_id for c in _live_conversations(caller_user_id, db)]
+    conv_ids = [
+        c.conversation_id for c in _live_conversations(caller_user_id, db)
+        if include_plan_chats or c.subject_type != SUBJECT_BUNDLE
+    ]
     unread = _unread_by_conversation(conv_ids, caller_user_id, db)
     return {"unread_count": sum(unread.values())}
 

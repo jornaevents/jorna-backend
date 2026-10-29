@@ -126,6 +126,9 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   signed bookings 400. Leads archive via `PATCH /leads/{id}` `{archived}`.
 - `POST /conversations/{id}/lead` makes a lead for the couple in a
   two-person thread — 201 new, 200 when the thread already has an open lead.
+- `GET /conversations/unread-count?include_plan_chats=false` leaves plan
+  group chats out of the count, for the vendor app, whose Messages doesn't
+  list them. Defaults to `true`.
 - `POST /conversations/{id}/unread` counts the thread as unread for the
   caller until they next open it (`GET …/messages` at offset 0).
 - Vendor booking payloads now carry `created_at` (null before 0066),
