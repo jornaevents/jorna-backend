@@ -396,6 +396,74 @@ class TestInbox:
                                  headers=make_auth_headers(world["vendor_user"])).json()
         assert vendor_view[0]["unread_count"] == 0
 
+    def test_the_badge_skips_a_thread_whose_plan_was_deleted(self, world):
+        """The inbox hides a chat whose bundle is gone; the badge must too, or
+        it shows messages nobody can find."""
+        db = world["db"]
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=world["client_user"].user_id, name="Sangeet",
+                        status="draft", created_at=now, updated_at=now)
+        db.add(bundle)
+        db.commit()
+        world["booking"].bundle_id = bundle.bundle_id
+        db.commit()
+        convs = cs.create_bundle_conversations(
+            bundle_id=bundle.bundle_id, client_user_id=world["client_user"].user_id, db=db,
+        )
+        plan_chat = next(c for c in convs if c["type"] == "all_parties")
+        cs.send_group_message(
+            conversation_id=plan_chat["conversation_id"], content="See you there",
+            caller_user_id=world["vendor_user"].user_id, db=db,
+        )
+        _ask(world)  # an enquiry the client sent — nothing unread to them
+
+        def badge():
+            return client.get("/conversations/unread-count",
+                              headers=make_auth_headers(world["client_user"])).json()["unread_count"]
+
+        assert badge() == 1
+
+        world["booking"].bundle_id = None
+        db.delete(bundle)
+        db.commit()
+
+        inbox = client.get("/conversations",
+                           headers=make_auth_headers(world["client_user"])).json()
+        assert plan_chat["conversation_id"] not in [c["conversation_id"] for c in inbox]
+        assert badge() == sum(c["unread_count"] for c in inbox) == 0
+
+    def test_the_vendor_app_can_leave_plan_chats_out_of_the_badge(self, world):
+        """The vendor app's Messages doesn't list plan chats, so its badge
+        asks for a count without them; everyone else still gets them."""
+        db = world["db"]
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=world["client_user"].user_id, name="Sangeet",
+                        status="draft", created_at=now, updated_at=now)
+        db.add(bundle)
+        db.commit()
+        world["booking"].bundle_id = bundle.bundle_id
+        db.commit()
+        convs = cs.create_bundle_conversations(
+            bundle_id=bundle.bundle_id, client_user_id=world["client_user"].user_id, db=db,
+        )
+        plan_chat = next(c for c in convs if c["type"] == "all_parties")
+        cs.send_group_message(
+            conversation_id=plan_chat["conversation_id"], content="Running late",
+            caller_user_id=world["client_user"].user_id, db=db,
+        )
+        cs.send_group_message(
+            conversation_id=_ask(world).json()["conversation_id"], content="And one more thing",
+            caller_user_id=world["client_user"].user_id, db=db,
+        )
+        headers = make_auth_headers(world["vendor_user"])
+
+        def badge(**params):
+            return client.get("/conversations/unread-count", params=params,
+                              headers=headers).json()["unread_count"]
+
+        assert badge() == 3
+        assert badge(include_plan_chats="false") == 2
+
     def test_sorted_by_what_happened_last(self, world):
         db = world["db"]
         first = _ask(world).json()["conversation_id"]
