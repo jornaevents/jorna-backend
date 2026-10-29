@@ -21,8 +21,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.config import WEB_APP_URL
-from app.db.models import ConversationMember, GroupMessage, GroupMessageRead, User
+from app.config import CLIENT_WEB_APP_URL, WEB_APP_URL
+from app.db.models import ConversationMember, GroupMessage, GroupMessageRead, User, Vendor
 from app.services.email_service import send_email
 
 logger = logging.getLogger(__name__)
@@ -35,12 +35,20 @@ logger = logging.getLogger(__name__)
 _NEVER_DIGESTED = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 
-def _conversation_url(conversation_id: str) -> str:
-    return f"{WEB_APP_URL}/conversation/?id={conversation_id}"
+def _app_url(user_id: str, db: Session) -> str:
+    """The web app this person uses. Vendors work in the vendor app
+    (WEB_APP_URL); everyone else is a client, on book.jornaevents.com —
+    sending them to the vendor site lands them on the wrong product."""
+    is_vendor = db.query(Vendor.vendor_id).filter(Vendor.user_id == user_id).first()
+    return (WEB_APP_URL if is_vendor else CLIENT_WEB_APP_URL).rstrip("/")
 
 
-def _inbox_url() -> str:
-    return f"{WEB_APP_URL}/messages/"
+def _conversation_url(base: str, conversation_id: str) -> str:
+    return f"{base}/conversation/?id={conversation_id}"
+
+
+def _inbox_url(base: str) -> str:
+    return f"{base}/messages/"
 
 
 def _unread_for_user(user_id: str, since: datetime, db: Session) -> list[GroupMessage]:
@@ -70,7 +78,9 @@ def _unread_for_user(user_id: str, since: datetime, db: Session) -> list[GroupMe
     )
 
 
-def _conversation_rows(user_id: str, messages: list[GroupMessage], db: Session) -> list[dict]:
+def _conversation_rows(
+    user_id: str, messages: list[GroupMessage], base: str, db: Session
+) -> list[dict]:
     """One row per conversation with new messages, named the way that
     conversation is named for this user — reuses get_conversation rather than
     re-deriving a display name, so a digest and the inbox never disagree
@@ -95,7 +105,7 @@ def _conversation_rows(user_id: str, messages: list[GroupMessage], db: Session) 
         rows.append({
             "name": conv.get("name") or "A conversation",
             "count": count,
-            "url": _conversation_url(conv_id),
+            "url": _conversation_url(base, conv_id),
         })
     return rows
 
@@ -106,7 +116,7 @@ def _subject(total: int) -> str:
     return f"You have {total} new messages on Jorna"
 
 
-def _body(*, name: str, rows: list[dict], total: int) -> tuple[str, str]:
+def _body(*, name: str, rows: list[dict], total: int, base: str) -> tuple[str, str]:
     greeting = f"Hi {name}," if name else "Hi,"
     line = "a new message" if total == 1 else f"{total} new messages"
 
@@ -131,7 +141,7 @@ def _body(*, name: str, rows: list[dict], total: int) -> tuple[str, str]:
           {items_html}
         </table>
         <p style="margin:28px 0">
-          <a href="{_inbox_url()}"
+          <a href="{_inbox_url(base)}"
              style="background:#6b1226;color:#f6eee1;text-decoration:none;padding:14px 28px;border-radius:999px;font-weight:600;display:inline-block">
             Open Messages
           </a>
@@ -144,7 +154,7 @@ def _body(*, name: str, rows: list[dict], total: int) -> tuple[str, str]:
         f"{greeting}\n\n"
         f"You have {line} waiting on Jorna:\n\n"
         f"{items_text}\n\n"
-        f"Open Messages: {_inbox_url()}\n"
+        f"Open Messages: {_inbox_url(base)}\n"
     )
     return html, text
 
@@ -159,11 +169,12 @@ def send_message_digest(user: User, db: Session, *, now: Optional[datetime] = No
     unread = _unread_for_user(user.user_id, since, db)
     sent = False
     if unread and user.email:
-        rows = _conversation_rows(user.user_id, unread, db)
+        base = _app_url(user.user_id, db)
+        rows = _conversation_rows(user.user_id, unread, base, db)
         total = sum(r["count"] for r in rows)
         if total:
             name = (user.f_name or "").strip()
-            html, text = _body(name=name, rows=rows, total=total)
+            html, text = _body(name=name, rows=rows, total=total, base=base)
             result = send_email(to=user.email, subject=_subject(total), html=html, text=text)
             sent = bool(result.get("success"))
             if not sent:

@@ -61,6 +61,12 @@ GOOGLE_CALENDAR_WEBHOOK_URL: str = os.getenv(
 # iOS deep-link bridge page. Not client-supplied — that would be an open redirect.
 WEB_APP_URL: str = os.getenv("WEB_APP_URL", "https://jornaevents.com/app")
 
+# Base URL of the client (host) web app, book.jornaevents.com, including its
+# /app basePath. WEB_APP_URL above is the vendor app; links meant for a client
+# (the message digest, for one) go here instead. Not FRONTEND_URL, which has no
+# /app and fronts the iOS bridge pages.
+CLIENT_WEB_APP_URL: str = os.getenv("CLIENT_WEB_APP_URL", "https://book.jornaevents.com/app")
+
 # ── Admin bootstrap ───────────────────────────────────────────────────
 # If set, this email address is automatically promoted to admin on startup.
 # Use this to create the first admin without needing direct DB access.

@@ -293,10 +293,11 @@ def _vendor_user(vendor_id: str, db: Session) -> User:
 def _assert_not_blocked(a: str, b: str, db: Session) -> None:
     """Refuse in either direction.
 
-    UserBlock's own docstring says it is "enforced client-side", which is not
-    enforcement — it is a request that the other end behave. It costs one query
-    to mean it, and this is the surface where it matters: everywhere else a
-    block hides content, here it would be a stranger arriving in an inbox.
+    Client-side filtering alone is not enforcement — it is a request that the
+    other end behave. It costs one query to mean it, and this is the surface
+    where it matters: everywhere else a block hides content, here it would be a
+    stranger arriving in an inbox. Checked on opening a thread and on every
+    send into a two-person one (_assert_direct_not_blocked).
     """
     blocked = db.query(UserBlock).filter(
         ((UserBlock.blocker_user_id == a) & (UserBlock.blocked_user_id == b))
@@ -633,12 +634,12 @@ def _subject_is_live(conv: Conversation, live_bundles: set[str], live_bookings: 
     return conv.bundle_id in live_bundles
 
 
-def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
-    """Return every conversation the caller is in, newest activity first."""
-    memberships = db.query(ConversationMember).filter(
+def _live_conversations(caller_user_id: str, db: Session) -> list[Conversation]:
+    """Every conversation the caller is in whose subject still exists — what
+    the inbox lists, and so what the unread badge may count."""
+    conv_ids = db.query(ConversationMember.conversation_id).filter(
         ConversationMember.user_id == caller_user_id
-    ).all()
-    conv_ids = [m.conversation_id for m in memberships]
+    )
     conversations = db.query(Conversation).filter(
         Conversation.conversation_id.in_(conv_ids)
     ).all()
@@ -655,10 +656,12 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
             Booking.booking_id.in_(booking_ids)
         ).all()
     } if booking_ids else set()
-    conversations = [
-        c for c in conversations if _subject_is_live(c, live_bundles, live_bookings)
-    ]
+    return [c for c in conversations if _subject_is_live(c, live_bundles, live_bookings)]
 
+
+def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
+    """Return every conversation the caller is in, newest activity first."""
+    conversations = _live_conversations(caller_user_id, db)
     unread = _unread_by_conversation([c.conversation_id for c in conversations], caller_user_id, db)
 
     result = []
@@ -737,6 +740,25 @@ def _assert_not_flooding(caller_user_id: str, db: Session) -> None:
         raise ConversationError(429, "You're sending messages too quickly. Wait a moment.")
 
 
+def _assert_direct_not_blocked(conversation_id: str, caller_user_id: str, db: Session) -> None:
+    """A block ends a two-person thread that already exists, not just new ones.
+
+    Checking only when a thread is opened left the one that mattered most
+    untouched: the person you blocked already has a thread with you, and
+    sending into it never opened anything. Plan chats are not covered: a block
+    between two people on a plan can't silence it for everyone else on it.
+    """
+    conv = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
+    if not conv or conv.type != "direct":
+        return
+    others = db.query(ConversationMember.user_id).filter(
+        ConversationMember.conversation_id == conversation_id,
+        ConversationMember.user_id != caller_user_id,
+    ).all()
+    for (other_user_id,) in others:
+        _assert_not_blocked(caller_user_id, other_user_id, db)
+
+
 def send_group_message(
     *, conversation_id: str, content: str, caller_user_id: str, db: Session,
     kind: str = "text", meta: dict | None = None, skip_limits: bool = False,
@@ -756,6 +778,7 @@ def send_group_message(
     if not content.strip():
         raise ConversationError(400, "Message content cannot be empty")
     _assert_is_member(conversation_id, caller_user_id, db)
+    _assert_direct_not_blocked(conversation_id, caller_user_id, db)
     if not skip_limits:
         _assert_not_flooding(caller_user_id, db)
 
@@ -880,37 +903,25 @@ def get_group_messages(
     }
 
 
-def get_unread_count(*, caller_user_id: str, db: Session) -> dict:
-    """Return total unread group messages across all conversations."""
-    memberships = db.query(ConversationMember).filter(
-        ConversationMember.user_id == caller_user_id
-    ).all()
-    conv_ids = [m.conversation_id for m in memberships]
+def get_unread_count(
+    *, caller_user_id: str, db: Session, include_plan_chats: bool = True
+) -> dict:
+    """Return total unread messages across the caller's inbox.
 
-    all_msg_ids = [
-        m.message_id for m in db.query(GroupMessage.message_id)
-        .filter(GroupMessage.conversation_id.in_(conv_ids))
-        .all()
+    The same conversations list_conversations shows and the same per-row
+    counts, summed — so the badge never counts a thread whose bundle or
+    booking is gone, which the inbox hides.
+
+    `include_plan_chats=False` leaves out plan group chats, for an inbox that
+    doesn't list them (the vendor app's Messages): a badge must not count
+    messages its reader has nowhere to open.
+    """
+    conv_ids = [
+        c.conversation_id for c in _live_conversations(caller_user_id, db)
+        if include_plan_chats or c.subject_type != SUBJECT_BUNDLE
     ]
-    read_msg_ids = {
-        r.message_id for r in db.query(GroupMessageRead).filter(
-            GroupMessageRead.message_id.in_(all_msg_ids),
-            GroupMessageRead.user_id == caller_user_id,
-        ).all()
-    }
-    unread = len(set(all_msg_ids) - read_msg_ids)
-    # A flagged thread with nothing actually unread still counts once — the
-    # badge and the thread list must agree (see _unread_by_conversation).
-    for m in memberships:
-        if m.marked_unread_at is None:
-            continue
-        thread_msgs = {
-            r.message_id for r in db.query(GroupMessage.message_id)
-            .filter(GroupMessage.conversation_id == m.conversation_id).all()
-        }
-        if not (thread_msgs - read_msg_ids):
-            unread += 1
-    return {"unread_count": unread}
+    unread = _unread_by_conversation(conv_ids, caller_user_id, db)
+    return {"unread_count": sum(unread.values())}
 
 
 def mark_unread(*, conversation_id: str, caller_user_id: str, db: Session) -> dict:
