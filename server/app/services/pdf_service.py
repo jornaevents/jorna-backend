@@ -357,7 +357,16 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
         else None if signer else "Not signed — this is the current version, not a signed agreement.",
     )
 
-    for kind, clause in _ordered_blocks(a.get("document_layout"), a.get("terms_clauses") or []):
+    clauses = a.get("terms_clauses") or []
+    cancellation = next(
+        (c for c in clauses if c.get("key") == "cancellation"),
+        next((c for c in clauses if re.match(r"cancell?ation\b", (c.get("title") or "").strip(), re.I)), None),
+    )
+    window_text = (
+        f"Cancelling within {round(a['cancellation_window_hours'] / 24)} days of the event may forfeit what's been paid."
+        if a.get("cancellation_window_hours") is not None else None
+    )
+    for kind, clause in _ordered_blocks(a.get("document_layout"), clauses):
         if kind == "parties":
             pdf.eyebrow("Parties")
             pdf.row(f"Provider: {vendor_name}", "")
@@ -405,10 +414,15 @@ def render_contract(a: dict, *, vendor_name: str, service_name: str | None,
             pdf.font(11.5, True)
             pdf.multi_cell(0, 6, clause.get("title") or "", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(0.5)
+            # The window belongs in the Cancellation section, ahead of the
+            # vendor's own words — one place says what cancelling costs, as
+            # on the client's page (web ContractPaper, 2026-10-26).
+            if clause is cancellation and window_text:
+                pdf.text_block(window_text, gap=0.5)
             pdf.text_block(clause.get("body") or "")
 
     policies = []
-    if a.get("cancellation_window_hours") is not None:
+    if a.get("cancellation_window_hours") is not None and cancellation is None:
         policies.append(
             f"Cancelling within {round(a['cancellation_window_hours'] / 24)} days of the event "
             "may forfeit what's been paid."
@@ -456,12 +470,26 @@ def render_document(d: dict, *, vendor_name: str, client_name: str | None, agree
         pdf.multi_cell(0, 6, s.get("title") or "", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(0.5)
         pdf.text_block(s.get("body") or "")
+    changes = d.get("changes")
+    if changes:
+        # An addendum's priced lines (DECISIONS #38): the signed copy says
+        # what moves and the total it lands on.
+        pdf.eyebrow("Changes to what's included")
+        for li in changes.get("added") or []:
+            qty = li.get("quantity") or 1
+            label = f"Add: {li.get('name')}" + (f" × {qty:g}" if qty != 1 else "")
+            pdf.row(label, money(li.get("total_cents")))
+        for name in changes.get("removed") or []:
+            pdf.row(f"Remove: {name}", "")
+        if changes.get("total_after") is not None:
+            pdf.row("New total", f"{money(changes.get('total_before'))} → {money(changes['total_after'])}", bold=True)
     pdf.ln(2)
     pdf.font(8.5, color=FAINT)
     pdf.multi_cell(
         0, 4.5,
-        "This document is part of the written agreement for the booking above. Signing it doesn't by "
-        "itself change the booking's price, date or payments.",
+        "This document is part of the written agreement for the booking above. "
+        + ("Once both sign, the booking's total and remaining payments change as above." if changes else
+           "Signing it doesn't by itself change the booking's price, date or payments."),
         new_x="LMARGIN", new_y="NEXT",
     )
     pdf.rule()
@@ -525,7 +553,11 @@ def document_pdf(d, booking, db, client_name: str | None) -> tuple[bytes, str]:
     from app.services import contract_document as doc
 
     snap = d.signed_snapshot
+    from app.services.document_service import changes_view
+
     live = {"kind": d.kind, "title": d.title, "sections": d.sections, "date_iso": booking.date_iso}
+    if (changes := changes_view(d, booking, db)):
+        live["changes"] = changes
     agreement_title = booking.document_title or (
         f"{_service_name(booking, db)} agreement" if booking.service_id else None
     )

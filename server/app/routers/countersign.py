@@ -27,6 +27,9 @@ class CountersignRequest(BaseModel):
     # the contract's vendor_esign_consent.given says which.
     consent: bool = False
     consent_version: Optional[str] = None
+    # A name that isn't the one on the vendor's account signs only once
+    # they've confirmed it (countersign_service._check_name).
+    name_confirmed: bool = False
 
 
 class DeclineSignatureRequest(BaseModel):
@@ -48,7 +51,8 @@ def countersign_contract_route(
     try:
         return countersign_contract(
             booking_id=booking_id, caller_user_id=current_user.user_id, signer_name=body.signer_name,
-            consent=body.consent, consent_version=body.consent_version, client=client_meta(request), db=db,
+            consent=body.consent, consent_version=body.consent_version, client=client_meta(request),
+            name_confirmed=body.name_confirmed, db=db,
         )
     except CountersignError as e:
         raise _http(e)
@@ -86,7 +90,8 @@ def countersign_document_route(
     try:
         return countersign_document(
             document_id=document_id, caller_user_id=current_user.user_id, signer_name=body.signer_name,
-            consent=body.consent, consent_version=body.consent_version, client=client_meta(request), db=db,
+            consent=body.consent, consent_version=body.consent_version, client=client_meta(request),
+            name_confirmed=body.name_confirmed, db=db,
         )
     except CountersignError as e:
         raise _http(e)

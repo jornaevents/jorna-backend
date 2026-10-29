@@ -131,3 +131,24 @@ def test_renders_text_the_builtin_fonts_cant():
         signer="Zoë Patel", signed_at="2030-02-01T10:00:00+00:00", sha="ab" * 32,
     )
     assert content.startswith(b"%PDF-")
+
+
+def test_the_cancellation_window_prints_inside_the_cancellation_section(monkeypatch):
+    # 2026-10-26: the window sat in "Policies" apart from the vendor's own
+    # cancellation wording, and the client's page dropped it altogether.
+    written: list[str] = []
+    eyebrows: list[str] = []
+    real_text, real_eyebrow = pdf_service._Pdf.text_block, pdf_service._Pdf.eyebrow
+    monkeypatch.setattr(pdf_service._Pdf, "text_block", lambda self, t, **kw: (written.append(t), real_text(self, t, **kw))[1])
+    monkeypatch.setattr(pdf_service._Pdf, "eyebrow", lambda self, t: (eyebrows.append(t), real_eyebrow(self, t))[1])
+    pdf_service.render_contract(
+        {
+            "date_iso": "2030-06-01", "amount_cents": 100_000, "cancellation_window_hours": 30 * 24,
+            "terms_clauses": [{"key": "cancellation", "title": "Cancellation", "body": "The deposit is non-refundable."}],
+            "document_layout": [{"type": "parties"}, {"type": "terms", "id": "cancellation"}, {"type": "signature"}],
+        },
+        vendor_name="Arjun Kapoor", service_name="DJ", signer=None, signed_at=None, sha=None,
+    )
+    i = written.index("Cancelling within 30 days of the event may forfeit what's been paid.")
+    assert written[i + 1] == "The deposit is non-refundable."
+    assert "Policies" not in eyebrows

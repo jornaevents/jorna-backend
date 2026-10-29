@@ -164,6 +164,7 @@ def vendor_has_conflicting_booking(
     time_start: str | None = None,
     time_end: str | None = None,
     exclude_booking_id: str | None = None,
+    include_held: bool = True,
 ) -> Booking | None:
     """Return an existing booking that commits *vendor_id*'s date (see
     commits_vendor_date — approved/paid, or a contract that's signed or still
@@ -208,6 +209,15 @@ def vendor_has_conflicting_booking(
     )
     if exclude_booking_id:
         query = query.filter(Booking.booking_id != exclude_booking_id)
+    if not include_held:
+        # Only what's agreed: an ordinary booking, or a contract the client
+        # has signed. An unsigned offer's hold is a warning, not a wall
+        # (contract_service._check_clash, DECISIONS #37).
+        query = query.filter(or_(
+            Booking.contract_token.is_(None),
+            Booking.signed_at.isnot(None),
+            Booking.client_signed_at.isnot(None),
+        ))
 
     # The query answers "which days collide"; booking_blocks settles the hours,
     # where a null date_end and a midnight-crossing window are easier to read
@@ -289,6 +299,17 @@ def _dispatch_status_notification(
 
 
 # ── Response serialization ────────────────────────────────────────────
+
+def _last_activity(booking: Booking, db: Session) -> str | None:
+    if not booking.contract_token:
+        return None
+    from sqlalchemy import func
+
+    from app.db.models import ContractEvent
+
+    latest = db.query(func.max(ContractEvent.at)).filter(ContractEvent.booking_id == booking.booking_id).scalar()
+    return utc_iso(latest) if latest else None
+
 
 def _booking_dict(booking: Booking, db: Session) -> dict:
     """Return a booking as a dict, including negotiation preference flags from both parties."""
@@ -375,6 +396,10 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         # Field-by-field negotiation (DECISIONS #26): whose turn, and how many
         # changes wait on each side. Null on the older proposal flow.
         "negotiation": _negotiation_summary(booking, db),
+        # The latest thing on the contract's timeline — what the Contracts
+        # list sorts and shows as "last modified"; it used to miss edits,
+        # proposals and payments (2026-10-26).
+        "last_activity_at": _last_activity(booking, db),
         "status": booking.status,
         # The vendor's note when they declined this request (DECISIONS #28).
         "vendor_decline_note": booking.vendor_decline_note,
@@ -1192,6 +1217,11 @@ def update_booking_status(
             and booking.status == BookingStatus.APPROVED.value
         )
         _refund_client_on_cancel = False
+        # Ending an agreement both sides signed takes a reason: the client is
+        # told why on their link and in the timeline, instead of a bare
+        # "withdrawn" that reads as if nothing was ever agreed.
+        if cancelling and booking.signed_at is not None and not (note or "").strip():
+            raise BookingError(400, "Say why you're cancelling — your client sees it.")
         if cancelling:
             from app.services.bundle_service import _money_has_moved
 
@@ -1255,8 +1285,12 @@ def update_booking_status(
             if cancelling
             else RejectionReason.VENDOR_DECLINED.value
         )
-        if not cancelling:
+        if not cancelling or booking.signed_at is not None:
             booking.vendor_decline_note = (note or "").strip()[:500] or None
+        if cancelling and booking.signed_at is not None:
+            from app.services import contract_document as doc
+
+            doc.record(db, booking, "cancelled", "vendor", {"reason": booking.vendor_decline_note})
         # An accepted request's proposal goes with it, so its link says
         # withdrawn rather than still waiting for a signature.
         if booking.contract_token and booking.signed_at is None:
