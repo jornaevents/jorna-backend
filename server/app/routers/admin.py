@@ -1,85 +1,17 @@
-"""Admin-only endpoints for user management and scraper control."""
+"""Admin-only endpoints for user management and data maintenance."""
 
 import logging
-import os
-import re
-import time
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import User, Vendor
+from app.db.models import User
 from app.dependencies import get_current_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-# Tags that align with bundle scoring keywords
-_BUNDLE_SCORING_TAGS = {
-    "elegant", "luxury", "premium", "traditional", "modern", "fusion",
-    "cultural", "heritage", "contemporary", "vibrant", "energetic",
-    "bhangra", "bollywood", "desi", "punjabi", "south asian", "gujarati",
-    "sangeet", "baraat", "garba", "navratri",
-    "wedding", "engagement", "reception", "bridal", "anniversary",
-    "professional", "experienced",
-    "nj", "nyc", "new jersey", "new york", "tristate",
-}
-
-
-def _scrape_profile(apify_token: str, username: str) -> tuple[dict | None, str | None]:
-    """Scrape an Instagram profile via the Apify HTTP API directly.
-
-    Uses run-sync-get-dataset-items to avoid the apify_client Pydantic
-    validation bug on ActorResponse pricing fields.
-    Returns (profile, error_message). error_message is None on success.
-    """
-    import httpx
-
-    url = (
-        "https://api.apify.com/v2/acts/apify~instagram-scraper"
-        "/run-sync-get-dataset-items"
-        f"?token={apify_token}&timeout=120&memory=256"
-    )
-    payload = {
-        "directUrls": [f"https://www.instagram.com/{username}/"],
-        "resultsType": "posts",
-        "resultsLimit": 20,
-        "addParentData": True,
-    }
-    try:
-        resp = httpx.post(url, json=payload, timeout=150.0)
-        if resp.status_code != 201:
-            return None, f"Apify returned HTTP {resp.status_code}: {resp.text[:200]}"
-        items = resp.json()
-        if not items:
-            return None, "Apify returned no items — account may be private or empty"
-        profile = items[0].copy()
-        profile["posts"] = [i for i in items if i.get("caption") is not None or i.get("id")]
-        return profile, None
-    except Exception as exc:
-        logger.warning("Apify scrape failed for @%s: %s", username, exc)
-        return None, str(exc)
-
-
-def _extract_tags(profile: dict, bio: str, username: str) -> list[str]:
-    tag_set: set = set()
-    posts = profile.get("posts", []) or profile.get("latestPosts", []) or []
-    for post in posts:
-        caption = post.get("caption") or post.get("text") or ""
-        for word in caption.split():
-            if word.startswith("#"):
-                tag = re.sub(r"[^a-z0-9 ]", "", word[1:].lower()).strip()
-                if tag:
-                    tag_set.add(tag)
-    combined = f"{bio} {username}".lower()
-    for keyword in _BUNDLE_SCORING_TAGS:
-        if keyword in combined:
-            tag_set.add(keyword)
-    filtered = {t for t in tag_set if t in _BUNDLE_SCORING_TAGS or (3 <= len(t) <= 30 and not t.isdigit())}
-    return sorted(filtered)[:20]
-
 
 @router.post("/users/{user_id}/make-admin", summary="Promote a user to admin")
 def make_admin(
@@ -186,116 +118,3 @@ def cleanup_bundle_event_data(
     are never touched either way."""
     from app.services.bundle_service import cleanup_legacy_bundle_event_data
     return cleanup_legacy_bundle_event_data(db=db, dry_run=dry_run, stale_days=stale_days)
-
-
-def _require_scraper_auth(
-    x_scraper_key: str | None = Header(None, alias="X-Scraper-Key", description="SCRAPER_API_KEY value for cron job access"),
-    api_key: str | None = Query(None, description="DEPRECATED — use the X-Scraper-Key header; query params end up in access logs"),
-    credentials=Depends(__import__("fastapi.security", fromlist=["HTTPBearer"]).HTTPBearer(auto_error=False)),
-    db: Session = Depends(get_db),
-):
-    """Accept a valid SCRAPER_API_KEY (X-Scraper-Key header preferred; legacy
-    ?api_key= query param still works) or an admin JWT token."""
-    scraper_key = os.getenv("SCRAPER_API_KEY")
-    supplied = x_scraper_key or api_key
-    if supplied and scraper_key and supplied == scraper_key:
-        return  # authenticated via static API key
-
-    # Try JWT admin auth
-    if credentials:
-        import jwt
-        from app.config import ALGORITHM, SECRET_KEY
-        try:
-            payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-            user = db.query(User).filter(User.user_id == payload.get("sub")).first()
-            if user and user.is_admin and payload.get("tv") == user.token_version:
-                return  # authenticated via admin JWT
-        except Exception:
-            pass
-
-    raise HTTPException(status_code=401, detail="Provide a valid api_key or an admin Bearer token")
-
-
-@router.post("/scraper/run", summary="Run Instagram enrichment scraper (admin only)")
-def run_scraper(
-    dry_run: bool = Query(False, description="Preview without writing to the database"),
-    delay: float = Query(1.0, description="Seconds to wait between vendor scrapes"),
-    db: Session = Depends(get_db),
-    _auth=Depends(_require_scraper_auth),
-):
-    """Scrape Instagram profiles for all vendors who have linked their account
-    and enrich their profiles with tags (and a bio, if they have none). Never
-    touches their packages or photos.
-
-    Authenticate with either a Bearer admin JWT or an api_key query param
-    matching the SCRAPER_API_KEY environment variable (for cron jobs).
-
-    Requires APIFY_API_TOKEN to be set as an environment variable.
-    Use dry_run=true to preview results without writing anything.
-    """
-    apify_token = os.getenv("APIFY_API_TOKEN")
-    if not apify_token:
-        raise HTTPException(status_code=400, detail="APIFY_API_TOKEN is not configured on the server")
-
-    rows = (
-        db.query(Vendor, User)
-        .join(User, Vendor.user_id == User.user_id)
-        .filter(Vendor.instagram_username.isnot(None))
-        .all()
-    )
-
-    if not rows:
-        return {"message": "No vendors have linked their Instagram account.", "results": []}
-
-    results = []
-
-    for i, (vendor, user) in enumerate(rows):
-        username = vendor.instagram_username
-        entry = {
-            "vendor_id": vendor.vendor_id,
-            "username": username,
-            "name": f"{user.f_name} {user.l_name}",
-        }
-
-        profile, error = _scrape_profile(apify_token, username)
-        if not profile:
-            entry["status"] = "failed"
-            entry["error"] = error
-            entry["tags"] = []
-            results.append(entry)
-            continue
-
-        bio = profile.get("biography") or profile.get("bio") or ""
-        tags = _extract_tags(profile, bio, username)
-
-        entry["tags"] = tags
-
-        if dry_run:
-            entry["status"] = "dry_run"
-        else:
-            vendor.instagram_tags = tags
-            if bio and (not vendor.bio or not vendor.bio.strip()):
-                vendor.bio = bio[:500]
-            # Tags and an empty bio only. Packages are left alone: it used to
-            # add post images to the vendor's first package, which the vendor
-            # never chose, and Instagram's CDN URLs expire within days, so
-            # they turned into broken images.
-            db.commit()
-
-            entry["status"] = "enriched"
-
-        results.append(entry)
-
-        if i < len(rows) - 1:
-            time.sleep(delay)
-
-    enriched = sum(1 for r in results if r["status"] == "enriched")
-    failed = sum(1 for r in results if r["status"] == "failed")
-
-    return {
-        "dry_run": dry_run,
-        "total": len(results),
-        "enriched": enriched,
-        "failed": failed,
-        "results": results,
-    }

@@ -38,7 +38,6 @@ real files:
 | File uploads (Supabase Storage) | `SUPABASE_SERVICE_KEY` | Uploads return a 500 "not configured" error |
 | Google Calendar | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `GOOGLE_CALENDAR_WEBHOOK_URL` | Calendar connect fails |
 | Chatbot (OpenRouter) | `OPENROUTER_API_KEY` | Bundle-builder chat fails; add a separate spend-limited key if needed |
-| Vendor scraping | `APIFY_API_TOKEN`, `SCRAPER_API_KEY` | Not used by the API |
 | Stripe | `STRIPE_*`, `ESCROW_ENABLED=false` | Same as production: no escrow |
 
 `SUPABASE_URL` is set, so Google sign-in still verifies tokens. If staging

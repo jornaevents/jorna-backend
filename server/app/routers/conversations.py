@@ -51,11 +51,16 @@ def list_conversations_route(
 
 @router.get("/unread-count", summary="Get total unread group message count")
 def unread_count_route(
+    include_plan_chats: bool = Query(
+        True, description="False leaves out plan group chats, for an inbox that doesn't list them."
+    ),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Return total unread group messages across all conversations."""
-    return get_unread_count(caller_user_id=current_user.user_id, db=db)
+    return get_unread_count(
+        caller_user_id=current_user.user_id, db=db, include_plan_chats=include_plan_chats
+    )
 
 
 @router.post("/enquiry", summary="Ask a vendor a question", status_code=201)

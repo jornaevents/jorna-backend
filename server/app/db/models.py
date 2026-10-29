@@ -575,6 +575,10 @@ class ContractDocument(Base):
     kind = Column(String(20), nullable=False)  # addendum | cancellation
     title = Column(String(200), nullable=False)
     sections = Column(JSON, nullable=False)  # [{key, title, body}]
+    # An addendum's priced changes (0081, DECISIONS #38): lines to add, and
+    # contract line ids to take out. Applied to the booking once both sign.
+    line_items = Column(JSON, nullable=True)
+    removed_line_ids = Column(JSON, nullable=True)
     token = Column(String(64), unique=True, index=True, nullable=False)
     # draft | sent | viewed | awaiting_vendor | signed | declined | voided.
     # Signed by both, like a contract (0078): the client first
@@ -1034,7 +1038,9 @@ class ContentReport(Base):
 
 class UserBlock(Base):
     """blocker no longer wants to see blocked's content (messages, reviews,
-    listings). Enforced client-side from GET /users/me/blocks."""
+    listings). Messaging in two-person threads is refused server-side
+    (conversation_service._assert_not_blocked); the rest is filtered
+    client-side from GET /blocks."""
 
     __tablename__ = "user_blocks"
     __table_args__ = (UniqueConstraint("blocker_user_id", "blocked_user_id", name="uq_user_block"),)

@@ -18,7 +18,7 @@ def countersign(booking_id: str, name: str = "Vendor Name") -> dict:
         b = db.query(Booking).filter(Booking.booking_id == booking_id).first()
         return countersign_service.countersign_contract(
             booking_id=booking_id, caller_user_id=_vendor_user_id(db, b.vendor_id), signer_name=name,
-            consent=True, consent_version=countersign_service.esign_consent.VERSION, db=db,
+            consent=True, consent_version=countersign_service.esign_consent.VERSION, name_confirmed=True, db=db,
         )
 
 
@@ -33,5 +33,5 @@ def countersign_document(document_id: str, name: str = "Vendor Name") -> dict:
         d = db.query(ContractDocument).filter(ContractDocument.document_id == document_id).first()
         return countersign_service.countersign_document(
             document_id=document_id, caller_user_id=_vendor_user_id(db, d.vendor_id), signer_name=name,
-            consent=True, consent_version=countersign_service.esign_consent.VERSION, db=db,
+            consent=True, consent_version=countersign_service.esign_consent.VERSION, name_confirmed=True, db=db,
         )

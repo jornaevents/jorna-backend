@@ -926,3 +926,84 @@ whole category; Attire's subcategories described the outfit), and every picker s
     service_key. So the Cultural Services slot now draws from the whole Entertainment group.
   - The slot keys in the API are unchanged until the web picker ships. That's also when Bar &
     bartending becomes a default slot.
+
+## 36. No Instagram scraping; the handle is just a link
+
+Vendors can still give an Instagram handle, and it's shown on their profile as a link. Nothing
+fetches their profile any more (user, 2026-10-26).
+
+- Removed `POST /admin/scraper/run` (Apify, unlocked by `SCRAPER_API_KEY` for a weekly
+  cron-job.org call), `GET /vendors/instagram-linked`, `POST /vendors/{id}/instagram-enrich`, and
+  the standalone `ig_scraper/`. `APIFY_API_TOKEN` and `SCRAPER_API_KEY` aren't read anywhere now.
+- It had already stopped adding post photos to packages (Instagram's image links expire within
+  days). It still wrote hashtags to `vendors.instagram_tags` and an empty bio.
+- Tags it already wrote stay, and bundle scoring still reads them. The column and that data can go
+  in a later migration if they're no longer wanted.
+
+## 37. Contract trust fixes from the 2026-10-26 staging test
+
+A full staging run of contracts turned up places where the client was misled
+or signed something different from what was agreed. Fixed here (no migration):
+
+- **Cancelling a signed booking takes a reason.** `PUT /bookings/{id}/status`
+  to `rejected` on a booking both sides signed needs `note`. It's kept in
+  `vendor_decline_note` and logged as a `cancelled` contract event, so the
+  client's link can say who cancelled and why instead of "withdrew this offer,
+  nothing was signed".
+- **Keep means "mine" for both sides.** A `keep` re-sends that side's own last
+  ask since the field was last settled, falling back to the contract's value
+  only when they never asked. Before, a client's keep re-sent the contract's
+  (the vendor's) value, so keeping their own ask gave it up.
+- **Agreed values move only through the negotiation.** For a sent
+  field-by-field contract, `PATCH /contracts/{id}` is refused (409) when it
+  would change a negotiable value. Wording, the title and new sections still
+  edit. With nothing waiting on the client, the vendor may send a round on the
+  client's turn (`may_send` in the state), so changing an agreed value is
+  always possible. The round-6 nudge shows only while something is open.
+- **The vendor's countersignature is checked.** A name that doesn't match the
+  vendor's account name (same first and last word, as for clients) is refused
+  unless the request sets `name_confirmed`. The result is recorded in the
+  signing evidence either way.
+- **Documents can't be sent with blanks.** An addendum or cancellation
+  agreement with `___` left in any section is refused on send.
+- **A contract keeps a package.** A negotiation send that would leave no
+  package once agreed is refused (400), so the client can't ask for what the
+  vendor could never accept. With prices locked, the client can't leave out a
+  package (403); add-ons and custom items can still go. Asking to change the
+  price or quantity of an item left out in the same send is refused (400).
+- **Drafts keep unfinished work.** Creating or editing a draft skips the
+  send-time checks — a payment date already past, a date clash — and
+  sending it runs them.
+- **Only a signed date blocks (decision C).** A date another unsigned offer
+  is holding gives a 409 naming who and until when ("… has this date held
+  until Nov 2. Send anyway?"); `allow_held_clash: true` on create, send or
+  edit sends anyway, and whoever signs first books it. A signed contract or
+  an ordinary booking still blocks (`vendor_has_conflicting_booking(...,
+  include_held=False)`).
+- **The PDF prints the cancellation window in the Cancellation section**,
+  ahead of the vendor's own wording, instead of under "Policies".
+- **A client can take back their own "I've sent this"** until the vendor
+  confirms it (`POST /guest-bookings/{token}/payments/{id}/unmark`, logged
+  as `payment_unmarked`); after that it's the vendor's to correct.
+- **The timeline names what each negotiation answer was**: the
+  `negotiation_sent` event carries `answers: [{key, label, action, value}]`.
+- **A refused document carries its reason** as `vendor_decline_reason`, read
+  from its `document_signature_declined` event.
+
+## 38. An addendum can change what's sold (0081)
+
+Decision B (user, 2026-10-26): an addendum may carry priced changes, and once
+both sides sign, the booking follows.
+
+- `contract_documents.line_items` (custom items to add: name, price,
+  quantity) and `removed_line_ids` (contract lines to take out); only an
+  addendum takes them. Both nullable — every earlier document is text only.
+- Nothing moves until the vendor countersigns. Then the booking's items and
+  total change, and the difference lands on what's still unpaid, latest
+  payment first. An addition with nothing left to pay becomes a new payment
+  due the day it's signed. A reduction larger than what's still unpaid is
+  refused (refund it directly), and removing the last package is refused.
+  Payment marks are kept. `addendum_applied` goes on the timeline.
+- The document returns `changes` ({added, removed, total_before,
+  total_after}) for the client to see before signing; the signed snapshot and
+  the PDF carry it. A text-only document's snapshot is unchanged.
