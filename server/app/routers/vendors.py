@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import User, Vendor
-from app.dependencies import get_current_user, get_current_admin
+from app.dependencies import get_current_user
 from app.limiter import limiter
 from app.models.schemas import (
     CATEGORY_LABELS,
@@ -139,13 +139,6 @@ class UpdateVendorRequest(BaseModel):
         if v is not None and len(v) > 20:
             raise ValueError("No more than 20 specializations")
         return v
-
-
-class InstagramEnrichRequest(BaseModel):
-    # No images: the scraper no longer adds photos to packages. An older
-    # caller that still sends "images" is fine — unknown fields are ignored.
-    tags: list[str] = []
-    bio: Optional[str] = None
 
 
 class TagRequest(BaseModel):
@@ -383,62 +376,6 @@ def set_my_availability(
         )
     except VendorError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-
-
-@router.get("/instagram-linked", summary="List vendors with Instagram linked (admin only)")
-def list_instagram_linked(
-    current_admin=Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """Return all vendors that have an Instagram username set.
-    Used by the scraper to know which accounts to enrich."""
-    rows = (
-        db.query(Vendor, User)
-        .join(User, Vendor.user_id == User.user_id)
-        .filter(Vendor.instagram_username.isnot(None))
-        .all()
-    )
-    return [
-        {
-            "vendor_id": v.vendor_id,
-            "instagram_username": v.instagram_username,
-            "category": v.category,
-            "f_name": u.f_name,
-            "l_name": u.l_name,
-        }
-        for v, u in rows
-    ]
-
-
-@router.post("/{vendor_id}/instagram-enrich", summary="Post Instagram-scraped data back to a vendor (admin only)")
-def instagram_enrich(
-    vendor_id: str,
-    body: InstagramEnrichRequest,
-    current_admin=Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """Called by the scraper after scraping a vendor's Instagram.
-    Updates instagram_tags (separate from user-inputted tags) and the bio if
-    the vendor hasn't written one. Never touches their packages or photos."""
-    vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
-    if not vendor:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-
-    # Store Instagram-generated tags separately from user-inputted tags
-    if body.tags:
-        vendor.instagram_tags = body.tags[:20]
-
-    # Optionally update bio only if vendor hasn't set one
-    if body.bio and (not vendor.bio or vendor.bio.strip() == ""):
-        vendor.bio = body.bio[:500]
-
-    db.commit()
-
-    return {
-        "vendor_id": vendor_id,
-        "instagram_tags": vendor.instagram_tags or [],
-        "message": f"Enriched with {len(body.tags)} tags.",
-    }
 
 
 @router.get("/tags", summary="List all tags")

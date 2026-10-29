@@ -127,15 +127,9 @@ In the step-by-step flow, vendors are notified as soon as the bookings are creat
 
 ---
 
-## Instagram Tag Enrichment
+## Instagram Tags
 
-Vendors link their Instagram username in-app (`PATCH /vendors/me`). The scraper:
-1. Runs weekly via cron-job.org (`POST /admin/scraper/run`)
-2. Fetches all vendors with an Instagram username linked
-3. Scrapes their posts via Apify, extracts relevant hashtags
-4. Stores tags in `instagram_tags` (separate from user-inputted tags so vendors keep control of their own tags)
-
-Instagram tags are included alongside user-inputted tags when scoring vendors during bundle generation. A vendor with a `bhangra` tag from Instagram will score higher when a user selects "Cultural experience".
+Vendors link their Instagram username in-app (`PATCH /vendors/me`); it's shown on their profile. Nothing fetches their Instagram any more (the weekly Apify scraper was removed — DECISIONS #36). Tags it stored earlier in `instagram_tags` are still read alongside user-inputted tags when scoring vendors during bundle generation.
 
 ---
 

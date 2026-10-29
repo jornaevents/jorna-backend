@@ -215,3 +215,86 @@ def test_only_the_vendor_can_attach_or_edit():
     assert client.patch(
         f"/contract-documents/{d['document_id']}", json={"title": "Mine now"}, headers=other["headers"],
     ).status_code == 404
+
+
+def test_a_document_with_a_blank_left_cant_be_sent():
+    # 2026-10-26: a client signed a cancellation that stopped at
+    # "handled as follows:".
+    v = _setup_vendor()
+    c = _create_contract(v, guest_email="meera@example.com")
+    _sign(c)
+    blank = [{"title": "Payments and refunds", "body": "Payments made so far are handled as follows: ___"}]
+    r = client.post(
+        f"/contracts/{c['booking_id']}/documents",
+        json={"kind": "cancellation", "sections": blank, "send": True}, headers=v["headers"],
+    )
+    assert r.status_code == 400 and "Payments and refunds" in r.json()["detail"]
+    draft = client.post(
+        f"/contracts/{c['booking_id']}/documents",
+        json={"kind": "cancellation", "sections": blank, "send": False}, headers=v["headers"],
+    )
+    assert draft.status_code in (200, 201), draft.text
+    sent = client.post(f"/contract-documents/{draft.json()['document_id']}/send", json={}, headers=v["headers"])
+    assert sent.status_code == 400
+
+
+# ── An addendum's priced lines (DECISIONS #38, decision B) ───────────
+
+def _signed_with_schedule(v):
+    from tests.countersign_helpers import countersign_token
+
+    c = _create_contract(
+        v, guest_email="meera@example.com", amount_cents=None, deposit_percent=None,
+        line_items=[{"id": "pkg", "kind": "package", "service_id": v["service_id"], "unit_price_cents": 120_000, "quantity": 1}],
+        payment_schedule=[
+            {"id": "dep", "label": "Deposit", "amount_cents": 40_000, "due_type": "on_signing"},
+            {"id": "bal", "label": "Final balance", "amount_cents": 80_000, "due_type": "before_event", "due_days": 14},
+        ],
+    )
+    token = c["contract_token"]
+    client.patch(f"/guest-bookings/{token}", json={"guest_email": "meera@example.com"})
+    assert client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Meera Shah"}).status_code == 200
+    countersign_token(token)
+    client.post(f"/guest-bookings/{token}/payments/dep/mark-paid", json={})
+    return c
+
+
+def test_an_addendum_adds_to_the_total_and_the_last_unpaid_payment_once_both_sign():
+    from tests.countersign_helpers import countersign_document
+
+    v = _setup_vendor()
+    c = _signed_with_schedule(v)
+    d = client.post(
+        f"/contracts/{c['booking_id']}/documents",
+        json={"kind": "addendum", "sections": [{"title": "What changes", "body": "Two more uplights."}],
+              "line_items": [{"name": "Uplighting", "unit_price_cents": 15_000, "quantity": 2}], "send": True},
+        headers=v["headers"],
+    )
+    assert d.status_code in (200, 201), d.text
+    body = d.json()
+    assert (body["total_before"], body["total_after"]) == (120_000, 150_000)
+    assert body["changes"]["added"][0]["total_cents"] == 30_000
+
+    # Nothing moves until both have signed.
+    assert client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["amount_cents"] == 120_000
+    assert client.post(f"/guest-documents/{body['token']}/sign", json={"signer_name": "Meera Shah"}).status_code == 200
+    countersign_document(body["document_id"])
+
+    after = client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()
+    assert after["amount_cents"] == 150_000
+    assert [li["name"] for li in after["line_items"]][-1] == "Uplighting"
+    sched = {i["id"]: i for i in after["payment_schedule"]}
+    assert sched["bal"]["amount_cents"] == 110_000
+    assert sched["dep"]["marked_paid_at"]  # the client's mark survives
+
+
+def test_an_addendum_keeps_a_package_and_only_an_addendum_changes_items():
+    v = _setup_vendor()
+    c = _signed_with_schedule(v)
+    url = f"/contracts/{c['booking_id']}/documents"
+    sections = [{"title": "What changes", "body": "Less."}]
+    r = client.post(url, json={"kind": "addendum", "sections": sections, "removed_line_ids": ["pkg"]}, headers=v["headers"])
+    assert r.status_code == 400 and "package" in r.json()["detail"]
+    r = client.post(url, json={"kind": "cancellation", "sections": sections,
+                               "line_items": [{"name": "X", "unit_price_cents": 1, "quantity": 1}]}, headers=v["headers"])
+    assert r.status_code == 400 and "Only an addendum" in r.json()["detail"]

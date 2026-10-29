@@ -588,6 +588,29 @@ def mark_installment_paid(
     return get_guest_booking(contract_token=contract_token, db=db, preview=True)
 
 
+def unmark_installment(*, contract_token: str, installment_id: str, db: Session) -> dict:
+    """The client takes back their own "I've sent this" — a mistaken tap had
+    no way back (2026-10-26). Only until the vendor confirms receiving it;
+    after that it's the vendor's to correct (ledger_service.not_received)."""
+    booking = _by_token(contract_token, db)
+    _require_signed(booking)
+    try:
+        item = doc.installment(booking, installment_id)
+    except doc.DocumentError as e:
+        raise GuestBookingError(404, e.detail)
+    if item.get("confirmed_at"):
+        raise GuestBookingError(400, f"Your vendor already confirmed “{item['label']}” — ask them if that's wrong")
+    if not item.get("marked_paid_at"):
+        raise GuestBookingError(400, f"“{item['label']}” isn't marked as sent")
+    doc.unmark(booking, installment_id)
+    doc.record(db, booking, "payment_unmarked", "client", {
+        "installment_id": installment_id, "label": item["label"], "amount_cents": item["amount_cents"],
+    })
+    db.commit()
+    db.refresh(booking)
+    return get_guest_booking(contract_token=contract_token, db=db, preview=True)
+
+
 def mark_full_paid(*, contract_token: str, db: Session) -> dict:
     """The guest sibling of stripe_service.mark_booking_paid — no session,
     so the token is the only proof this is the right person. On a scheduled

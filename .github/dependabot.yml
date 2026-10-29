@@ -13,17 +13,6 @@ updates:
       server-minor-patch:
         update-types: ["minor", "patch"]
 
-  # ig_scraper/ — standalone Instagram vendor-data scraper (unrelated to the
-  # FastAPI app's runtime, but still a real dependency surface)
-  - package-ecosystem: "pip"
-    directory: "/ig_scraper"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      ig-scraper-minor-patch:
-        update-types: ["minor", "patch"]
-
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
