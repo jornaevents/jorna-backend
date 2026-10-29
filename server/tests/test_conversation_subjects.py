@@ -11,11 +11,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.db.models import Booking, Conversation, GroupMessage, Service, User, UserBlock, Vendor
+from app.db.models import Booking, Bundle, Conversation, GroupMessage, Service, User, UserBlock, Vendor
 from app.services.conversation_service import (
     MAX_ENQUIRIES_PER_DAY,
     MAX_UNANSWERED_ENQUIRIES,
 )
+from app.services import conversation_service as cs
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
 
@@ -140,6 +141,85 @@ class TestEnquiryThreads:
 
     def test_empty_questions_are_refused(self, world):
         assert _ask(world, content="   ").status_code == 400
+
+
+def _block(world, blocker, blocked):
+    db = world["db"]
+    db.add(UserBlock(
+        blocker_user_id=blocker.user_id, blocked_user_id=blocked.user_id,
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+
+def _say(conv_id, user, content="hello?"):
+    return client.post(f"/conversations/{conv_id}/messages", json={"content": content},
+                       headers=make_auth_headers(user))
+
+
+class TestBlocksInExistingThreads:
+    """A block made after the thread exists stops it, from both ends."""
+
+    def test_the_blocked_person_can_no_longer_send(self, world):
+        conv_id = _ask(world).json()["conversation_id"]
+        _block(world, world["vendor_user"], world["client_user"])
+        resp = _say(conv_id, world["client_user"])
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "You can't message this person."
+
+    def test_nor_can_the_blocker(self, world):
+        conv_id = _ask(world).json()["conversation_id"]
+        _block(world, world["vendor_user"], world["client_user"])
+        assert _say(conv_id, world["vendor_user"]).status_code == 403
+
+    def test_nothing_is_written(self, world):
+        conv_id = _ask(world).json()["conversation_id"]
+        _block(world, world["client_user"], world["vendor_user"])
+        _say(conv_id, world["vendor_user"], "are you there?")
+        contents = [m.content for m in world["db"].query(GroupMessage).filter(
+            GroupMessage.conversation_id == conv_id).all()]
+        assert "are you there?" not in contents
+
+    def test_a_booking_thread_is_stopped_too(self, world):
+        conv_id = client.post(
+            f"/conversations/booking/{world['booking'].booking_id}",
+            headers=make_auth_headers(world["client_user"]),
+        ).json()["conversation_id"]
+        _block(world, world["client_user"], world["vendor_user"])
+        assert _say(conv_id, world["vendor_user"]).status_code == 403
+
+    def test_unblocking_lets_it_resume(self, world):
+        conv_id = _ask(world).json()["conversation_id"]
+        _block(world, world["vendor_user"], world["client_user"])
+        db = world["db"]
+        db.query(UserBlock).filter(
+            UserBlock.blocker_user_id == world["vendor_user"].user_id,
+        ).delete()
+        db.commit()
+        assert _say(conv_id, world["client_user"]).status_code == 201
+
+    def test_a_block_with_someone_else_changes_nothing(self, world):
+        conv_id = _ask(world).json()["conversation_id"]
+        _block(world, world["client_user"], world["other_vendor_user"])
+        assert _say(conv_id, world["client_user"]).status_code == 201
+
+    def test_a_plan_chat_is_not_affected(self, world):
+        """Group chats are a separate question: a block between two people on
+        a plan doesn't silence it for everyone else on it."""
+        db = world["db"]
+        now = datetime.now(timezone.utc)
+        bundle = Bundle(user_id=world["client_user"].user_id, name="Wedding",
+                        status="draft", created_at=now, updated_at=now)
+        db.add(bundle)
+        db.commit()
+        world["booking"].bundle_id = bundle.bundle_id
+        db.commit()
+        convs = cs.create_bundle_conversations(
+            bundle_id=bundle.bundle_id, client_user_id=world["client_user"].user_id, db=db,
+        )
+        all_parties = next(c for c in convs if c["type"] == "all_parties")
+        _block(world, world["vendor_user"], world["client_user"])
+        assert _say(all_parties["conversation_id"], world["client_user"]).status_code == 201
 
 
 class TestEnquiryLimits:
