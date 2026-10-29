@@ -115,6 +115,43 @@ def test_register_user():
     assert data["email"] == "test@example.com"
 
 
+def test_register_with_only_name_email_phone_and_password():
+    """The vendor sign-up (2026-10-29) sends no username, age, location,
+    gender or language: the username is derived from the email and the rest
+    stay blank until onboarding or the profile fills them in."""
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "raj.mehta@example.com",
+            "password": "Password123!",
+            "phone": "(732) 555-0184",
+            "f_name": "Raj",
+            "l_name": "Mehta",
+        },
+    )
+    assert response.status_code == 200, response.text
+    db = TestingSessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "raj.mehta@example.com").first()
+        assert user.username == "rajmehta"
+        assert user.age is None and user.location is None
+        assert user.phone == "(732) 555-0184"
+    finally:
+        db.close()
+
+    # A second sign-up whose email starts the same way gets a free username.
+    # Called directly: another request would trip /auth/register's 3/minute
+    # limit for the tests after this one.
+    from app.services.auth_service import register_user
+
+    db = TestingSessionLocal()
+    try:
+        register_user(email="raj.mehta@other.example", password="Password123!", f_name="Raj", l_name="M", db=db)
+        assert db.query(User).filter(User.email == "raj.mehta@other.example").first().username == "rajmehta1"
+    finally:
+        db.close()
+
+
 def test_register_short_password_gets_a_readable_message():
     """A too-short password used to fail on the Field(min_length=8) constraint
     first, surfacing Pydantic's own "String should have at least 8

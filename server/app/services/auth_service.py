@@ -315,16 +315,16 @@ def register_user(
     *,
     email: str,
     password: str,
-    username: str,
+    username: Optional[str] = None,
     phone: Optional[str] = None,
     f_name: str,
     l_name: str,
-    age: int,
-    location: str,
+    age: Optional[int] = None,
+    location: Optional[str] = None,
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
-    gender: str,
-    language: str,
+    gender: Optional[str] = None,
+    language: Optional[str] = None,
     db: Session,
     supabase_user_id: Optional[str] = None,
     supabase_access_token: Optional[str] = None,
@@ -332,12 +332,18 @@ def register_user(
     """Create a new user account. Returns ``{user_id, email}``.
 
     When ``supabase_user_id`` is set, ``supabase_access_token`` must prove ownership (same ``sub`` and email).
+    Without a ``username``, one is derived from the email, as Google sign-up does.
     """
-    existing = db.query(User).filter(
-        (User.email == email) | (User.username == username)
-    ).first()
+    if username:
+        existing = db.query(User).filter(
+            (User.email == email) | (User.username == username)
+        ).first()
+    else:
+        existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise AuthError(400, "Email or username already taken")
+    if not username:
+        username = _unique_username_from_email(email, db)
 
     if supabase_user_id:
         supabase_user_id = supabase_user_id.lower()
