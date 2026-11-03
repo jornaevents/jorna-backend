@@ -63,26 +63,33 @@ def _teardown(db, s):
     db.commit()
 
 
-def test_vendor_cannot_open_a_message_thread_on_their_own_guest_booking():
-    """Regression: open_booking_thread's `caller_user_id in (booking.user_id,
-    vendor_user.user_id)` check used to let the vendor through even when
-    booking.user_id is None, then tried to create a ConversationMember with
-    user_id=None -- a crash, not a clean refusal."""
+def test_a_vendor_opens_the_thread_on_their_own_guest_booking_as_its_one_member():
+    """A guest booking's client writes through the contract link
+    (DECISIONS #41), so its thread has the vendor alone. Regression kept:
+    this used to try to add a ConversationMember with user_id=None — a crash."""
     db = TestingSessionLocal()
     s = _setup_guest_booking(db)
     try:
-        try:
-            open_booking_thread(
-                booking_id=s["booking"].booking_id,
-                caller_user_id=s["vendor_user"].user_id,
-                db=db,
-            )
-            assert False, "expected ConversationError"
-        except ConversationError as e:
-            assert e.status_code == 400
+        conv = open_booking_thread(
+            booking_id=s["booking"].booking_id,
+            caller_user_id=s["vendor_user"].user_id,
+            db=db,
+        )
+        assert [m["user_id"] for m in conv["members"]] == [s["vendor_user"].user_id]
     finally:
+        _drop_threads(db, s)
         _teardown(db, s)
         db.close()
+
+
+def _drop_threads(db, s):
+    from app.db.models import Conversation, ConversationMember
+
+    ids = [c.conversation_id for c in db.query(Conversation).filter(Conversation.booking_id == s["booking"].booking_id)]
+    if ids:
+        db.query(ConversationMember).filter(ConversationMember.conversation_id.in_(ids)).delete(synchronize_session=False)
+        db.query(Conversation).filter(Conversation.conversation_id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
 
 
 def test_send_message_refused_for_a_guest_booking():
@@ -190,7 +197,7 @@ def test_messages_route_returns_400_not_500_for_a_guest_booking():
         db.close()
 
 
-def test_open_booking_thread_route_returns_400_not_500_for_a_guest_booking():
+def test_open_booking_thread_route_opens_a_guest_bookings_thread_for_its_vendor():
     db = TestingSessionLocal()
     s = _setup_guest_booking(db)
     try:
@@ -198,7 +205,8 @@ def test_open_booking_thread_route_returns_400_not_500_for_a_guest_booking():
             f"/conversations/booking/{s['booking'].booking_id}",
             headers=make_auth_headers(s["vendor_user"]),
         )
-        assert resp.status_code == 400, resp.text
+        assert resp.status_code == 200, resp.text
     finally:
+        _drop_threads(db, s)
         _teardown(db, s)
         db.close()

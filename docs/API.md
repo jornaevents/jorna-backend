@@ -227,6 +227,11 @@ declines or revises (DECISIONS #23). Each list endpoint returns
 
 Public routes, by the contract's token:
 
+- `GET /guest-bookings/{token}/messages` (30/minute) → `{vendor_name, items: [{message_id, from: "you"|"vendor",
+  sender_name, content, kind, created_at}]}`, oldest first; reading marks them read. Since 0083 (DECISIONS #41).
+- `POST /guest-bookings/{token}/messages` `{content}` (≤4000) → 201 with the same shape (10/minute); 410 once the
+  contract is declined or withdrawn. The vendor sees it in the booking's thread in `/conversations`, where a
+  message from the link client has `sender_id: null`, `from_link_client: true` and the client's name.
 - `GET /guest-bookings/{token}/proposals` (30/minute).
 - `POST /guest-bookings/{token}/proposals` `{base_revision, changes, message?}` → 201 (10/minute).
   - `changes` holds any of the terms fields except `amount_cents`, which is

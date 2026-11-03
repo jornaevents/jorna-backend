@@ -458,11 +458,16 @@ class TestBookingContinuesTheQuestion:
         db.commit()
         assert self._open(world).status_code == 403
 
-    def test_a_guest_booking_still_has_no_thread(self, world):
+    def test_a_guest_bookings_thread_is_the_vendors_alone(self, world):
+        """Its client writes through the contract link (DECISIONS #41): an
+        account that isn't the booking's can't open it; its vendor can."""
         guest = self._booking(world)
         guest.user_id = None
         world["db"].commit()
-        assert self._open(world, booking=guest).status_code == 400
+        assert self._open(world, booking=guest).status_code == 403
+        opened = self._open(world, booking=guest, user=world["vendor_user"])
+        assert opened.status_code == 200
+        assert [m["user_id"] for m in opened.json()["members"]] == [world["vendor_user"].user_id]
 
     def test_the_question_thread_doesnt_take_on_the_bookings_plan(self, world):
         """A question thread is about the client and vendor, not one plan;

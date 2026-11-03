@@ -338,3 +338,44 @@ def drop_negotiation_draft_route(request: Request, contract_token: str, db: Sess
         field_negotiation_service.client_drop_draft(contract_token=contract_token, db=db)
     except (GuestBookingError, ContractError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# ── Messages (DECISIONS #41) ─────────────────────────────────────────
+
+
+class GuestMessageRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+@router.get("/{contract_token}/messages", summary="The client's thread with their vendor")
+@limiter.limit("30/minute")
+def list_messages_route(request: Request, contract_token: str, db: Session = Depends(get_db)):
+    from app.services import guest_message_service
+
+    try:
+        return guest_message_service.list_messages(contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{contract_token}/messages", summary="Client writes to their vendor", status_code=201)
+@limiter.limit("10/minute")
+async def post_message_route(
+    request: Request, contract_token: str, body: GuestMessageRequest, db: Session = Depends(get_db),
+):
+    """Then the live push to the vendor's open thread, as POST
+    /conversations/{id}/messages does (best-effort; the 5s poll is the fallback)."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.services import guest_message_service
+    from app.services.ws_manager import manager
+
+    try:
+        conversation_id, message = await run_in_threadpool(
+            guest_message_service.post_message, contract_token=contract_token, content=body.content, db=db,
+        )
+        thread = await run_in_threadpool(guest_message_service.list_messages, contract_token=contract_token, db=db)
+    except GuestBookingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    await manager.broadcast(conversation_id, message)
+    return thread
