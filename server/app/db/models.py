@@ -435,7 +435,8 @@ class Booking(Base):
     # are that client's own words, not a User row's — see guest_name/email/
     # phone below and contract_token for the link's credential. See
     # docs/DECISIONS.md's guest-booking entry for what a guest booking can't
-    # do (messaging, negotiation, change requests, GPS check-in) and why.
+    # do (negotiation, change requests, GPS check-in) and why — messaging it
+    # can, through the link (DECISIONS #41).
     guest_name = Column(String(255), nullable=True)
     guest_email = Column(String(255), nullable=True)
     guest_phone = Column(String(50), nullable=True)
@@ -443,6 +444,11 @@ class Booking(Base):
     # (guest_service._token()) — unguessable, not derived from booking_id,
     # only ever set on a guest/contract booking.
     contract_token = Column(String(64), unique=True, index=True, nullable=True)
+    # The link client's side of the booking's message thread (0083): when they
+    # last read it on the link, and when we last emailed them that the vendor
+    # wrote — at most one email per stretch of unread replies.
+    guest_messages_read_at = Column(DateTime, nullable=True)
+    guest_message_emailed_at = Column(DateTime, nullable=True)
 
     # Contract terms, snapshotted at creation from the vendor's own defaults
     # (Vendor.default_* below) or overridden per booking — never recomputed
@@ -958,7 +964,10 @@ class GroupMessage(Base):
 
     message_id = Column(String(36), primary_key=True, default=uuid_str)
     conversation_id = Column(String(36), ForeignKey("conversations.conversation_id"), nullable=False, index=True)
-    sender_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    # Null for a message from the client on the contract link who has no
+    # account (0083, DECISIONS #41): there's no user to point at; the
+    # booking names them (guest_message_service.client_label).
+    sender_id = Column(String(36), ForeignKey("users.user_id"), nullable=True, index=True)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False)
     # text | offer | system. `content` is always a human sentence, so a client

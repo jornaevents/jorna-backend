@@ -113,9 +113,16 @@ def _display_name(conv: Conversation, members: list[User], caller_user_id: str, 
 
     other = next((u for u in members if u.user_id != caller_user_id), None)
     who = vendor_user_display_name(other, "Conversation")
+    booking = (
+        db.query(Booking).filter(Booking.booking_id == conv.booking_id).first()
+        if conv.subject_type == SUBJECT_BOOKING and conv.booking_id else None
+    )
+    if other is None and booking is not None:
+        # The client is on the contract link, not a member (DECISIONS #41).
+        from app.services.guest_message_service import client_label
+        who = client_label(booking)
 
-    if conv.subject_type == SUBJECT_BOOKING and conv.booking_id:
-        booking = db.query(Booking).filter(Booking.booking_id == conv.booking_id).first()
+    if booking is not None:
         service = (
             db.query(Service).filter(Service.service_id == booking.service_id).first()
             if booking else None
@@ -200,12 +207,16 @@ def _unread_by_conversation(
     return counts
 
 
-def _message_dict(msg: GroupMessage, sender: User | None, read_by: list[str]) -> dict:
+def _message_dict(
+    msg: GroupMessage, sender: User | None, read_by: list[str], link_client: str | None = None,
+) -> dict:
     return {
         "message_id": msg.message_id,
         "conversation_id": msg.conversation_id,
         "sender_id": msg.sender_id,
-        "sender_name": f"{sender.f_name} {sender.l_name}" if sender else None,
+        # No sender: the client on the contract link (DECISIONS #41).
+        "sender_name": f"{sender.f_name} {sender.l_name}" if sender else (link_client if msg.sender_id is None else None),
+        "from_link_client": msg.sender_id is None,
         "sender_pfp": sender.pfp_url if sender else None,
         "content": msg.content,
         "created_at": msg.created_at.isoformat(),
@@ -309,7 +320,7 @@ def _assert_not_blocked(a: str, b: str, db: Session) -> None:
 
 
 def _create_thread(
-    *, subject_type: str, client_user_id: str, other_user_id: str,
+    *, subject_type: str, client_user_id: str | None, other_user_id: str,
     vendor_id: str | None, booking_id: str | None, db: Session,
     bundle_id: str | None = None,
 ) -> Conversation:
@@ -327,7 +338,9 @@ def _create_thread(
     )
     db.add(conv)
     db.flush()
-    for uid in dict.fromkeys([client_user_id, other_user_id]):
+    # No client member for a booking whose client has only the contract link
+    # (DECISIONS #41): they read and write through the link instead.
+    for uid in dict.fromkeys(u for u in (client_user_id, other_user_id) if u):
         db.add(ConversationMember(
             conversation_id=conv.conversation_id, user_id=uid, joined_at=now,
         ))
@@ -442,29 +455,38 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         raise ConversationError(404, "Booking not found")
-    if booking.user_id is None:
-        raise ConversationError(400, "Messaging isn't available for a guest booking")
     vendor_user = _vendor_user(booking.vendor_id, db)
 
     if caller_user_id not in (booking.user_id, vendor_user.user_id):
         raise ConversationError(403, "You are not a party to this booking")
-    _assert_not_blocked(booking.user_id, vendor_user.user_id, db)
+    if booking.user_id is not None:
+        _assert_not_blocked(booking.user_id, vendor_user.user_id, db)
 
+    conv = booking_thread(booking, vendor_user, db)
+    return get_conversation(
+        conversation_id=conv.conversation_id, caller_user_id=caller_user_id, db=db
+    )
+
+
+def booking_thread(booking: Booking, vendor_user: User, db: Session) -> Conversation:
+    """The booking's thread, found or made — see open_booking_thread. A
+    booking whose client has only the contract link gets a thread with the
+    vendor as its one member; the client writes through the link."""
     conv = db.query(Conversation).filter(
         Conversation.subject_type == SUBJECT_BOOKING,
-        Conversation.booking_id == booking_id,
-    ).first() or db.query(Conversation).filter(
+        Conversation.booking_id == booking.booking_id,
+    ).first() or (db.query(Conversation).filter(
         Conversation.subject_type == SUBJECT_ENQUIRY,
         Conversation.vendor_id == booking.vendor_id,
         Conversation.client_user_id == booking.user_id,
-    ).first()
+    ).first() if booking.user_id else None)
     if not conv:
         conv = _create_thread(
             subject_type=SUBJECT_BOOKING,
             client_user_id=booking.user_id,
             other_user_id=vendor_user.user_id,
             vendor_id=booking.vendor_id,
-            booking_id=booking_id,
+            booking_id=booking.booking_id,
             bundle_id=booking.bundle_id,
             db=db,
         )
@@ -479,10 +501,7 @@ def open_booking_thread(*, booking_id: str, caller_user_id: str, db: Session) ->
         conv.bundle_id = booking.bundle_id
         db.commit()
         db.refresh(conv)
-
-    return get_conversation(
-        conversation_id=conv.conversation_id, caller_user_id=caller_user_id, db=db
-    )
+    return conv
 
 
 def _booking_ref(booking: Booking) -> dict:
@@ -826,6 +845,17 @@ def send_group_message(
     except Exception as exc:
         logger.warning("Group message notification failed: %s", exc)
 
+    # A client who only has the contract link isn't a member, so no push
+    # reaches them: they're emailed instead (DECISIONS #41).
+    # Text only: offers and system lines about the contract already reach
+    # them by the contract's own emails.
+    try:
+        from app.services.guest_message_service import email_link_client
+        if kind == "text":
+            email_link_client(conversation_id, db)
+    except Exception as exc:
+        logger.warning("Link client reply email failed: %s", exc)
+
     read_by = [caller_user_id]
     return _message_dict(msg, sender, read_by)
 
@@ -884,7 +914,11 @@ def get_group_messages(
         db.commit()
 
     # Fetch sender info and read receipts
-    sender_ids = {m.sender_id for m in messages}
+    sender_ids = {m.sender_id for m in messages if m.sender_id}
+    link_client = None
+    if any(m.sender_id is None for m in messages):
+        from app.services.guest_message_service import thread_client_label
+        link_client = thread_client_label(conversation_id, db)
     senders = {u.user_id: u for u in db.query(User).filter(User.user_id.in_(sender_ids)).all()}
     read_receipts = db.query(GroupMessageRead).filter(
         GroupMessageRead.message_id.in_(msg_ids)
@@ -895,7 +929,7 @@ def get_group_messages(
 
     return {
         "items": [
-            _message_dict(m, senders.get(m.sender_id), reads_by_message.get(m.message_id, []))
+            _message_dict(m, senders.get(m.sender_id), reads_by_message.get(m.message_id, []), link_client)
             for m in messages
         ],
         "total": total,

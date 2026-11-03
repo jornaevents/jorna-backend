@@ -183,8 +183,9 @@ on. This is a deliberate tradeoff, not an oversight:
   endpoints specifically, and the vendor's own off-platform follow-up
   (phone/text) as the real verification step — consistent with "you'll pay/
   coordinate directly," not an in-app guarantee.
-- A guest booking supports **no messaging, negotiation, change requests, or
-  client-side GPS check-in** — all of those assume two authenticated `User`
+- A guest booking supports **no negotiation, change requests, or
+  client-side GPS check-in** (messaging it now has, through the link — #41;
+  `open_booking_thread` lets its vendor in, as the thread's one member) — all of those assume two authenticated `User`
   rows. `message_service.send_message`, `conversation_service.open_booking_
   thread`, and `negotiation_service.start_negotiation` all refuse a
   `user_id IS NULL` booking explicitly (400, not a crash) — a vendor calling
@@ -1054,3 +1055,25 @@ before onboarding vendors:
   `accept_terms: true` — the web sign-up form's "I agree to the Terms and
   Privacy Policy" box. Not required, so the iOS app, which doesn't show the
   box yet, can still register; its sign-ups record nothing.
+
+## 41. The client on the contract link can message their vendor (0083)
+
+Decided 2026-11-03 (issue #67). A client who has only the contract link — no
+account — couldn't ask "can we start at 7:30?" without making one.
+
+- They write into the booking's **ordinary thread**, which the vendor reads and
+  answers in Messages like any other (unread counts, pushes, the digest), not a
+  separate guest inbox. `GET/POST /guest-bookings/{token}/messages`; the link
+  is the whole credential, as for everything on that router.
+- Without an account there's no user to be: their messages have a null
+  `group_messages.sender_id`, and the booking names them
+  (`guest_message_service.client_label`). The thread's one member is the
+  vendor; the client's read state is `bookings.guest_messages_read_at`.
+- The vendor's text replies reach them by email, with a link to the thread on
+  the signing page — one per stretch of unread replies
+  (`bookings.guest_message_emailed_at`), not one per message. Offers and
+  system lines don't email: the contract's own emails cover those.
+- A client *with* an account who uses their link writes as themselves, into
+  the same thread the app shows them.
+- A declined or withdrawn contract's thread stays readable but takes no new
+  messages, like everything else on the link (`_require_live`).
