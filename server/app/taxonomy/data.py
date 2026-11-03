@@ -313,6 +313,7 @@ LEGACY_BUNDLE_SLOTS: dict[str, str] = {
     "mehndi": "mehndi_artist",
     "floral_decor": "decor_florals",
     "cultural_services": "entertainment",
+    "bar_beverage": "bar_beverage",
 }
 
 # The category older clients show for a service with no legacy pair of its
