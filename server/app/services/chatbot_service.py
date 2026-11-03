@@ -488,7 +488,7 @@ def _candidate_service_rows(
         .join(Vendor, Service.vendor_id == Vendor.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
         .filter(or_(
-            Service.service_key.in_(taxonomy.expand(taxonomy.bundle_slot(cat) or cat)),
+            Service.service_key.in_(taxonomy.slot_services(cat)),
             and_(Service.service_key.is_(None), legacy),
         ))
         # AI bundles only pick fixed-price (non-negotiable) services, so the whole

@@ -106,7 +106,12 @@ CHATBOT_SLOTS: dict[str, dict] = {
     "floral_decor":      {"label": "Floral & Decor",    "category": "floral_decor",        "subcategory": None},
     "makeup":            {"label": "Makeup & Hair",     "category": "beauty",              "subcategory": "bridal_makeup"},
     "mehndi":            {"label": "Mehndi",            "category": "beauty",              "subcategory": "mehndi_artist"},
-    "cultural_services": {"label": "Cultural Services", "category": "cultural_services",   "subcategory": None},
+    # Searches the whole Entertainment group (taxonomy LEGACY_BUNDLE_SLOTS);
+    # the key stays for older clients, the label says what it now means.
+    "cultural_services": {"label": "Entertainment",     "category": "cultural_services",   "subcategory": None},
+    # Decided 2026-10-20: Bar & bartending is the one bundle slot added with
+    # the taxonomy (backend DECISIONS #35). Its key is the service's own.
+    "bar_beverage":      {"label": "Bar & bartending",  "category": "bar_beverage",        "subcategory": None},
 }
 
 # Ordered list of slot keys — used for buttons, defaults, and request validation.

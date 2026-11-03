@@ -587,7 +587,7 @@ class TestFullFlowNothingBooked:
         # Step 2 → 3: Recommend everything still needed
         resp = await process_step(ChatStep.STILL_NEED, None, ["recommend_all"], resp.state, db=db)
         assert resp.next_step == ChatStep.BUDGET
-        assert len(resp.state.needed_categories) == 10
+        assert len(resp.state.needed_categories) == len(CHATBOT_CATEGORIES)
 
         # Step 3 → 4: Budget
         resp = await process_step(ChatStep.BUDGET, None, ["mid-range"], resp.state, db=db)
@@ -597,7 +597,7 @@ class TestFullFlowNothingBooked:
         resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["elegant"], resp.state, db=db)
         assert resp.next_step == ChatStep.BUNDLE_ACTION
         assert resp.bundle is not None
-        assert len(resp.bundle.items) == 10
+        assert len(resp.bundle.items) == len(CHATBOT_CATEGORIES)
 
         # Step 6 → 7: Keep bundle
         resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["keep"], resp.state, db=db)
@@ -633,7 +633,7 @@ class TestFullFlowWithBooked:
         resp = await process_step(ChatStep.BUDGET, None, ["premium"], resp.state, db=db)
         resp = await process_step(ChatStep.STYLE_PREFERENCES, None, ["traditional"], resp.state, db=db)
         assert resp.bundle is not None
-        assert len(resp.bundle.items) == 8  # 10 - venue - photography
+        assert len(resp.bundle.items) == len(CHATBOT_CATEGORIES) - 2  # all but venue and photography
 
         # Swap DJ
         resp = await process_step(ChatStep.BUNDLE_ACTION, None, ["swap"], resp.state, db=db)
@@ -936,7 +936,7 @@ class TestChatbotEndpoints:
         }).json()
         assert resp["next_step"] == "bundle_action"
         assert resp["bundle"] is not None
-        assert len(resp["bundle"]["items"]) == 10
+        assert len(resp["bundle"]["items"]) == len(CHATBOT_CATEGORIES)
 
     def test_step_endpoint_invalid_step(self):
         """Sending an unknown step value should return 422."""
@@ -1487,3 +1487,26 @@ class TestAttachingToAnExistingCelebration:
         finally:
             self._cleanup(db, bundle_id)
             db.delete(theirs); db.commit()
+
+
+def test_bar_and_bartending_is_a_bundle_slot_that_searches_its_service():
+    # Decided 2026-10-20 (backend DECISIONS #35): the one slot added with the
+    # taxonomy. The old Cultural Services slot now means Entertainment.
+    from app import taxonomy
+    from app.models.chatbot_schemas import CHATBOT_SLOTS
+
+    assert CHATBOT_SLOTS["bar_beverage"]["label"] == "Bar & bartending"
+    assert taxonomy.expand(taxonomy.bundle_slot("bar_beverage")) == ["bar_beverage"]
+    assert CHATBOT_SLOTS["cultural_services"]["label"] == "Entertainment"
+    assert taxonomy.slot_services("bar_beverage") == ["bar_beverage"]
+
+
+def test_the_entertainment_slot_leaves_out_what_another_slot_fills():
+    # Decided 2026-11-03: DJ is in the Entertainment group but has its own
+    # slot, so Entertainment never suggests one (a team got two DJs).
+    from app import taxonomy
+
+    entertainment = taxonomy.slot_services("cultural_services")
+    assert "dj" not in entertainment
+    assert "mc" in entertainment and "bhangra_troupe" in entertainment
+    assert taxonomy.slot_services("dj") == ["dj"]

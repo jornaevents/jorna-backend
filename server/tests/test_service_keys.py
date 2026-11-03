@@ -160,13 +160,19 @@ def test_a_bundle_slot_matches_by_service_and_the_old_category_as_a_fallback():
                       experience="x", negotiable=False)
         db.add_all([dj, old])
         db.commit()
-        # Cultural Services became the Entertainment group: a DJ now fills it,
-        # and an old cultural package with no service yet still does.
+        mc = Service(vendor_id=vendor.vendor_id, name="Bundle MC", price=900, category="music_entertainment",
+                     service_key="mc", experience="x", negotiable=False)
+        db.add(mc)
+        db.commit()
+        # Cultural Services became the Entertainment group: an MC fills it, and
+        # an old cultural package with no service yet still does — but not a DJ,
+        # which has a slot of its own (2026-11-03).
         def slot(cat):
             rows = _candidate_service_rows(cat, ChatbotState(), db, set(), float("inf"), set())
             return {s.service_id for s, _, _ in rows}
 
-        assert {dj.service_id, old.service_id} <= slot("cultural_services")
+        assert {mc.service_id, old.service_id} <= slot("cultural_services")
+        assert dj.service_id not in slot("cultural_services")
         assert dj.service_id in slot("dj") and old.service_id not in slot("dj")
     finally:
         db.close()

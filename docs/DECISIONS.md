@@ -926,6 +926,11 @@ whole category; Attire's subcategories described the outfit), and every picker s
     service_key. So the Cultural Services slot now draws from the whole Entertainment group.
   - The slot keys in the API are unchanged until the web picker ships. That's also when Bar &
     bartending becomes a default slot.
+  - 2026-11-03, with the web picker: `bar_beverage` (Bar & bartending) is a bundle slot, keyed
+    by its service, so "recommend everything" now fills 11 slots. The `cultural_services` slot
+    keeps its key for older clients but is labelled Entertainment, the group it searches.
+  - A slot that stands for a whole group leaves out services another slot fills on its own
+    (`taxonomy.slot_services`), so the Entertainment slot never suggests a DJ — DJ has its own.
 
 ## 36. No Instagram scraping; the handle is just a link
 
