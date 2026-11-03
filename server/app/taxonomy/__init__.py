@@ -158,6 +158,19 @@ def bundle_slot(old_slot: str) -> str | None:
     return LEGACY_BUNDLE_SLOTS.get(old_slot)
 
 
+def slot_services(slot: str) -> list[str]:
+    """The services a bundle slot searches. A slot that stands for a whole
+    group leaves out services another slot fills on its own, so a team never
+    gets the same thing twice — decided 2026-11-03: Entertainment doesn't
+    suggest a DJ, which has its own slot (DECISIONS #35)."""
+    target = bundle_slot(slot) or slot
+    keys = expand(target)
+    if target in _GROUPS:
+        others = {t for s, t in LEGACY_BUNDLE_SLOTS.items() if s != slot and t in _SERVICES}
+        keys = [k for k in keys if k not in others]
+    return keys
+
+
 # ── What GET /taxonomy serves ────────────────────────────────────────
 
 def _attribute_view(key: str) -> dict:

@@ -1498,4 +1498,15 @@ def test_bar_and_bartending_is_a_bundle_slot_that_searches_its_service():
     assert CHATBOT_SLOTS["bar_beverage"]["label"] == "Bar & bartending"
     assert taxonomy.expand(taxonomy.bundle_slot("bar_beverage")) == ["bar_beverage"]
     assert CHATBOT_SLOTS["cultural_services"]["label"] == "Entertainment"
-    assert "dj" in taxonomy.expand(taxonomy.bundle_slot("cultural_services"))
+    assert taxonomy.slot_services("bar_beverage") == ["bar_beverage"]
+
+
+def test_the_entertainment_slot_leaves_out_what_another_slot_fills():
+    # Decided 2026-11-03: DJ is in the Entertainment group but has its own
+    # slot, so Entertainment never suggests one (a team got two DJs).
+    from app import taxonomy
+
+    entertainment = taxonomy.slot_services("cultural_services")
+    assert "dj" not in entertainment
+    assert "mc" in entertainment and "bhangra_troupe" in entertainment
+    assert taxonomy.slot_services("dj") == ["dj"]
