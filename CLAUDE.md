@@ -19,7 +19,7 @@ source of truth for two sibling client repos, each with its own `CLAUDE.md`:
 - `knag9753/front_end_desiconnect` (`…/GitHub/front_end_desiconnect`) — native
   iOS SwiftUI client.
 - `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — both
-  Next.js web apps: `apps/client` (book.jornaevents.com, hosts) and
+  Next.js web apps: `apps/client` (jornaevents.com/client, hosts) and
   `apps/vendor` (jornaevents.com, vendors + the contract signing page).
   The vendor app was its own repo, `jorna-vendor`, until 2026-09-28; that
   repo is archived. Transferred from `dabkeyanik/jorna-website` in 2026-08
