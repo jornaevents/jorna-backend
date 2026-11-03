@@ -7,6 +7,7 @@ Tests for the notification system:
 """
 
 import uuid
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +15,12 @@ import pytest
 
 from app.db.models import Booking, PushToken, User, Service, Vendor
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
+
+
+def _days_ahead(n: int) -> str:
+    """An event date that stays in the future — POST /bookings refuses past
+    dates, and a hard-coded one turned these tests red once it went by."""
+    return (date.today() + timedelta(days=n)).isoformat()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -381,7 +388,7 @@ class TestBookingNotificationIntegration:
                 "time_start": "18:00",
                 "time_end": "22:00",
                 "location": "12 Maple Ave, Evanston, IL 60201",
-                "date_iso": "2026-11-01",
+                "date_iso": _days_ahead(60),
             },
             headers=headers,
         )
@@ -418,7 +425,7 @@ class TestBookingNotificationIntegration:
                 "time_start": "18:00",
                 "time_end": "22:00",
                 "location": "12 Maple Ave, Evanston, IL 60201",
-                "date_iso": "2026-11-02",
+                "date_iso": _days_ahead(61),
                 "bundle_id": bundle.bundle_id,
             },
             headers=make_auth_headers(user),
