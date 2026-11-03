@@ -103,6 +103,9 @@ class RegisterRequest(BaseModel):
     language: Optional[str] = Field(None, min_length=1, max_length=50)
     supabase_user_id: Optional[str] = None
     supabase_access_token: Optional[str] = None
+    # The "I agree to the Terms and Privacy Policy" box. Optional so the iOS
+    # app, which doesn't show it yet, can still register; recorded when true.
+    accept_terms: bool = False
 
     @field_validator("password")
     @classmethod
@@ -129,6 +132,11 @@ class RegisterRequest(BaseModel):
 
 class GoogleLookupRequest(BaseModel):
     access_token: str
+
+
+class GoogleRegisterRequest(GoogleLookupRequest):
+    # As RegisterRequest.accept_terms; recorded only when this call makes the account.
+    accept_terms: bool = False
 
 
 class ProfileCompleteRequest(BaseModel):
@@ -641,6 +649,7 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             db=db,
             supabase_user_id=body.supabase_user_id,
             supabase_access_token=body.supabase_access_token,
+            accept_terms=body.accept_terms,
         )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -675,7 +684,7 @@ def auth_google_lookup(request: Request, body: GoogleLookupRequest, db: Session 
 
 @app.post("/auth/google/register")
 @limiter.limit("5/minute")
-def auth_google_register(request: Request, body: GoogleLookupRequest, db: Session = Depends(get_db)):
+def auth_google_register(request: Request, body: GoogleRegisterRequest, db: Session = Depends(get_db)):
     """Sign in with Google, creating the account on first use — the whole sign-up in one tap.
 
     Separate from /auth/google/lookup, which still creates nothing: a client that
@@ -684,7 +693,7 @@ def auth_google_register(request: Request, body: GoogleLookupRequest, db: Sessio
     the form entirely.
     """
     try:
-        return google_register(access_token=body.access_token, db=db)
+        return google_register(access_token=body.access_token, accept_terms=body.accept_terms, db=db)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

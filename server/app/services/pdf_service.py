@@ -517,10 +517,11 @@ def response(rendered: tuple[bytes, str]):
 
 def _vendor_name(booking, db) -> str:
     from app.db.models import User, Vendor
+    from app.services.names import vendor_display_name
 
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
-    return (f"{user.f_name or ''} {user.l_name or ''}".strip() if user else "") or "Your vendor"
+    return vendor_display_name(vendor, user, "Your vendor")
 
 
 def _service_name(booking, db) -> str | None:
@@ -536,7 +537,7 @@ def contract_pdf(booking, db) -> tuple[bytes, str]:
     snap = booking.signed_snapshot
     return render_contract(
         snap or doc.agreement(booking),
-        vendor_name=_vendor_name(booking, db),
+        vendor_name=(snap or {}).get("vendor_name") or _vendor_name(booking, db),
         service_name=_service_name(booking, db),
         signer=snap.get("signer_name") if snap else None,
         signed_at=snap.get("signed_at") if snap else None,
@@ -563,7 +564,7 @@ def document_pdf(d, booking, db, client_name: str | None) -> tuple[bytes, str]:
     )
     return render_document(
         snap or live,
-        vendor_name=_vendor_name(booking, db),
+        vendor_name=(snap or {}).get("vendor_name") or _vendor_name(booking, db),
         client_name=client_name,
         agreement_title=agreement_title,
         signer=snap.get("signer_name") if snap else None,

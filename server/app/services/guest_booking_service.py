@@ -23,6 +23,7 @@ from app.services.contract_service import contract_state
 from app.services.email_service import pdf_attachment, send_email
 from app.utils.notifications import notify_vendor_contract_event
 from app.utils.timeutil import utc_iso
+from app.services.names import vendor_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def _client_label(booking: Booking) -> str:
 def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None, vendor_user: User | None) -> dict:
     return {
         "booking_id": booking.booking_id,
-        "vendor_display_name": f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else None,
+        "vendor_display_name": vendor_display_name(vendor, vendor_user),
         "vendor_venmo_handle": vendor.venmo_handle if vendor else None,
         "vendor_zelle_contact": vendor.zelle_contact if vendor else None,
         "service_name": service.name if service else None,
@@ -313,7 +314,7 @@ def send_signing_code(*, contract_token: str, db: Session) -> dict:
 def _vendor_name(booking: Booking, db: Session) -> str:
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
-    return f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
+    return vendor_display_name(vendor, vendor_user, "your vendor")
 
 
 def sign_contract(
@@ -392,7 +393,7 @@ def sign_contract(
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
-    vendor_name = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
+    vendor_name = vendor_display_name(vendor, vendor_user, "your vendor")
 
     # No PDF yet: the signed copy goes to both once the vendor has signed.
     send_email(

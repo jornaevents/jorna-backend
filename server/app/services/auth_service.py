@@ -247,7 +247,7 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     }
 
 
-def google_register(*, access_token: str, db: Session) -> dict:
+def google_register(*, access_token: str, accept_terms: bool = False, db: Session) -> dict:
     """Sign in with Google, creating the account on first use. Returns a JWT pair.
 
     This is what lets "Continue with Google" be the whole sign-up: everything a
@@ -293,6 +293,8 @@ def google_register(*, access_token: str, db: Session) -> dict:
         l_name=l_name[:255],
         supabase_user_id=sub,
         pfp_url=meta.get("avatar_url") or meta.get("picture") or None,
+        # The sign-up form's terms box, ticked before "Continue with Google".
+        terms_accepted_at=_terms_time(accept_terms),
     )
     db.add(user)
     db.commit()
@@ -309,6 +311,13 @@ def google_register(*, access_token: str, db: Session) -> dict:
         "email": user.email,
         "is_new_user": True,
     }
+
+
+def _terms_time(accepted: bool) -> Optional[datetime]:
+    """When the sign-up form's "I agree to the Terms and Privacy Policy" box
+    was ticked — now, or None for a client that doesn't send it (iOS, older
+    web builds). Naive UTC, like the other DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None) if accepted else None
 
 
 def register_user(
@@ -328,6 +337,7 @@ def register_user(
     db: Session,
     supabase_user_id: Optional[str] = None,
     supabase_access_token: Optional[str] = None,
+    accept_terms: bool = False,
 ) -> dict:
     """Create a new user account. Returns ``{user_id, email}``.
 
@@ -379,6 +389,7 @@ def register_user(
         language=language,
         supabase_user_id=supabase_user_id,
         pfp_url=google_picture,
+        terms_accepted_at=_terms_time(accept_terms),
     )
     db.add(user)
     db.commit()

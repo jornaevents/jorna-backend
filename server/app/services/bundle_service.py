@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.utils.timeutil import utc_iso
 from app.db.models import Booking, Bundle, Event, Service, User, Vendor
 from app.models.schemas import PaymentStatus
+from app.services.names import vendor_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,7 @@ def _booking_summary(
         "service_name": service.name if service else None,
         "service_category": service.category if service else None,
         "service_subcategory": service.subcategory if service else None,
-        "vendor_name": f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else None,
+        "vendor_name": vendor_display_name(vendor, vendor_user),
         "vendor_id": booking.vendor_id,
         # "stripe" (protected, escrow-held) or "manual" (paid directly via
         # Venmo/Zelle) — a snapshot of the vendor's setting at send time, not

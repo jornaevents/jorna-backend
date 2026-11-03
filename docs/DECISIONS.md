@@ -1025,3 +1025,27 @@ booking's chat (the Message button, the first price offer or payment line).
   booking for older messages. That PR ships first.
 - The reverse order — booking first, then "Ask a question" — still opens a
   separate question thread; left for later.
+
+## 40. A vendor's business name; recording terms acceptance (0082)
+
+Vendors showed to clients as the account holder's own name (`f_name`/`l_name`)
+because there was nowhere to put a business's name. Decided 2026-11-03,
+before onboarding vendors:
+
+- `vendors.business_name` (optional, up to 120 characters; blank clears it).
+  Wherever someone other than the vendor sees them named — storefront and
+  search results, bundles, the signing page, contract and document PDFs,
+  emails to clients, message thread titles and pushes — it's the business
+  name when set, else the person's name, through `services/names.py`. An
+  email that greets the vendor themself still uses their first name. Vendor
+  responses carry `business_name` beside `f_name`/`l_name`.
+- A client's signature now freezes `vendor_name` into the signed snapshot
+  (contracts and documents), and the PDF prefers it, so renaming the business
+  later doesn't change what a signed contract says the vendor was called.
+  The fingerprint covers it for new signatures; older snapshots have none and
+  render the current name, as before.
+- `users.terms_accepted_at`: set when `POST /auth/register` or
+  `/auth/google/register` (on the call that creates the account) is sent
+  `accept_terms: true` — the web sign-up form's "I agree to the Terms and
+  Privacy Policy" box. Not required, so the iOS app, which doesn't show the
+  box yet, can still register; its sign-ups record nothing.

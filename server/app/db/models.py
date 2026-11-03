@@ -46,6 +46,11 @@ class User(Base):
 
     is_admin = Column(Boolean, nullable=False, default=False)
 
+    # When this account ticked "I agree to the Terms and Privacy Policy" at
+    # sign-up (0082). NULL for accounts made before the box existed, and for
+    # sign-ups from clients that don't send it yet (the iOS app).
+    terms_accepted_at = Column(DateTime, nullable=True)
+
     # The card kept for this client, and the Stripe Customer it belongs to.
     # Collected once when a plan is sent and charged when a vendor accepts —
     # money moves at the same moment it always did, but nobody has to come back
@@ -122,6 +127,9 @@ class Vendor(Base):
     # pickers now set. specializations and category/subcategory above are
     # kept in step for older clients (taxonomy.pairs_from_specialties).
     specialties = Column(JSON, nullable=True)
+    # What clients see the vendor called (0082). Optional: unset, the
+    # account holder's own name stands in — see services/names.py.
+    business_name = Column(String(120), nullable=True)
     rating = Column(Float, nullable=False)
     num_events = Column(Integer, nullable=False)
 
