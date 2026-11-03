@@ -22,7 +22,7 @@ from typing import Optional
 import jwt
 from sqlalchemy.orm import Session
 
-from app.config import ALGORITHM, SECRET_KEY, WEB_APP_URL
+from app.config import ALGORITHM, CLIENT_WEB_APP_URL, SECRET_KEY
 from app.db.models import Booking, Bundle, Service, User, Vendor
 from app.services.booking_service import checkin_anchor
 from app.services.email_service import send_email
@@ -99,7 +99,10 @@ def booking_for_token(token: str, db: Session) -> Booking:
 
 
 def checkin_url(booking: Booking, *, now: Optional[datetime] = None) -> str:
-    return f"{WEB_APP_URL}/check-in/?t={checkin_token(booking, now=now)}"
+    # The client app, though it's the vendor who checks in: the no-login
+    # check-in page lives there (jornaevents.com/client/check-in/), not in the
+    # vendor app at WEB_APP_URL, where this link used to 404.
+    return f"{CLIENT_WEB_APP_URL}/check-in/?t={checkin_token(booking, now=now)}"
 
 
 # ── Who is due ────────────────────────────────────────────────────────

@@ -65,16 +65,18 @@ Run these yourself; `railway login` and `link` open a browser or prompt.
      --set 'ALLOWED_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?(jorna-events|jorna-vendor)\.pages\.dev$' \
      --set WEB_APP_URL=https://staging.jorna-vendor.pages.dev/app \
      --set FRONTEND_URL=https://staging.jorna-events.pages.dev \
-     --set CLIENT_WEB_APP_URL=https://staging.jorna-events.pages.dev/app
+     --set CLIENT_WEB_APP_URL=https://staging.jorna-vendor.pages.dev/client
    ```
    `WEB_APP_URL` is the **vendor** app (production leaves it unset, so it
    defaults to `https://jornaevents.com/app`): contract-signing links, Google
    Calendar and Stripe return pages, and email links are built from it. Point
    it at the client app and those land on the wrong site.
-   `CLIENT_WEB_APP_URL` is the **client** app, with its `/app` basePath
+   `CLIENT_WEB_APP_URL` is the **client** app, with its `/client` basePath —
+   on staging it ships inside the vendor project's deploy, like production's
    (production leaves it unset, so it defaults to
-   `https://book.jornaevents.com/app`): links meant for clients, such as the
-   message digest email's, are built from it.
+   `https://jornaevents.com/client`): links to client-app pages, such as the
+   message digest email's for clients and the vendor's check-in link, are
+   built from it.
    Then **delete** from staging's `Desiconnect` variables everything in the
    table above that was copied from production
    (`railway variable delete <KEY> --service Desiconnect --environment staging`),

@@ -10,7 +10,7 @@ It's the source of truth for three clients, each in its own repo:
 | Client | Repo | Serves |
 | --- | --- | --- |
 | Vendor web app | `jorna-website`, `apps/vendor` | [jornaevents.com](https://jornaevents.com) — vendors, and the no-login contract signing page |
-| Client web app | `jorna-website`, `apps/client` | [book.jornaevents.com](https://book.jornaevents.com) — hosts planning and booking |
+| Client web app | `jorna-website`, `apps/client` | [jornaevents.com/client](https://jornaevents.com/client/) — hosts planning and booking, and the vendor's check-in page (book.jornaevents.com redirects there) |
 | iOS app | `front_end_desiconnect` | both sides, in one app |
 
 If a client repo's docs describe backend behaviour differently from the code
