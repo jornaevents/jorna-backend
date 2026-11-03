@@ -38,6 +38,7 @@ from app.services import contract_document as doc
 from app.services import payment_reminder_service as reminders
 from app.services.email_service import send_email
 from app.utils.timeutil import utc_iso
+from app.services.names import vendor_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +376,7 @@ def _tell_client_not_received(booking: Booking, item: dict, vendor: Vendor, db: 
     if not booking.guest_email:
         return
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first()
-    who = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "Your vendor"
+    who = vendor_display_name(vendor, vendor_user, "Your vendor")
     link = f"{WEB_APP_URL}/booking-link?t={booking.contract_token}"
     label = item["label"].lower()
     try:

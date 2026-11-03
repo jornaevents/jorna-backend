@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.services.names import vendor_user_display_name
 from app.db.models import (
     Booking, Bundle, Conversation, ConversationMember,
     GroupMessage, GroupMessageRead, Service, User, UserBlock, Vendor,
@@ -111,7 +112,7 @@ def _display_name(conv: Conversation, members: list[User], caller_user_id: str, 
         return conv.name
 
     other = next((u for u in members if u.user_id != caller_user_id), None)
-    who = f"{other.f_name} {other.l_name}".strip() if other else "Conversation"
+    who = vendor_user_display_name(other, "Conversation")
 
     if conv.subject_type == SUBJECT_BOOKING and conv.booking_id:
         booking = db.query(Booking).filter(Booking.booking_id == conv.booking_id).first()
@@ -808,7 +809,7 @@ def send_group_message(
         ConversationMember.user_id != caller_user_id,
     ).all()
     sender = db.query(User).filter(User.user_id == caller_user_id).first()
-    sender_name = f"{sender.f_name} {sender.l_name}" if sender else "Someone"
+    sender_name = vendor_user_display_name(sender, "Someone")
 
     try:
         from app.utils.notifications import send_push_to_user

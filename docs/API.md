@@ -456,6 +456,15 @@ single|multi|number|bool, options?: [{key, label}], unit?}}}`, in browse order. 
 "<version>"` and `Cache-Control: public, max-age=300`; send the ETag back as `If-None-Match` to get
 a 304. `popular` is the order of the chips a picker shows before typing (null = not shown).
 
+Since 0082:
+
+- **Vendors** (`POST /vendors`, `PATCH /vendors/me`) take an optional `business_name` (≤120
+  characters, trimmed; blank or `null` clears it). Vendor responses (`/vendors/{id}`, `/vendors/me`,
+  `GET /vendors`, search rows) include it beside `f_name`/`l_name`; every `vendor_name` /
+  `vendor_display_name` the API returns is the business name when set, else the person's name.
+- `POST /auth/register` and `POST /auth/google/register` take `accept_terms` (bool, default false);
+  true records when the account accepted the Terms and Privacy Policy (`users.terms_accepted_at`).
+
 Since 0080:
 
 - **Vendors** (`POST /vendors`, `PATCH /vendors/me`) take `specialties` (service keys, at most 20,

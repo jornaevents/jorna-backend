@@ -20,6 +20,7 @@ from app.services import contract_document as doc
 from app.services.booking_service import HOLDING_CONTRACT_STATUSES, vendor_has_conflicting_booking
 from app.services.email_service import send_email
 from app.utils.timeutil import utc_iso
+from app.services.names import vendor_display_name, vendor_user_display_name
 
 # How long a sent contract holds its date when the vendor hasn't set their
 # own Vendor.contract_hold_days. docs/DECISIONS.md #15.
@@ -152,7 +153,7 @@ def _contract_dict(booking: Booking, service: Service | None, vendor: Vendor, db
         "decline_reason": booking.decline_reason,
         "voided_at": _iso(booking.voided_at),
         "contract_token": booking.contract_token,
-        "vendor_display_name": _vendor_name(vendor_user),
+        "vendor_display_name": _vendor_name(vendor_user, vendor),
         # The latest change proposal's status (docs/DECISIONS.md #23). "open"
         # means the client is waiting on an answer: GET …/proposals.
         "proposal_status": _latest_proposal_status(booking, db),
@@ -183,8 +184,10 @@ def _latest_proposal_status(booking: Booking, db: Session) -> str | None:
     return latest_status(db, booking)
 
 
-def _vendor_name(vendor_user: User | None) -> str | None:
-    return f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else None
+def _vendor_name(vendor_user: User | None, vendor: Vendor | None = None) -> str | None:
+    if vendor is not None:
+        return vendor_display_name(vendor, vendor_user)
+    return vendor_user_display_name(vendor_user)
 
 
 def _check_dates(date_iso: str, date_end: str | None) -> None:
@@ -270,7 +273,7 @@ def _email_client(booking: Booking, vendor: Vendor, db: Session) -> bool:
     the contract is already sent (and holding) whether or not this lands.
     Returns whether the email provider took it, so the vendor is told the
     truth ("We emailed …" only when we did)."""
-    vendor_name = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first()) or "Your vendor"
+    vendor_name = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first(), vendor) or "Your vendor"
     held = (
         f" {vendor_name} is holding the date for you until "
         f"{booking.hold_expires_at.strftime('%B')} {booking.hold_expires_at.day}."

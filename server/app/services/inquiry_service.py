@@ -25,6 +25,7 @@ from app.config import WEB_APP_URL
 from app.db.models import Lead, Service, User, Vendor
 from app.services.contract_service import _EMAIL, ContractError, _check_lead
 from app.services.email_service import send_email
+from app.services.names import vendor_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def _open_vendor(vendor_id: str, db: Session) -> tuple[Vendor, User | None]:
 
 
 def _vendor_name(user: User | None) -> str:
-    return f"{user.f_name or ''} {user.l_name or ''}".strip() if user else "the vendor"
+    return vendor_user_display_name(user, "the vendor")
 
 
 def _recent_inquiries(vendor_id: str, since: datetime, db: Session):

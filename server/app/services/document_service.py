@@ -22,6 +22,7 @@ from app.services import contract_document as doc
 from app.services import esign_consent, signing_evidence
 from app.services.email_service import pdf_attachment, send_email
 from app.utils.timeutil import utc_iso
+from app.services.names import booking_vendor_name, vendor_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def _vendor_name(vendor: Vendor | None, db: Session) -> str | None:
     if not vendor:
         return None
     user = db.query(User).filter(User.user_id == vendor.user_id).first()
-    return f"{user.f_name} {user.l_name}".strip() if user else None
+    return vendor_display_name(vendor, user)
 
 
 def _totals_view(d: ContractDocument, booking: Booking, db: Session) -> dict:
@@ -518,6 +519,7 @@ def sign_by_token(
         "sections": d.sections,
         **({"changes": changes} if (changes := changes_view(d, booking, db)) else {}),
         "date_iso": booking.date_iso,
+        "vendor_name": booking_vendor_name(booking),
         "signer_name": d.signer_name,
         "signed_at": d.client_signed_at.isoformat(),
         "evidence": evidence,

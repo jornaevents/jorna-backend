@@ -175,6 +175,23 @@ def test_a_signature_is_for_one_revision_and_freezes_what_it_said():
     assert snap["amount_cents"] == 160_000 and snap["signer_name"] == "Priya Mehta"
 
 
+
+def test_a_signature_keeps_the_vendor_name_it_was_signed_under():
+    v = _with_addon(_setup_vendor())
+    client.patch("/vendors/me", json={"business_name": "Saffron & Silk"}, headers=v["headers"])
+    c = _proposal(v)
+    assert c["vendor_display_name"] == "Saffron & Silk"
+    token = c["contract_token"]
+    assert client.get(f"/guest-bookings/{token}").json()["vendor_display_name"] == "Saffron & Silk"
+    assert _sign(token).status_code == 200
+
+    # Renamed later: the signed record (and so its PDF) keeps the old name.
+    client.patch("/vendors/me", json={"business_name": "Saffron Events"}, headers=v["headers"])
+    db = TestingSessionLocal()
+    snap = db.query(Booking).filter(Booking.booking_id == c["booking_id"]).first().signed_snapshot
+    db.close()
+    assert snap["vendor_name"] == "Saffron & Silk"
+
 def test_changing_the_total_needs_a_matching_schedule():
     v = _with_addon(_setup_vendor())
     c = _proposal(v)

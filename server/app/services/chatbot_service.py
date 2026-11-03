@@ -14,6 +14,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.services.names import vendor_display_name
 from app.models.chatbot_schemas import (
     BudgetTier,
     Bundle,
@@ -408,7 +409,7 @@ def _bundle_item(cat: str, service, vendor, user, state: ChatbotState) -> Bundle
         vendor_id=vendor.vendor_id,
         service_id=service.service_id,
         service_name=service.name,
-        vendor_name=f"{user.f_name} {user.l_name}",
+        vendor_name=vendor_display_name(vendor, user),
         pfp_url=user.pfp_url,
         price_min=amount,
         price_max=amount,

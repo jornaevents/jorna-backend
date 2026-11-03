@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Booking, ContractEvent, ContractRevision, Service
 from app.models.schemas import PaymentStatus
+from app.services.names import booking_vendor_name
 from app.utils.timeutil import utc_iso
 
 ITEM_KINDS = ("package", "addon", "custom")
@@ -550,6 +551,9 @@ def freeze(booking: Booking, evidence: dict | None = None) -> None:
     signer_name/signed_at here are the client's (DECISIONS #34)."""
     snapshot = {
         **agreement(booking),
+        # Who the vendor was called when the client signed, so the signed
+        # PDF keeps that name if the business is renamed later (0082).
+        "vendor_name": booking_vendor_name(booking),
         "signer_name": booking.signer_name,
         "signed_at": booking.client_signed_at.isoformat(),
     }
