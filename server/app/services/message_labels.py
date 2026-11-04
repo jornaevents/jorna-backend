@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Booking, Conversation, Service
 from app.models.schemas import BookingStatus, PaymentStatus
-from app.services.booking_service import sent_to_vendor
+from app.services.booking_service import sent_to_vendor, venue_today
 from app.services.pipeline_service import SENT_STATES, _is_live_unsigned, _outcome
 
 SUBJECT_BOOKING = "booking"
@@ -49,9 +49,13 @@ def _is_agreed(b: Booking) -> bool:
     return b.status in _AGREED_WITHOUT_CONTRACT
 
 
-def _is_over(b: Booking, today: str) -> bool:
+def _is_over(b: Booking, now: datetime) -> bool:
+    """Its last day is behind us at the venue (booking_service.venue_today),
+    as the vendor reading their own calendar sees it. Read in UTC, an
+    evening wedding in California was over from 5pm and dropped behind an
+    open request on the client's side only."""
     last_day = (b.date_end or b.date_iso or "")[:10]
-    return bool(last_day) and last_day < today
+    return bool(last_day) and last_day < venue_today(b, now).isoformat()
 
 
 def _stage(b: Booking) -> str:
@@ -68,7 +72,7 @@ def _touched(b: Booking) -> datetime:
     return max(present) if present else datetime.min
 
 
-def label_for(conv: Conversation, bookings: list[Booking], today: str) -> tuple[str, Booking] | None:
+def label_for(conv: Conversation, bookings: list[Booking], now: datetime) -> tuple[str, Booking] | None:
     """(label, the booking it's about) for one chat, from the client's
     bookings with that chat's vendor. The order is the vendor app's
     relationFor:
@@ -89,7 +93,7 @@ def label_for(conv: Conversation, bookings: list[Booking], today: str) -> tuple[
     if own:
         return "booked", own
 
-    upcoming = [b for b in agreed if not _is_over(b, today)]
+    upcoming = [b for b in agreed if not _is_over(b, now)]
     if upcoming:
         return "booked", min(upcoming, key=lambda b: b.date_iso or "")
 
@@ -155,10 +159,10 @@ def client_labels(conversations: list[Conversation], caller_user_id: str, db: Se
         by_vendor.setdefault(booking.vendor_id, []).append(booking)
         service_name[booking.booking_id] = name
 
-    today = datetime.now(timezone.utc).date().isoformat()
+    now = datetime.now(timezone.utc)
     out: dict[str, dict] = {}
     for conv in mine:
-        found = label_for(conv, by_vendor.get(conv.vendor_id, []), today)
+        found = label_for(conv, by_vendor.get(conv.vendor_id, []), now)
         if found:
             stage, booking = found
             out[conv.conversation_id] = {

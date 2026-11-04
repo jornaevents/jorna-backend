@@ -18,6 +18,9 @@ from tests.test_conversation_subjects import _ask, world  # noqa: F401 — world
 
 TODAY = date(2026, 6, 1)
 T = TODAY.isoformat()
+# Midday UTC on TODAY. A booking in memory has no address, so its venue
+# calendar falls back to UTC and reads TODAY too.
+NOW = datetime(2026, 6, 1, 12, tzinfo=timezone.utc)
 
 
 def _day(offset: int) -> str:
@@ -44,7 +47,7 @@ def _signed(bid, **fields) -> Booking:
 
 
 def _label(bookings, own=None):
-    found = ml.label_for(Conversation(booking_id=own), bookings, T)
+    found = ml.label_for(Conversation(booking_id=own), bookings, NOW)
     return (found[0], found[1].booking_id) if found else None
 
 
@@ -129,6 +132,22 @@ class TestPriority:
         bookings = [_b("request"), _signed("today", date_iso=T)]
         assert _label(bookings) == ("booked", "today")
 
+    def test_today_is_read_at_the_venue_not_in_utc(self):
+        # 8pm on June 1 in Los Angeles is already June 2 in UTC. The wedding
+        # is still on there, so it's still the booking this chat is about.
+        evening = datetime(2026, 6, 2, 3, tzinfo=timezone.utc)
+        wedding = _signed("wedding", date_iso=T, location="Pasadena, CA")
+        found = ml.label_for(Conversation(), [_b("request"), wedding], evening)
+        assert (found[0], found[1].booking_id) == ("booked", "wedding")
+
+    def test_a_venue_whose_day_is_over_is_past(self):
+        # Midnight has come in New York: June 1 there is over, and the open
+        # request is what's live now.
+        after = datetime(2026, 6, 2, 4, 30, tzinfo=timezone.utc)
+        wedding = _signed("wedding", date_iso=T, location="Edison, NJ")
+        found = ml.label_for(Conversation(), [_b("request"), wedding], after)
+        assert (found[0], found[1].booking_id) == ("inquiry", "request")
+
     def test_a_multi_day_event_is_upcoming_until_its_last_day(self):
         b = _signed("long", date_iso=_day(-2), date_end=_day(1))
         assert _label([_b("request"), b]) == ("booked", "long")
@@ -207,7 +226,7 @@ class TestSameStageAsTheLeadsPage:
 
         items = list_pipeline(caller_user_id=world["vendor_user"].user_id, db=db)["items"]
         pipeline_stage = next(i["stage"] for i in items if i["booking_id"] == b.booking_id)
-        found = ml.label_for(Conversation(), [b], date.today().isoformat())
+        found = ml.label_for(Conversation(), [b], datetime.now(timezone.utc))
         assert (found[0], pipeline_stage) == (stage, stage)
 
 
