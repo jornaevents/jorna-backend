@@ -1083,8 +1083,11 @@ account — couldn't ask "can we start at 7:30?" without making one.
 Decided 2026-11-04. A busy thread's inbox row showed only its last message
 ("ok sounds good!"), which hides what happened. The inbox now shows a short
 AI line instead — "Priya's Catering confirmed the menu; waiting on the
-client's guest count" — to a reader with 3+ unread. Off until
-`SUMMARIES_ENABLED` is set.
+client's guest count" — to a reader with 3+ unread. `SUMMARIES_ENABLED` defaults on in Railway's
+staging environment and off everywhere else (production, local, CI), so it's
+tried on staging first; setting it explicitly overrides that anywhere.
+Staging gets its own OpenRouter key with a $0 credit limit, which can only
+call free models, so a staging mistake can't spend production's credits.
 
 - **One line per thread, shared by its members**, not one per reader: a
   per-reader line costs a model call per member per burst. So it can't say

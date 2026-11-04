@@ -85,18 +85,28 @@ INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 # endpoints/boot checks are skipped. See docs/DECISIONS.md #12.
 ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
 
-# AI summaries in the Messages inbox (docs/DECISIONS.md #42). Off until the
-# privacy questions in that entry are settled: while off, nothing is written,
-# nothing is sent to a model, and the inbox's `summary` field is always null.
-SUMMARIES_ENABLED: bool = os.getenv("SUMMARIES_ENABLED", "false").strip().lower() == "true"
+# AI summaries in the Messages inbox (docs/DECISIONS.md #42). While off,
+# nothing is written, nothing is sent to a model, and the inbox's `summary`
+# field is always null. On by default only in Railway's staging environment,
+# so it gets tried there first; off in production (until the Privacy Policy
+# covers it), locally and in CI. Setting SUMMARIES_ENABLED to true or false
+# overrides the default anywhere.
+def _summaries_default() -> str:
+    env = os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip().lower()
+    return "true" if env == "staging" else "false"
+
+
+SUMMARIES_ENABLED: bool = (
+    os.getenv("SUMMARIES_ENABLED", "").strip().lower() or _summaries_default()
+) == "true"
 # The OpenRouter model id for those summaries. Llama 3.3 70B on OpenRouter's
 # free tier while we try the feature out; any OpenRouter chat model works.
 SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
 # Whether OpenRouter may route summaries to providers that keep prompts. Off:
 # only providers that don't store data are used. Free-tier models are often
-# served only by providers that do, so trying one may need this on — on
-# staging with test data, not in production until DECISIONS #42's privacy
-# question is settled.
+# served only by providers that do, so trying one may need this on; if it is
+# on in production, the Privacy Policy has to say the provider may keep the
+# text (DECISIONS #42).
 SUMMARY_ALLOW_PROVIDER_LOGGING: bool = os.getenv("SUMMARY_ALLOW_PROVIDER_LOGGING", "false").strip().lower() == "true"
 # Model calls per UTC day across every thread. The cost brake: once it's used,
 # summaries pause until midnight and the inbox shows ordinary previews.

@@ -166,7 +166,7 @@ class TestOffByDefault:
         import importlib
 
         for var in ("SUMMARIES_ENABLED", "SUMMARY_DAILY_LIMIT", "SUMMARY_MODEL",
-                    "SUMMARY_ALLOW_PROVIDER_LOGGING"):
+                    "SUMMARY_ALLOW_PROVIDER_LOGGING", "RAILWAY_ENVIRONMENT_NAME"):
             monkeypatch.delenv(var, raising=False)
         fresh = importlib.reload(config)
         try:
@@ -175,6 +175,29 @@ class TestOffByDefault:
             assert fresh.SUMMARY_MODEL.startswith("meta-llama/llama-3.3-70b-instruct")
             assert fresh.SUMMARY_ALLOW_PROVIDER_LOGGING is False
         finally:
+            importlib.reload(config)
+
+    @pytest.mark.parametrize("railway_env,explicit,expected", [
+        ("staging", None, True),
+        ("Staging", None, True),
+        ("production", None, False),
+        (None, None, False),          # local dev, CI
+        ("production", "true", True),  # an explicit setting wins either way
+        ("staging", "false", False),
+        ("staging", "", True),         # set but empty reads as unset
+    ])
+    def test_on_by_default_only_on_staging(self, monkeypatch, railway_env, explicit, expected):
+        import importlib
+
+        for var, value in (("RAILWAY_ENVIRONMENT_NAME", railway_env), ("SUMMARIES_ENABLED", explicit)):
+            if value is None:
+                monkeypatch.delenv(var, raising=False)
+            else:
+                monkeypatch.setenv(var, value)
+        try:
+            assert importlib.reload(config).SUMMARIES_ENABLED is expected
+        finally:
+            monkeypatch.undo()
             importlib.reload(config)
 
     def test_the_sweep_does_nothing(self, world, monkeypatch):

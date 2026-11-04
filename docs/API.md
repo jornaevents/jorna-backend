@@ -137,7 +137,7 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   set; the server only sets it when the caller has 3+ unread in the thread,
   the line covers the thread's newest message, nobody it quotes is blocked by
   the caller, and the caller hasn't turned summaries off. Always `null` while
-  `SUMMARIES_ENABLED` is off. `GET /conversations/{id}` carries the key too,
+  `SUMMARIES_ENABLED` is off (the default everywhere but staging). `GET /conversations/{id}` carries the key too,
   always `null`.
 - `GET /me` and `PATCH /me` carry `ai_summaries_enabled` (default `true`),
   the "Show AI summaries" setting. `false` only hides summaries from the

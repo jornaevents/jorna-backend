@@ -208,7 +208,7 @@ matching, and `plan_readiness.py`) never persists conversation state
 server-side. The client sends the full `state` object back on every
 `/chatbot/step` call. See `docs/API.md` for the endpoint contract.
 
-## Inbox AI summaries (off: `SUMMARIES_ENABLED`)
+## Inbox AI summaries (`SUMMARIES_ENABLED`: on in staging, off elsewhere)
 
 `app/services/summary_service.py` writes the one-line summary the Messages
 inbox shows for a thread with several unread (DECISIONS #42). A sweep in
