@@ -137,6 +137,12 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   that vendor, else a new booking thread (DECISIONS #39) — so the returned
   thread's `booking_id` can be null. Offer and `system` messages carry
   `meta.booking_id` and `meta.bundle_id`.
+- `GET /conversations` rows and `GET /conversations/{id}` carry `label`:
+  for the client in a chat with one vendor, `{stage, booking_id,
+  service_name}` with `stage` one of `inquiry`, `negotiation`, `booked`,
+  `closed` — the label that vendor sees on the chat (DECISIONS #42). Null
+  for the vendor (their app works out its own), for plan chats, and when
+  nothing's been requested.
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`. Copying a contract link should call
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
@@ -227,6 +233,11 @@ declines or revises (DECISIONS #23). Each list endpoint returns
 
 Public routes, by the contract's token:
 
+- `GET /guest-bookings/{token}/messages` (30/minute) → `{vendor_name, items: [{message_id, from: "you"|"vendor",
+  sender_name, content, kind, created_at}]}`, oldest first; reading marks them read. Since 0083 (DECISIONS #41).
+- `POST /guest-bookings/{token}/messages` `{content}` (≤4000) → 201 with the same shape (10/minute); 410 once the
+  contract is declined or withdrawn. The vendor sees it in the booking's thread in `/conversations`, where a
+  message from the link client has `sender_id: null`, `from_link_client: true` and the client's name.
 - `GET /guest-bookings/{token}/proposals` (30/minute).
 - `POST /guest-bookings/{token}/proposals` `{base_revision, changes, message?}` → 201 (10/minute).
   - `changes` holds any of the terms fields except `amount_cents`, which is
@@ -455,6 +466,15 @@ synonyms, popular, bundle, attributes: [attribute keys]}]}], attributes: {key: {
 single|multi|number|bool, options?: [{key, label}], unit?}}}`, in browse order. It sends `ETag:
 "<version>"` and `Cache-Control: public, max-age=300`; send the ETag back as `If-None-Match` to get
 a 304. `popular` is the order of the chips a picker shows before typing (null = not shown).
+
+Since 0082:
+
+- **Vendors** (`POST /vendors`, `PATCH /vendors/me`) take an optional `business_name` (≤120
+  characters, trimmed; blank or `null` clears it). Vendor responses (`/vendors/{id}`, `/vendors/me`,
+  `GET /vendors`, search rows) include it beside `f_name`/`l_name`; every `vendor_name` /
+  `vendor_display_name` the API returns is the business name when set, else the person's name.
+- `POST /auth/register` and `POST /auth/google/register` take `accept_terms` (bool, default false);
+  true records when the account accepted the Terms and Privacy Policy (`users.terms_accepted_at`).
 
 Since 0080:
 

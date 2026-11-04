@@ -183,8 +183,9 @@ on. This is a deliberate tradeoff, not an oversight:
   endpoints specifically, and the vendor's own off-platform follow-up
   (phone/text) as the real verification step — consistent with "you'll pay/
   coordinate directly," not an in-app guarantee.
-- A guest booking supports **no messaging, negotiation, change requests, or
-  client-side GPS check-in** — all of those assume two authenticated `User`
+- A guest booking supports **no negotiation, change requests, or
+  client-side GPS check-in** (messaging it now has, through the link — #41;
+  `open_booking_thread` lets its vendor in, as the thread's one member) — all of those assume two authenticated `User`
   rows. `message_service.send_message`, `conversation_service.open_booking_
   thread`, and `negotiation_service.start_negotiation` all refuse a
   `user_id IS NULL` booking explicitly (400, not a crash) — a vendor calling
@@ -926,6 +927,11 @@ whole category; Attire's subcategories described the outfit), and every picker s
     service_key. So the Cultural Services slot now draws from the whole Entertainment group.
   - The slot keys in the API are unchanged until the web picker ships. That's also when Bar &
     bartending becomes a default slot.
+  - 2026-11-03, with the web picker: `bar_beverage` (Bar & bartending) is a bundle slot, keyed
+    by its service, so "recommend everything" now fills 11 slots. The `cultural_services` slot
+    keeps its key for older clients but is labelled Entertainment, the group it searches.
+  - A slot that stands for a whole group leaves out services another slot fills on its own
+    (`taxonomy.slot_services`), so the Entertainment slot never suggests a DJ — DJ has its own.
 
 ## 36. No Instagram scraping; the handle is just a link
 
@@ -1025,3 +1031,73 @@ booking's chat (the Message button, the first price offer or payment line).
   booking for older messages. That PR ships first.
 - The reverse order — booking first, then "Ask a question" — still opens a
   separate question thread; left for later.
+
+## 40. A vendor's business name; recording terms acceptance (0082)
+
+Vendors showed to clients as the account holder's own name (`f_name`/`l_name`)
+because there was nowhere to put a business's name. Decided 2026-11-03,
+before onboarding vendors:
+
+- `vendors.business_name` (optional, up to 120 characters; blank clears it).
+  Wherever someone other than the vendor sees them named — storefront and
+  search results, bundles, the signing page, contract and document PDFs,
+  emails to clients, message thread titles and pushes — it's the business
+  name when set, else the person's name, through `services/names.py`. An
+  email that greets the vendor themself still uses their first name. Vendor
+  responses carry `business_name` beside `f_name`/`l_name`.
+- A client's signature now freezes `vendor_name` into the signed snapshot
+  (contracts and documents), and the PDF prefers it, so renaming the business
+  later doesn't change what a signed contract says the vendor was called.
+  The fingerprint covers it for new signatures; older snapshots have none and
+  render the current name, as before.
+- `users.terms_accepted_at`: set when `POST /auth/register` or
+  `/auth/google/register` (on the call that creates the account) is sent
+  `accept_terms: true` — the web sign-up form's "I agree to the Terms and
+  Privacy Policy" box. Not required, so the iOS app, which doesn't show the
+  box yet, can still register; its sign-ups record nothing.
+
+## 41. The client on the contract link can message their vendor (0083)
+
+Decided 2026-11-03 (issue #67). A client who has only the contract link — no
+account — couldn't ask "can we start at 7:30?" without making one.
+
+- They write into the booking's **ordinary thread**, which the vendor reads and
+  answers in Messages like any other (unread counts, pushes, the digest), not a
+  separate guest inbox. `GET/POST /guest-bookings/{token}/messages`; the link
+  is the whole credential, as for everything on that router.
+- Without an account there's no user to be: their messages have a null
+  `group_messages.sender_id`, and the booking names them
+  (`guest_message_service.client_label`). The thread's one member is the
+  vendor; the client's read state is `bookings.guest_messages_read_at`.
+- The vendor's text replies reach them by email, with a link to the thread on
+  the signing page — one per stretch of unread replies
+  (`bookings.guest_message_emailed_at`), not one per message. Offers and
+  system lines don't email: the contract's own emails cover those.
+- A client *with* an account who uses their link writes as themselves, into
+  the same thread the app shows them.
+- A declined or withdrawn contract's thread stays readable but takes no new
+  messages, like everything else on the link (`_require_live`).
+
+## 42. A client sees the label their vendor sees on a chat
+
+The vendor web app's Messages labels each chat Inquiry, Negotiation, Booked or
+Closed (jorna-website #221), working it out itself from the Leads pipeline and
+its bookings. The client app has neither — Leads is vendor-only, and a
+client's bookings are spread across their plans — so for the client the label
+comes from here: `message_labels.client_labels`, returned as `label` on each
+chat row and on `GET /conversations/{id}`.
+
+- **One rule, not two.** The stage is the Leads page's own
+  (`pipeline_service`: `_is_live_unsigned`, `_outcome`, `SENT_STATES`), and
+  the order — the chat's own agreed booking, an upcoming one, an open
+  request, a past booking, then Closed — is the vendor app's `relationFor`.
+  A change to either needs the other.
+- **Only for the client.** A vendor's chats get `label: null`; their app
+  already has a richer answer (it links to the lead, and shows the side
+  panel), and two sources for one pill would drift.
+- **A vendor's own leads aren't used.** A lead typed in or added from a
+  Messages thread shows Inquiry to the vendor but nothing to the client: it's
+  the vendor's note, and the client hasn't asked for anything yet.
+- **Nor is a request on a plan the client hasn't sent**, which the vendor
+  hasn't seen either (`sent_to_vendor`).
+- Two queries for the whole inbox, not one per chat. No migration.

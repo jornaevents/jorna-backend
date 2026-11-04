@@ -81,6 +81,7 @@ def create_vendor(
     specializations: list[dict] | None = None,
     specialties: list[str] | None = None,
     years_experience: int | None = None,
+    business_name: str | None = None,
     db: Session,
 ) -> dict:
     """Create a vendor profile for *user_id*. Raises 400 if one already exists.
@@ -104,6 +105,7 @@ def create_vendor(
         subcategory=subcategory,
         specializations=specializations,
         years_experience=years_experience,
+        business_name=business_name,
         rating=0.0,
         num_events=0,
     )
@@ -124,6 +126,7 @@ def create_vendor(
         "specializations": vendor.specializations or [],
         **specialty_fields(vendor),
         "years_experience": vendor.years_experience,
+        "business_name": vendor.business_name,
         "rating": vendor.rating,
         "num_events": vendor.num_events,
         "tags": [],
@@ -155,6 +158,7 @@ def get_vendor(*, vendor_id: str, db: Session) -> dict:
         "open_to_long_distance": v.open_to_long_distance,
         "open_to_price_negotiation": v.open_to_price_negotiation,
         "open_to_location_negotiation": v.open_to_location_negotiation,
+        "business_name": v.business_name,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
@@ -205,6 +209,7 @@ def get_my_vendor(*, user_id: str, db: Session) -> dict:
         "open_to_long_distance": v.open_to_long_distance,
         "open_to_price_negotiation": v.open_to_price_negotiation,
         "open_to_location_negotiation": v.open_to_location_negotiation,
+        "business_name": v.business_name,
         "f_name": u.f_name,
         "l_name": u.l_name,
         "location": u.location,
@@ -307,7 +312,7 @@ def update_vendor(*, user_id: str, update_data: dict, db: Session) -> dict:
                      "default_overtime_rate_cents", "default_addon_rate_cents",
                      "default_contract_terms", "default_guest_count_mode",
                      "years_experience", "contract_hold_days", "default_payment_plan",
-                     "negotiation_locks"]:
+                     "negotiation_locks", "business_name"]:
             setattr(vendor, field, value)
     
     db.commit()
@@ -381,6 +386,7 @@ def list_vendors(
             "subcategory": v.subcategory,
             "rating": v.rating,
             "num_events": v.num_events,
+            "business_name": v.business_name,
             "f_name": u.f_name,
             "l_name": u.l_name,
             "location": u.location,
@@ -523,6 +529,7 @@ def search_vendors(
             {
                 "vendor_id": vendor.vendor_id,
                 "user_id": user.user_id,
+                "business_name": vendor.business_name,
                 "first_name": user.f_name,
                 "last_name": user.l_name,
                 "category": vendor.category,

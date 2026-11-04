@@ -14,6 +14,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.services.names import vendor_display_name
 from app.models.chatbot_schemas import (
     BudgetTier,
     Bundle,
@@ -408,7 +409,7 @@ def _bundle_item(cat: str, service, vendor, user, state: ChatbotState) -> Bundle
         vendor_id=vendor.vendor_id,
         service_id=service.service_id,
         service_name=service.name,
-        vendor_name=f"{user.f_name} {user.l_name}",
+        vendor_name=vendor_display_name(vendor, user),
         pfp_url=user.pfp_url,
         price_min=amount,
         price_max=amount,
@@ -487,7 +488,7 @@ def _candidate_service_rows(
         .join(Vendor, Service.vendor_id == Vendor.vendor_id)
         .join(User, Vendor.user_id == User.user_id)
         .filter(or_(
-            Service.service_key.in_(taxonomy.expand(taxonomy.bundle_slot(cat) or cat)),
+            Service.service_key.in_(taxonomy.slot_services(cat)),
             and_(Service.service_key.is_(None), legacy),
         ))
         # AI bundles only pick fixed-price (non-negotiable) services, so the whole

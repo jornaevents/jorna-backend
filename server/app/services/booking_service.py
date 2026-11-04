@@ -14,6 +14,7 @@ from app.db.models import Booking, Bundle, Event, User, Vendor, Service
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.utils.location import calculate_distance_miles
 from app.utils.notifications import notify_booking_status_change, notify_check_in
+from app.services.names import vendor_display_name, vendor_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +257,7 @@ def _email_decline(booking: Booking, client: User, vendor_user: User | None, ser
 
     from app.services.email_service import send_email
 
-    who = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "The vendor"
+    who = vendor_user_display_name(vendor_user, "The vendor")
     what = service.name if service else "your request"
     said = f'<p>They said: “{escape(booking.vendor_decline_note)}”</p>' if booking.vendor_decline_note else ""
     try:
@@ -289,7 +290,7 @@ def _dispatch_status_notification(
         event_name=event_name,
         service_name=service.name if service else "Service",
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
-        vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
+        vendor_name=vendor_user_display_name(vendor_user, "Vendor"),
         client_user=client,
         vendor_user=vendor_user,
         db=db,
@@ -342,7 +343,7 @@ def _booking_dict(booking: Booking, db: Session) -> dict:
         "user_id": booking.user_id,
         "vendor_id": booking.vendor_id,
         "client_name": f"{client.f_name} {client.l_name}".strip() if client else None,
-        "vendor_name": f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else None,
+        "vendor_name": vendor_display_name(vendor, vendor_user),
         "service_id": booking.service_id,
         "service_name": service.name if service else None,
         "service_category": service.category if service else None,
@@ -1673,7 +1674,7 @@ def _zone_name(booking: Booking) -> str | None:
     )
 
 
-def venue_today(booking: Booking) -> date:
+def venue_today(booking: Booking, now: datetime | None = None) -> date:
     """Today's date where the celebration is.
 
     Escrow is gated on whether the event has happened, and "has it happened" is
@@ -1685,6 +1686,9 @@ def venue_today(booking: Booking) -> date:
     Falls back to UTC when the zone can't be resolved, which is the behaviour
     this replaces. A booking with no address and no pin has nothing better to
     offer, and refusing to answer would freeze escrow rather than protect it.
+
+    `now`, an aware moment, reads the venue's calendar at that moment instead
+    of this one, for a caller that works out many bookings against one clock.
     """
     from app.services.timezone_service import zone_for
 
@@ -1693,7 +1697,8 @@ def venue_today(booking: Booking) -> date:
         latitude=booking.venue_latitude,
         longitude=booking.venue_longitude,
     )
-    return datetime.now(zone or timezone.utc).date()
+    zone = zone or timezone.utc
+    return (now.astimezone(zone) if now else datetime.now(zone)).date()
 
 
 def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
@@ -1832,7 +1837,7 @@ def check_in(
         event_name=(_bundle.event_name if _bundle else None) or "Event",
         is_vendor=is_vendor,
         client_name=f"{client.f_name} {client.l_name}" if client else "Client",
-        vendor_name=f"{vendor_user.f_name} {vendor_user.l_name}" if vendor_user else "Vendor",
+        vendor_name=vendor_user_display_name(vendor_user, "Vendor"),
         recipient_user=recipient_user,
         db=db,
     )

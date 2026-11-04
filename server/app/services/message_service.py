@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 
 from app.db.models import Booking, Message, User, Vendor
+from app.services.names import vendor_user_display_name
 
 
 class MessageError(Exception):
@@ -79,7 +80,7 @@ def send_message(
     if receiver:
         try:
             from app.utils.notifications import send_push_to_user
-            sender_name = f"{sender.f_name} {sender.l_name}" if sender else "Someone"
+            sender_name = vendor_user_display_name(sender, "Someone")
             send_push_to_user(
                 receiver,
                 f"New message from {sender_name}",

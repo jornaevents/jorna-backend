@@ -27,6 +27,7 @@ from app.services import esign_consent
 from app.services.booking_service import LOCKED_BOOKING_STATUSES
 from app.services.email_service import send_email
 from app.utils.notifications import notify_vendor_contract_event
+from app.services.names import vendor_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def _vendor_user(vendor: Vendor | None, db: Session) -> User | None:
 
 
 def _display_name(user: User | None) -> str:
-    return (f"{user.f_name or ''} {user.l_name or ''}".strip() if user else "") or "Your vendor"
+    return vendor_user_display_name(user, "Your vendor")
 
 
 def _own_vendor(vendor_id: str, caller_user_id: str, db: Session) -> Vendor:

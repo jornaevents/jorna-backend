@@ -277,6 +277,25 @@ def test_the_email_says_the_local_time_and_carries_a_link(booking_world, mocker)
     assert "Catering" in body
 
 
+def test_the_link_opens_the_check_in_page_in_the_client_app(booking_world, mocker, monkeypatch):
+    # The check-in page lives in the client app (jornaevents.com/client), not
+    # the vendor app at WEB_APP_URL — a link there was a 404.
+    import app.services.reminder_service as rs
+
+    monkeypatch.setattr(rs, "CLIENT_WEB_APP_URL", "https://site.example/client")
+    sender = mocker.patch(
+        "app.services.reminder_service.send_email", return_value={"success": True, "id": "e1"}
+    )
+    db = _db()
+    try:
+        send_checkin_reminder(_booking(db, booking_world), db, now=START_UTC - REMINDER_LEAD)
+    finally:
+        db.close()
+
+    kwargs = sender.call_args.kwargs
+    assert "https://site.example/client/check-in/?t=" in kwargs["html"] + kwargs["text"]
+
+
 # ── The token ─────────────────────────────────────────────────────────
 
 

@@ -60,6 +60,14 @@ class VendorSpecializationItem(BaseModel):
         return v
 
 
+def _clean_business_name(v):
+    """Trimmed; blank means "none" (the person's own name stands in)."""
+    if v is None:
+        return None
+    v = " ".join(v.split())
+    return v or None
+
+
 class CreateVendorRequest(BaseModel):
     bio: str
     # Optional: what a vendor sells is decided per service, and every service
@@ -76,6 +84,10 @@ class CreateVendorRequest(BaseModel):
     # When given, specializations and category/subcategory are derived from it.
     specialties: Optional[list[str]] = Field(default=None, max_length=20)
     years_experience: Optional[int] = Field(default=None, ge=0, le=99)
+    # What clients see the vendor called; unset, their own name stands in.
+    business_name: Optional[str] = Field(default=None, max_length=120)
+
+    _business_name = field_validator("business_name")(_clean_business_name)
 
     @field_validator("subcategory")
     @classmethod
@@ -132,6 +144,10 @@ class UpdateVendorRequest(BaseModel):
     )
     years_experience: Optional[int] = Field(default=None, ge=0, le=99)
     contract_hold_days: Optional[int] = Field(default=None, ge=1, le=60)
+    # Blank or null clears it, back to the person's own name.
+    business_name: Optional[str] = Field(default=None, max_length=120)
+
+    _business_name = field_validator("business_name")(_clean_business_name)
 
     @field_validator("specializations")
     @classmethod
@@ -180,6 +196,7 @@ def create_vendor_route(
             ),
             specialties=body.specialties,
             years_experience=body.years_experience,
+            business_name=body.business_name,
             db=db,
         )
     except VendorError as e:

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app import taxonomy
 from app.db.models import Booking, Service, Vendor, User
 from app.services.storage_service import delete_service_image, delete_service_video
+from app.services.names import vendor_display_name
 
 
 class ServiceError(Exception):
@@ -93,7 +94,7 @@ def _service_with_vendor_dict(service: Service, vendor: Vendor, user: User) -> d
     """Service fields plus its vendor's display info — the shape the service-first
     swap picker needs (one call gives service + who offers it)."""
     d = _service_dict(service)
-    d["vendor_name"] = f"{user.f_name} {user.l_name}".strip() if user else None
+    d["vendor_name"] = vendor_display_name(vendor, user)
     d["vendor_rating"] = vendor.rating if vendor else None
     d["vendor_pfp_url"] = user.pfp_url if user else None
     return d

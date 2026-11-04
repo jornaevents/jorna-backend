@@ -30,6 +30,7 @@ from app.models.schemas import BookingStatus
 from app.services import contract_document as doc
 from app.services.email_service import send_email
 from app.utils.notifications import notify_vendor_contract_event
+from app.services.names import vendor_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def _client_email(booking: Booking, installment: dict, due: date, kind: str, ven
 def _remind(booking: Booking, installment: dict, kind: str, due: date, db: Session) -> None:
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
-    vendor_name = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
+    vendor_name = vendor_display_name(vendor, vendor_user, "your vendor")
 
     if kind == "overdue":
         service = db.query(Service).filter(Service.service_id == booking.service_id).first()
@@ -181,7 +182,7 @@ def send_manual_reminder(booking: Booking, installment: dict, db: Session) -> No
     vendor; this is the one that reaches the client."""
     vendor = db.query(Vendor).filter(Vendor.vendor_id == booking.vendor_id).first()
     vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
-    vendor_name = f"{vendor_user.f_name} {vendor_user.l_name}".strip() if vendor_user else "your vendor"
+    vendor_name = vendor_display_name(vendor, vendor_user, "your vendor")
     due = doc.effective_due(installment, booking)
     link = f"{WEB_APP_URL}/booking-link?t={booking.contract_token}"
     ways = [w for w in (
