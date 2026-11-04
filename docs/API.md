@@ -137,6 +137,12 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   that vendor, else a new booking thread (DECISIONS #39) — so the returned
   thread's `booking_id` can be null. Offer and `system` messages carry
   `meta.booking_id` and `meta.bundle_id`.
+- `GET /conversations` rows and `GET /conversations/{id}` carry `label`:
+  for the client in a chat with one vendor, `{stage, booking_id,
+  service_name}` with `stage` one of `inquiry`, `negotiation`, `booked`,
+  `closed` — the label that vendor sees on the chat (DECISIONS #42). Null
+  for the vendor (their app works out its own), for plan chats, and when
+  nothing's been requested.
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`. Copying a contract link should call
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
