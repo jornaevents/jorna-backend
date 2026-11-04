@@ -1674,7 +1674,7 @@ def _zone_name(booking: Booking) -> str | None:
     )
 
 
-def venue_today(booking: Booking) -> date:
+def venue_today(booking: Booking, now: datetime | None = None) -> date:
     """Today's date where the celebration is.
 
     Escrow is gated on whether the event has happened, and "has it happened" is
@@ -1686,6 +1686,9 @@ def venue_today(booking: Booking) -> date:
     Falls back to UTC when the zone can't be resolved, which is the behaviour
     this replaces. A booking with no address and no pin has nothing better to
     offer, and refusing to answer would freeze escrow rather than protect it.
+
+    `now`, an aware moment, reads the venue's calendar at that moment instead
+    of this one, for a caller that works out many bookings against one clock.
     """
     from app.services.timezone_service import zone_for
 
@@ -1694,7 +1697,8 @@ def venue_today(booking: Booking) -> date:
         latitude=booking.venue_latitude,
         longitude=booking.venue_longitude,
     )
-    return datetime.now(zone or timezone.utc).date()
+    zone = zone or timezone.utc
+    return (now.astimezone(zone) if now else datetime.now(zone)).date()
 
 
 def event_confirmable_date(booking: Booking) -> tuple[bool, str | None]:
