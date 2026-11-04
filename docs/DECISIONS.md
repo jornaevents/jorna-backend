@@ -1077,3 +1077,44 @@ account — couldn't ask "can we start at 7:30?" without making one.
   the same thread the app shows them.
 - A declined or withdrawn contract's thread stays readable but takes no new
   messages, like everything else on the link (`_require_live`).
+
+## 42. AI summaries in the Messages inbox (0084)
+
+Decided 2026-11-04. A busy thread's inbox row showed only its last message
+("ok sounds good!"), which hides what happened. The inbox now shows a short
+AI line instead — "Priya's Catering confirmed the menu; waiting on the
+client's guest count" — to a reader with 3+ unread. Off until
+`SUMMARIES_ENABLED` is set.
+
+- **One line per thread, shared by its members**, not one per reader: a
+  per-reader line costs a model call per member per burst. So it can't say
+  "you" — it names who a thread waits on by role or business name — and a
+  reader who blocked someone it quotes gets the ordinary preview, because
+  blocks are otherwise only filtered client-side.
+- **Written by a sweep, never on request.** The inbox reads stored lines and
+  never waits on a model. The sweep notices new messages by comparing each
+  thread's newest message with what its row covered, so no message writer
+  needs a hook and turning the flag on needs no backfill.
+- **When:** 90s after a thread goes quiet, or 5 minutes after the first
+  uncovered message, at most every 2 minutes and 40 times a day per thread,
+  and `SUMMARY_DAILY_LIMIT` (50) calls a day in all. Skipped below 3
+  meaningful messages; only "ok"s and emoji since the last line extend it
+  for free.
+- **Money and dates can't be invented.** Amounts only from offer messages,
+  with the negotiation's current status; "agreed" only when a negotiation is
+  accepted; dates as written. The prompt asks for this and `check_line`
+  refuses a reply that breaks it (or carries contact details, links, emoji,
+  or runs past 80 characters) — the line appears in inboxes nobody asked
+  for it in, so a wrong number is worse than none.
+- **Model:** Llama 3.3 70B on OpenRouter's free tier (`SUMMARY_MODEL`), to
+  try the feature at no cost. Any OpenRouter model is an env change.
+- **Privacy:** covered by the Privacy Policy, which says message text is
+  sent through OpenRouter to an AI provider to write these lines. Neither
+  prompts nor replies are logged. "Show AI summaries"
+  (`users.ai_summaries_enabled`) only hides them for that user. By default
+  only providers that don't keep prompts are used; free-tier models may only
+  be served by ones that do, which `SUMMARY_ALLOW_PROVIDER_LOGGING` allows —
+  and turning it on means the policy must say the provider may keep the text.
+- **No foreign keys** on `conversation_summaries`: threads are deleted along
+  hand-written cascades, and a key would break any that forgot it. They call
+  `summary_service.forget()`; an orphaned row is never read.

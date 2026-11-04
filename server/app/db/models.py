@@ -1,7 +1,7 @@
 """SQLAlchemy table definitions for User, Vendor, Service, Booking, Tag."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint, Index, false
+from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, Table, Boolean, DateTime, UniqueConstraint, CheckConstraint, Index, false, true
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -64,6 +64,9 @@ class User(Base):
 
     open_to_price_negotiation = Column(Boolean, nullable=False, default=False)
     flexible_on_location = Column(Boolean, nullable=False, default=False)
+    # "Show AI summaries" in account settings (0084). Only hides them from this
+    # user's inbox; it doesn't keep their messages out of other people's.
+    ai_summaries_enabled = Column(Boolean, nullable=False, default=True, server_default=true())
 
     # Where the message-digest sweep left off — a message is only ever in one
     # digest, the next one after it arrives, so the sweep needs to know per
@@ -969,7 +972,7 @@ class GroupMessage(Base):
     # booking names them (guest_message_service.client_label).
     sender_id = Column(String(36), ForeignKey("users.user_id"), nullable=True, index=True)
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, index=True)
     # text | offer | system. `content` is always a human sentence, so a client
     # that doesn't know a kind still renders something true — the kind only
     # decides whether there is a card around it.
@@ -977,6 +980,45 @@ class GroupMessage(Base):
     # Whatever that card needs: an offer_id and an amount, a service_id for a
     # reference card, nothing at all for text. Never queried into.
     meta = Column(JSON, nullable=True)
+
+
+class ConversationSummary(Base):
+    """The AI summary line a thread shows in the inbox (0084, DECISIONS #42).
+
+    One row per conversation, overwritten by each run. Written only by the
+    summary sweep (summary_service), read only by list_conversations.
+
+    Deliberately no foreign keys: a conversation or message is deleted along
+    several hand-written cascades (bundle_service, user_service), and a key
+    here would make every one of them fail on the row it forgot. Each cascade
+    calls summary_service.forget() instead, and a row that outlives its thread
+    is never read — the inbox only looks up threads it is listing.
+    """
+
+    __tablename__ = "conversation_summaries"
+
+    conversation_id = Column(String(36), primary_key=True)
+    # Null until a run produced a line that passed every check.
+    text = Column(String(200), nullable=True)
+    # The newest message this row has looked at, and when it was sent. The
+    # line is shown only while that is still the thread's newest message.
+    to_message_id = Column(String(36), nullable=True)
+    to_message_at = Column(DateTime, nullable=True)
+    # Who wrote the summarized messages, so a reader who blocked one of them
+    # never sees it (blocks are otherwise filtered client-side).
+    sender_ids = Column(JSON, nullable=True)
+    # ok | skipped | failed — what the last run did.
+    status = Column(String(16), nullable=False, default="ok")
+    model = Column(String(100), nullable=True)
+    generated_at = Column(DateTime, nullable=True)
+    # When the model was last called for this thread, and how many times on
+    # `runs_on` (a UTC date): the 2-minute gap and the 40-a-day ceiling.
+    last_run_at = Column(DateTime, nullable=True)
+    runs_on = Column(String(10), nullable=True)
+    runs_today = Column(Integer, nullable=False, default=0)
+    # Set when something makes the line wrong regardless of new messages (a
+    # report against one of them): the next pass reruns the thread.
+    force = Column(Boolean, nullable=False, default=False)
 
 
 class GroupMessageRead(Base):

@@ -31,7 +31,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 
-from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, ESCROW_ENABLED, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
+from app.config import ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, ESCROW_ENABLED, SUMMARIES_ENABLED, SECRET_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, DATABASE_URL, INITIAL_ADMIN_EMAIL
 from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
@@ -210,6 +210,9 @@ _CHECKIN_REMINDER_INTERVAL_SECONDS = 5 * 60
 # that the digest still reads as "new," long enough that a real conversation
 # reads as one email rather than several.
 _MESSAGE_DIGEST_INTERVAL_SECONDS = 20 * 60
+# Inbox AI summaries: a thread is due 90s after it goes quiet, so a pass every
+# 30s puts a line in the inbox about two minutes after the last message.
+_SUMMARY_INTERVAL_SECONDS = 30
 _PAYMENT_REMINDER_INTERVAL_SECONDS = 60 * 60  # hourly
 _CALENDAR_CHANNEL_RENEWAL_INTERVAL_SECONDS = 24 * 60 * 60  # daily
 _CALENDAR_BUSY_RESYNC_INTERVAL_SECONDS = 4 * 60 * 60  # every 4 hours
@@ -319,6 +322,29 @@ async def _periodic_message_digests():
         except Exception as exc:
             logger.warning("Message digest sweep failed: %s", exc)
         await asyncio.sleep(_MESSAGE_DIGEST_INTERVAL_SECONDS)
+
+
+def _summary_pass() -> None:
+    from app.db.database import SessionLocal
+    from app.services.summary_service import run_pass
+
+    with SessionLocal() as session:
+        run_pass(db=session)
+
+
+async def _periodic_conversation_summaries():
+    """Write the inbox's AI summary lines (summary_service, DECISIONS #42).
+
+    Only started when SUMMARIES_ENABLED is on. Same shape as the sweeps above,
+    except that a pass runs in a worker thread: it waits on a model for up to
+    20s a thread, and that must not stall every request on the event loop.
+    """
+    while True:
+        try:
+            await asyncio.to_thread(_summary_pass)
+        except Exception as exc:
+            logger.warning("Summary sweep failed: %s", exc)
+        await asyncio.sleep(_SUMMARY_INTERVAL_SECONDS)
 
 
 async def _periodic_calendar_channel_renewal():
@@ -431,6 +457,8 @@ async def lifespan(app: FastAPI):
     ]
     if ESCROW_ENABLED:
         background.append(asyncio.create_task(_periodic_escrow_release()))
+    if SUMMARIES_ENABLED:
+        background.append(asyncio.create_task(_periodic_conversation_summaries()))
 
     yield
 

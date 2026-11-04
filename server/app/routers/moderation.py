@@ -66,6 +66,15 @@ def create_report(
         created_at=datetime.now(timezone.utc),
     )
     db.add(report)
+    if body.target_type == "message":
+        # A reported message comes out of its thread's AI summary at once,
+        # and the next sweep rewrites the line without it (summary_service).
+        from app.db.models import GroupMessage
+        from app.services.summary_service import mark_stale
+
+        msg = db.query(GroupMessage).filter(GroupMessage.message_id == body.target_id).first()
+        if msg is not None:
+            mark_stale(msg.conversation_id, db)
     db.commit()
     return {"message": "Report received. Our team will review it.", "report_id": report.report_id}
 

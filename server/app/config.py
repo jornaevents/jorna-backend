@@ -85,6 +85,23 @@ INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 # endpoints/boot checks are skipped. See docs/DECISIONS.md #12.
 ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
 
+# AI summaries in the Messages inbox (docs/DECISIONS.md #42). Off until the
+# privacy questions in that entry are settled: while off, nothing is written,
+# nothing is sent to a model, and the inbox's `summary` field is always null.
+SUMMARIES_ENABLED: bool = os.getenv("SUMMARIES_ENABLED", "false").strip().lower() == "true"
+# The OpenRouter model id for those summaries. Llama 3.3 70B on OpenRouter's
+# free tier while we try the feature out; any OpenRouter chat model works.
+SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
+# Whether OpenRouter may route summaries to providers that keep prompts. Off:
+# only providers that don't store data are used. Free-tier models are often
+# served only by providers that do, so trying one may need this on — on
+# staging with test data, not in production until DECISIONS #42's privacy
+# question is settled.
+SUMMARY_ALLOW_PROVIDER_LOGGING: bool = os.getenv("SUMMARY_ALLOW_PROVIDER_LOGGING", "false").strip().lower() == "true"
+# Model calls per UTC day across every thread. The cost brake: once it's used,
+# summaries pause until midnight and the inbox shows ordinary previews.
+SUMMARY_DAILY_LIMIT: int = int(os.getenv("SUMMARY_DAILY_LIMIT", "50"))
+
 # New contracts negotiate field by field (docs/DECISIONS.md #26) instead of
 # by whole proposal (#23). Off until the web workspace for it ships; turning
 # it on only affects contracts created afterwards.

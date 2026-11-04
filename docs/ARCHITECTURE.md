@@ -207,3 +207,26 @@ for LLM-assisted tag scoring when `OPENROUTER_API_KEY` is set, else keyword
 matching, and `plan_readiness.py`) never persists conversation state
 server-side. The client sends the full `state` object back on every
 `/chatbot/step` call. See `docs/API.md` for the endpoint contract.
+
+## Inbox AI summaries (off: `SUMMARIES_ENABLED`)
+
+`app/services/summary_service.py` writes the one-line summary the Messages
+inbox shows for a thread with several unread (DECISIONS #42). A sweep in
+`main.py` (`_periodic_conversation_summaries`, every 30s, in a worker thread
+because it waits on a model) finds threads whose newest message is newer than
+their row in `conversation_summaries` covers and whose burst has settled
+(90s quiet, or 5 minutes since the first uncovered message), builds a
+speaker-labelled transcript of the last ≤30 messages, asks the model
+(`SUMMARY_MODEL` on OpenRouter, Llama 3.3 70B free tier by default) and checks
+the reply before storing it — length, contact details and links, amounts that
+must match an offer, "agreed" only with an accepted negotiation.
+`list_conversations` reads the rows (`inbox_summaries`, a fixed three
+queries for the whole inbox) and decides per reader whether a line may show.
+
+Caps: `SUMMARY_DAILY_LIMIT` model calls a UTC day across all threads (50),
+40 per thread, 2 minutes between runs of one thread. Nothing is written on
+the message-send path; the table has no foreign keys, and the delete
+cascades in `bundle_service` / `user_service` call `summary_service.forget()`.
+A report on a message (`POST /reports`) hides that thread's line at once and
+forces a rewrite without it. With the flag off the sweep isn't started and
+every `summary` is `null`.

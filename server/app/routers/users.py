@@ -29,6 +29,8 @@ class UpdateMeRequest(BaseModel):
     pfp_url: Optional[str] = None
     open_to_price_negotiation: Optional[bool] = None
     flexible_on_location: Optional[bool] = None
+    # "Show AI summaries" in the Messages inbox. Hides them for this user only.
+    ai_summaries_enabled: Optional[bool] = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────

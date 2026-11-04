@@ -61,6 +61,8 @@ def _user_dict(user: User) -> dict:
         "has_password": user.password is not None,
         "open_to_price_negotiation": user.open_to_price_negotiation,
         "flexible_on_location": user.flexible_on_location,
+        # "Show AI summaries" in account settings (summary_service).
+        "ai_summaries_enabled": user.ai_summaries_enabled is not False,
     }
 
 
@@ -188,6 +190,15 @@ def delete_user(*, user_id: str, db: Session) -> None:
         db.query(GroupMessageRead).filter(GroupMessageRead.user_id == user_id).delete(
             synchronize_session=False
         )
+        # Summaries quote what this user wrote: drop the lines of every thread
+        # they posted in, before their messages go (summary_service). The
+        # sweep rewrites a thread's line from what remains at its next message.
+        from app.services.summary_service import forget as forget_summaries
+        forget_summaries(
+            [c for (c,) in db.query(GroupMessage.conversation_id)
+             .filter(GroupMessage.sender_id == user_id).distinct().all()],
+            db,
+        )
         db.query(GroupMessage).filter(GroupMessage.sender_id == user_id).delete(
             synchronize_session=False
         )
@@ -233,6 +244,7 @@ def delete_user(*, user_id: str, db: Session) -> None:
             db.query(ConversationMember).filter(
                 ConversationMember.conversation_id.in_(leftover_conv_ids)
             ).delete(synchronize_session=False)
+            forget_summaries(leftover_conv_ids, db)
             db.query(Conversation).filter(
                 Conversation.conversation_id.in_(leftover_conv_ids)
             ).delete(synchronize_session=False)
@@ -320,6 +332,8 @@ def update_user(*, user_id: str, update_data: dict, db: Session) -> dict:
         if conflict:
             raise UserError(400, "Email is already in use by another account")
     for field, value in update_data.items():
+        if field == "ai_summaries_enabled" and value is None:
+            continue  # a column that can't be null; "unset" means leave it
         setattr(user, field, value)
     db.commit()
     db.refresh(user)
