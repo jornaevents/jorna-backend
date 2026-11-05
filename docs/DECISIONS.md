@@ -1109,13 +1109,23 @@ call free models, so a staging mistake can't spend production's credits.
   refuses a reply that breaks it (or carries contact details, links, emoji,
   or runs past 80 characters) — the line appears in inboxes nobody asked
   for it in, so a wrong number is worse than none.
-- **Model:** Gemma 4 31B on OpenRouter's free tier
-  (`google/gemma-4-31b-it:free`, `SUMMARY_MODEL`), to try the feature at no
-  cost. The plan was free Llama 3.3 70B, but by 2026-11-05 it had no
-  providers left on OpenRouter; free models come and go, so any OpenRouter
-  model is an env change. The rules ride at the start of the user message
-  (Gemma takes no system role) and thinking is turned off
-  (`reasoning: {enabled: false}`). `scripts/eval_summaries.py` runs a set of
+- **Model:** free on OpenRouter, to try the feature at no cost
+  (`SUMMARY_MODEL`; any OpenRouter model is an env change). Staging uses
+  OpenRouter's Free Models Router (`openrouter/free`), which sends each call
+  to whichever free model is up: on 2026-11-05 the planned Gemma 4 31B free
+  (`google/gemma-4-31b-it:free`, still the default outside staging) was
+  rate-limited all day in Google AI Studio's shared free pool, its only
+  provider, and free Llama 3.3 70B had no providers left at all. The router
+  passed 11 of 15 eval threads with no errors. The cost is that the model,
+  and so the lines' tone and length, changes from call to call. **Production
+  needs one pinned model instead** (with its own key or a paid tier, and a
+  provider that doesn't keep prompts), re-run through the eval, before the
+  flag goes on there. The rules ride at the start of the user message (Gemma
+  takes no system role) and thinking is turned off
+  (`reasoning: {enabled: false}`); the router sometimes lands on a model that
+  can't turn it off and refuses the request, so it is asked again, up to
+  three times, rather than letting thinking on (a thinking model spends the
+  budget before it answers). `scripts/eval_summaries.py` runs a set of
   made-up threads through the real model and the reply checks.
 - **Privacy:** covered by the Privacy Policy, which says message text is
   sent through OpenRouter to an AI provider to write these lines. Neither

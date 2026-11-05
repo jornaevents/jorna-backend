@@ -29,7 +29,7 @@ Where the flag is off, the sweep isn't started, nothing is written or sent to a 
   - 90s after it goes quiet, or 5 minutes after the first uncovered message.
   - At most every 2 minutes and 40 times a day per thread, and `SUMMARY_DAILY_LIMIT` (default **50**) model calls a day across all threads.
   - Skipped below 3 meaningful messages. If only "ok"s or emoji arrived since the last line, the line is extended without a model call.
-- **Model:** `SUMMARY_MODEL`, default `google/gemma-4-31b-it:free` on OpenRouter (free Llama 3.3 has no providers left), using the existing `OPENROUTER_API_KEY`.
+- **Model:** `SUMMARY_MODEL` on OpenRouter, using the existing `OPENROUTER_API_KEY`. Staging defaults to the Free Models Router (`openrouter/free`, whichever free model is up); elsewhere `google/gemma-4-31b-it:free`, whose only provider's free pool was rate-limited all of 2026-11-05. When the router lands on a model that can't turn thinking off (a 400), the call is asked again, up to 3 times. Production needs a pinned model before it's turned on there (DECISIONS #42).
 - **Reply checks** (`check_line`), applied before anything is stored:
   - 80 characters at most.
   - No email, phone number, @handle, link or emoji.
@@ -42,7 +42,7 @@ Where the flag is off, the sweep isn't started, nothing is written or sent to a 
   - Prompts and replies are never logged.
   - By default only providers that don't keep prompts are used. `SUMMARY_ALLOW_PROVIDER_LOGGING` opts into ones that do. It defaults on in staging only, because the free Gemma's only provider (Google AI Studio) may keep prompts.
 - **`scripts/eval_summaries.py`:** 15 made-up threads through the real model and the reply checks, to try a model or key before turning it on.
-- **Live test:** RESULTS GO HERE (from the session that runs the eval).
+- **Live test** (2026-11-05, staging key, `openrouter/free`): **11/15** threads produced a line the checks accept (10 lines + one correct NONE), no errors, ~1–6s per thread. The 4 refusals were 3 lines over 80 characters (after the retry) and one "accepted" about an accepted reschedule (no accepted offer, so the check refuses it: over-cautious, but the safe way). Money, relative dates, payment handles, the prompt injection and the contact details all came out right. The eval also caught a model writing a line followed by "NONE"; `clean_line` now drops that. Gemma 4 31B free returned 429 (upstream shared pool) on every call that day.
 - **Migration `0084_conversation_summaries`:**
   - The `conversation_summaries` table, with no foreign keys on purpose: the delete cascades in `bundle_service`/`user_service` call `forget()` instead. A key would break any cascade that missed it.
   - `users.ai_summaries_enabled`, default true.
@@ -51,8 +51,8 @@ Where the flag is off, the sweep isn't started, nothing is written or sent to a 
 
 ## Testing
 
-- `pytest`: **1333 passed, 21 skipped**. That's the 1247 passing before this change plus 86 new tests in `tests/test_conversation_summaries.py`.
-  - **Defaults:** on for staging, off for production/local/CI, explicit override both ways; limit/model defaults; no sweep, no writes; null field; no writes on send.
+- `pytest`: **1342 passed, 21 skipped**. That's the 1247 passing before this change plus 95 new tests in `tests/test_conversation_summaries.py`.
+  - **Defaults:** on for staging, off for production/local/CI, explicit override both ways; limit/model defaults (the router in staging only); asking the router again on a must-think refusal; no sweep, no writes; null field; no writes on send.
   - **The setting.**
   - **Display rules:** unread threshold, out-of-date line, blocks, opening the thread, failed rows.
   - **The inbox query count.**
@@ -68,8 +68,8 @@ Where the flag is off, the sweep isn't started, nothing is written or sent to a 
 ## Before turning it on
 
 - Update the Privacy Policy as DECISIONS #42 says, and say that providers may keep the text if `SUMMARY_ALLOW_PROVIDER_LOGGING` is turned on.
-- Confirm the free model's slug and OpenRouter's free-tier request limits for our account. 50/day plus at most one retry per thread should fit.
-- Staging has it on already; give staging its own OpenRouter key with a $0 credit limit (free models only), then run the evaluation threads.
+- **Production:** pin one model instead of the free router (its own key or a paid tier, a provider that doesn't keep prompts), re-run `scripts/eval_summaries.py` against it, and set `SUMMARY_MODEL` there.
+- OpenRouter's free tier allows a small number of requests a day per account; 50/day plus retries should fit, but watch staging's logs for 429s.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 

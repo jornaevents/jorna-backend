@@ -164,7 +164,7 @@ def _summarize(w, model, conv=None, at=None):
 
 
 class TestOffByDefault:
-    def test_the_flag_defaults_off_with_a_limit_of_50_and_llama(self, monkeypatch):
+    def test_the_flag_defaults_off_with_a_limit_of_50_and_gemma(self, monkeypatch):
         import importlib
 
         for var in ("SUMMARIES_ENABLED", "SUMMARY_DAILY_LIMIT", "SUMMARY_MODEL",
@@ -177,6 +177,27 @@ class TestOffByDefault:
             assert fresh.SUMMARY_MODEL == "google/gemma-4-31b-it:free"
             assert fresh.SUMMARY_ALLOW_PROVIDER_LOGGING is False
         finally:
+            importlib.reload(config)
+
+    @pytest.mark.parametrize("railway_env,explicit,expected", [
+        ("staging", None, "openrouter/free"),
+        ("production", None, "google/gemma-4-31b-it:free"),
+        (None, None, "google/gemma-4-31b-it:free"),
+        ("staging", "some/model", "some/model"),
+        ("staging", "", "openrouter/free"),
+    ])
+    def test_the_free_router_is_the_staging_model(self, monkeypatch, railway_env, explicit, expected):
+        import importlib
+
+        for var, value in (("RAILWAY_ENVIRONMENT_NAME", railway_env), ("SUMMARY_MODEL", explicit)):
+            if value is None:
+                monkeypatch.delenv(var, raising=False)
+            else:
+                monkeypatch.setenv(var, value)
+        try:
+            assert importlib.reload(config).SUMMARY_MODEL == expected
+        finally:
+            monkeypatch.undo()
             importlib.reload(config)
 
     @pytest.mark.parametrize("railway_env,explicit,expected", [
@@ -512,6 +533,45 @@ class TestRun:
         assert sent["extra_body"]["reasoning"] == {"enabled": False}
         assert all(m["role"] != "system" for m in sent["messages"])
 
+    @pytest.mark.parametrize("model,refusals,calls,ok", [
+        ("openrouter/free", 2, 3, True),    # asks again: the router picks another model
+        ("openrouter/free", 3, 3, False),   # gives up after three
+        ("google/gemma-4-31b-it:free", 1, 1, False),  # a named model never retries
+    ])
+    def test_the_free_router_asks_again_when_a_model_must_think(self, monkeypatch, model, refusals, calls, ok):
+        import httpx
+        import openai
+
+        sent = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                sent.append(kwargs)
+                if len(sent) <= refusals:
+                    resp = httpx.Response(400, request=httpx.Request("POST", "https://openrouter.ai/api/v1"))
+                    raise openai.BadRequestError(
+                        "Error code: 400 - Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        response=resp, body=None,
+                    )
+                msg = type("M", (), {"content": "DJ confirmed Nov 22"})()
+                return type("C", (), {"choices": [type("Ch", (), {"message": msg})()]})()
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+        monkeypatch.setattr(openai, "OpenAI", FakeClient)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setattr(config, "SUMMARY_MODEL", model)
+
+        if ok:
+            assert ss.call_openrouter([{"role": "user", "content": "hi"}]) == "DJ confirmed Nov 22"
+        else:
+            with pytest.raises(openai.BadRequestError):
+                ss.call_openrouter([{"role": "user", "content": "hi"}])
+        assert len(sent) == calls
+        assert all(k["extra_body"]["reasoning"] == {"enabled": False} for k in sent)
+
     def test_a_model_error_fails_the_thread_and_counts_the_call(self, world, on):
         _burst(world)
         assert _summarize(world, FakeModel(TimeoutError("slow"))) == ("failed", 1)
@@ -742,6 +802,11 @@ class TestCheckLine:
 
     def test_clean_line_takes_the_first_line_without_quotes(self):
         assert ss.clean_line('\n  "DJ confirmed Nov 22"  \nExtra commentary') == "DJ confirmed Nov 22"
+
+    def test_clean_line_drops_a_none_tacked_on_after_a_line(self):
+        assert ss.clean_line("Studio sent the album; client praised photos. NONE") == \
+            "Studio sent the album; client praised photos."
+        assert ss.clean_line("NONE") == "NONE"
 
     @pytest.mark.parametrize("text,meaningful", [
         ("ok", False), ("Okay!", False), ("thanks so much", False), ("👍👍", False),

@@ -197,6 +197,12 @@ def mark_stale(conversation_id: str, db: Session) -> None:
 # ── The model call ────────────────────────────────────────────────────
 
 
+# OpenRouter's Free Models Router: each call goes to whichever free model is
+# up. The staging default (config.SUMMARY_MODEL).
+FREE_ROUTER = "openrouter/free"
+_ROUTER_ATTEMPTS = 3
+
+
 class SummaryUnavailable(Exception):
     """No model to call (no key). Not a run: nothing was sent or spent."""
 
@@ -238,9 +244,9 @@ def call_openrouter(messages: list[dict]) -> str:
     key = _openrouter_key()
     if not key:
         raise SummaryUnavailable("OPENROUTER_API_KEY is not set")
-    from openai import OpenAI
+    import openai
 
-    client = OpenAI(
+    client = openai.OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=key,
         timeout=20.0,
@@ -251,7 +257,7 @@ def call_openrouter(messages: list[dict]) -> str:
             "X-Title": "Jorna",
         },
     )
-    completion = client.chat.completions.create(
+    request = dict(
         model=config.SUMMARY_MODEL,
         messages=messages,
         temperature=0.2,
@@ -266,6 +272,18 @@ def call_openrouter(messages: list[dict]) -> str:
             "reasoning": {"enabled": False},
         },
     )
+    # The free router sometimes lands on a model that can't turn thinking off
+    # and refuses the request outright (a 400, before any model runs). Each
+    # attempt picks again, so ask again rather than let thinking on: a
+    # thinking model spends any budget we can afford before it answers.
+    attempts = _ROUTER_ATTEMPTS if config.SUMMARY_MODEL == FREE_ROUTER else 1
+    for attempt in range(attempts):
+        try:
+            completion = client.chat.completions.create(**request)
+            break
+        except openai.BadRequestError as exc:
+            if attempt + 1 == attempts or "reasoning" not in str(exc).lower():
+                raise
     return (completion.choices[0].message.content or "").strip()
 
 
@@ -288,10 +306,15 @@ def _cents(number: str, thousands: bool = False) -> int:
 
 
 def clean_line(raw: str) -> str:
-    """First non-empty line, outer quotes and spare whitespace removed."""
+    """First non-empty line, outer quotes, spare whitespace and a trailing
+    NONE removed."""
     line = next((ln for ln in (raw or "").splitlines() if ln.strip()), "")
     line = re.sub(r"\s+", " ", line).strip()
-    return line.strip("\"'“”‘’` ").strip()
+    line = line.strip("\"'“”‘’` ").strip()
+    # Some models write a line and then "NONE" after it as well.
+    if line.upper() != "NONE":
+        line = re.sub(r"\s+NONE\.?$", "", line).strip()
+    return line
 
 
 def check_line(line: str, *, offer_cents: set[int], any_accepted: bool) -> str | None:

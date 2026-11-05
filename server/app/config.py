@@ -99,11 +99,19 @@ def _summaries_default() -> str:
 SUMMARIES_ENABLED: bool = (
     os.getenv("SUMMARIES_ENABLED", "").strip().lower() or _summaries_default()
 ) == "true"
-# The OpenRouter model id for those summaries. Gemma 4 31B on OpenRouter's
-# free tier while we try the feature out (free Llama 3.3 had no providers left
-# by 2026-11); any OpenRouter chat model works. Free models come and go: if
-# every summary fails, check the model still has a provider on OpenRouter.
-SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "google/gemma-4-31b-it:free").strip()
+# The OpenRouter model id for those summaries; any OpenRouter chat model
+# works. In staging, OpenRouter's Free Models Router ("openrouter/free"): each
+# call goes to whichever free model is up, so a busy free model (Gemma 4's
+# shared pool was rate-limited all of 2026-11-05) doesn't stop the feature,
+# but the model — and the lines' quality — changes from call to call.
+# Elsewhere, Gemma 4 31B free, the candidate to pin for production
+# (DECISIONS #42). Setting SUMMARY_MODEL overrides either.
+def _summary_model_default() -> str:
+    env = os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip().lower()
+    return "openrouter/free" if env == "staging" else "google/gemma-4-31b-it:free"
+
+
+SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "").strip() or _summary_model_default()
 # Whether OpenRouter may route summaries to providers that keep prompts. Off:
 # only providers that don't store data are used. The free Gemma is served only
 # through Google AI Studio's free tier, which may, so this defaults on in

@@ -19,50 +19,35 @@ UI in jorna-website. Both on branch `claude/festive-fermi-4oqbv9`.
 
 ## Status
 
-- Both branches are **pushed, no PRs**. The user approved the push only so
-  a fresh session (with the OpenRouter key) can run a live test. **Don't
-  open the PRs until the live test passes and the user agrees.**
-- Code, tests (1333 passed, 21 skipped), Postgres migration check and docs
-  are done. Website: lint/typecheck/vitest/builds clean, Playwright client
-  53/53 and vendor 217/217.
-- Defaults: `SUMMARIES_ENABLED` and `SUMMARY_ALLOW_PROVIDER_LOGGING` are on
-  in Railway staging and off everywhere else; `SUMMARY_MODEL` is
-  `google/gemma-4-31b-it:free` (free Llama 3.3 has no providers left);
-  `SUMMARY_DAILY_LIMIT` 50.
+- Both branches are **pushed, no PRs**. **Don't open the PRs until the user
+  agrees.**
+- Live test done 2026-11-05 with the staging key (it's a plain
+  `OPENROUTER_API_KEY` env var in the session, not a proxy secret). Free
+  Gemma 4 31B (and 26B) returned 429 all day: Google AI Studio's shared free
+  pool is their only provider. At the user's request staging now defaults to
+  OpenRouter's Free Models Router, `SUMMARY_MODEL=openrouter/free`; the
+  router is asked again (up to 3×) when it lands on a model that refuses
+  `reasoning: {enabled: false}`; `clean_line` drops a trailing "NONE".
+  Result: 11/15 accepted, no errors (details in the PR draft). Outside
+  staging the default is still Gemma; **production needs a pinned model**
+  (DECISIONS #42), also listed in the proposal doc.
+- Tests 1342 passed, 21 skipped; CI's ruff selection clean.
+- Defaults: `SUMMARIES_ENABLED` and `SUMMARY_ALLOW_PROVIDER_LOGGING` on in
+  Railway staging, off elsewhere; `SUMMARY_DAILY_LIMIT` 50.
 
 ## Starting a new session
 
 Check out `claude/festive-fermi-4oqbv9` in **both** repos first (`git fetch
 origin claude/festive-fermi-4oqbv9 && git checkout claude/festive-fermi-4oqbv9`);
-this note and the code only exist on that branch. If the session was given a
-different branch to work on, keep working on this one and say so.
+this note and the code only exist on that branch.
 
-## Next step: the live test
+## Next step
 
-The user saved the staging OpenRouter key as a **network secret**: the
-agent proxy adds `Authorization: Bearer <key>` to requests to
-`openrouter.ai/api/v1/`. Nobody should paste the key into chat. The code
-needs `OPENROUTER_API_KEY` set to *something* before it calls out, so use a
-dummy value and let the proxy supply the real header:
-
-```bash
-cd server
-python3 -m venv venv && venv/bin/pip install -q -r requirements.txt   # fresh container
-curl -sS https://openrouter.ai/api/v1/key | head -c 300                # 200 + key info = secret works
-OPENROUTER_API_KEY=dummy venv/bin/python -m scripts.eval_summaries --allow-logging
-```
-
-If the key call still says "Missing Authentication header", the secret
-isn't reaching the session; tell the user (fallback: the key as a plain
-env var `OPENROUTER_API_KEY`). If the model call fails for routing/privacy
-reasons even with `--allow-logging`, the OpenRouter account's privacy
-setting may block free providers that keep prompts (Settings → privacy).
-
-Report to the user: how many of the 15 threads produced a line the checks
-accept, the lines themselves against each thread's "wanted", any refusals
-and why, rate-limit errors, and latency. Fix real problems (prompt, checks),
-re-run, commit, push. The free tier has a small daily request allowance;
-one full run is ~15–20 calls.
+When the user agrees: open both PRs from
+`.claude/context/pr-drafts-inbox-summaries.md` (results already filled in;
+delete that file and empty this note in the same change). Re-run the eval
+first if the code changed: `cd server && RAILWAY_ENVIRONMENT_NAME=staging
+venv/bin/python -m scripts.eval_summaries` (~20 free calls).
 
 ## Where things are
 

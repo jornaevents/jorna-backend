@@ -217,7 +217,7 @@ because it waits on a model) finds threads whose newest message is newer than
 their row in `conversation_summaries` covers and whose burst has settled
 (90s quiet, or 5 minutes since the first uncovered message), builds a
 speaker-labelled transcript of the last ≤30 messages, asks the model
-(`SUMMARY_MODEL` on OpenRouter, Gemma 4 31B free tier by default; `scripts/eval_summaries.py` tries it on made-up threads) and checks
+(`SUMMARY_MODEL` on OpenRouter: the Free Models Router, `openrouter/free`, in staging, Gemma 4 31B free elsewhere; `scripts/eval_summaries.py` tries it on made-up threads) and checks
 the reply before storing it — length, contact details and links, amounts that
 must match an offer, "agreed" only with an accepted negotiation.
 `list_conversations` reads the rows (`inbox_summaries`, a fixed three
