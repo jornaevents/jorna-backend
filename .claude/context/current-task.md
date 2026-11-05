@@ -30,6 +30,13 @@ UI in jorna-website. Both on branch `claude/festive-fermi-4oqbv9`.
   `google/gemma-4-31b-it:free` (free Llama 3.3 has no providers left);
   `SUMMARY_DAILY_LIMIT` 50.
 
+## Starting a new session
+
+Check out `claude/festive-fermi-4oqbv9` in **both** repos first (`git fetch
+origin claude/festive-fermi-4oqbv9 && git checkout claude/festive-fermi-4oqbv9`);
+this note and the code only exist on that branch. If the session was given a
+different branch to work on, keep working on this one and say so.
+
 ## Next step: the live test
 
 The user saved the staging OpenRouter key as a **network secret**: the
@@ -65,6 +72,7 @@ one full run is ~15–20 calls.
 - Website: `packages/shared/components/{SummaryPreview,AiSummarySetting}.tsx`,
   both apps' `app/messages/page.tsx`, vendor `components/vendor/MessagesHub.tsx`.
 - Proposal doc (Claude Docs): https://claude.ai/artifact/UusFztY6jcqB8hSDw2zqJ9
-- After the test: open both PRs (bodies drafted in the earlier session;
-  rewrite from the commits if missing). Rollout: merge → staging has it on;
+- After the test: open both PRs. Their bodies are drafted in
+  `.claude/context/pr-drafts-inbox-summaries.md` (fill in the live-test
+  results, delete that file in the same change). Rollout: merge → staging has it on;
   production stays off until the Privacy Policy update.
