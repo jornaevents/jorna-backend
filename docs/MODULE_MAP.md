@@ -27,7 +27,7 @@ custom URL scheme can't be directly.
 
 | Router | Prefix | Service | Responsibility |
 |---|---|---|---|
-| `vendors.py` | `/vendors` | `vendor_service.py` | Vendor profiles, search, categories/subcategories, Stripe Connect onboarding status |
+| `vendors.py` | `/vendors` | `vendor_service.py`, `vendor_overview.py` | Vendor profiles, search, categories/subcategories, Stripe Connect onboarding status, the vendor's Overview in one request (`/me/overview`) |
 | `calendar.py` | `/vendors` (calendar sub-routes) | `calendar_service.py` | Google Calendar OAuth + vendor availability sync |
 | `bookings.py` | `/bookings` | `booking_service.py` | Booking lifecycle: create, accept/decline, cancel, status transitions |
 | `bundles.py` | `/bundles` | `bundle_service.py` | Grouping multiple vendor bookings under one event; bundle comparison/selection |

@@ -2,7 +2,7 @@
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -306,6 +306,24 @@ def get_my_vendor_route(
         return get_my_vendor(user_id=current_user.user_id, db=db)
     except VendorError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.get("/me/overview", summary="Everything the vendor's Overview opens with, in one request")
+def get_my_overview_route(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The vendor, their bookings (first 100), leads, inbox and pipeline —
+    each section what its own route returns, or null if it failed
+    (app/services/vendor_overview.py). 404 when the caller isn't a vendor."""
+    from app.services.vendor_overview import server_timing, vendor_overview
+    try:
+        overview = vendor_overview(caller_user_id=current_user.user_id, db=db)
+    except VendorError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    response.headers["Server-Timing"] = server_timing(overview["timings"])
+    return overview
 
 
 @router.get("/me/clients", summary="Clients CRM: the authenticated vendor's own bookings, grouped by client")

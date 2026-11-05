@@ -148,6 +148,15 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
   sent and starts the hold.
 
+## Vendor overview (vendor, DECISIONS #43)
+
+- `GET /vendors/me/overview` — what the vendor web app's Overview opens with, in one request:
+  `{vendor, bookings, leads, conversations, pipeline, timings}`. Each section is exactly what its
+  own route returns (`GET /vendors/me`, `GET /bookings/vendor/{vendor_id}?limit=100`,
+  `GET /leads`, `GET /conversations`, `GET /leads/pipeline`), or `null` if that section failed —
+  the rest still come. `timings` is each section's milliseconds, repeated as a `Server-Timing`
+  header. 404 when the caller has no vendor profile, as `/vendors/me`.
+
 ## Earnings ledger (vendor, DECISIONS #33)
 
 - `GET /vendors/me/ledger?year=` — every payment on the vendor's signed bookings, due in `year`
