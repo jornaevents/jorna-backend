@@ -99,15 +99,20 @@ def _summaries_default() -> str:
 SUMMARIES_ENABLED: bool = (
     os.getenv("SUMMARIES_ENABLED", "").strip().lower() or _summaries_default()
 ) == "true"
-# The OpenRouter model id for those summaries. Llama 3.3 70B on OpenRouter's
-# free tier while we try the feature out; any OpenRouter chat model works.
-SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
+# The OpenRouter model id for those summaries. Gemma 4 31B on OpenRouter's
+# free tier while we try the feature out (free Llama 3.3 had no providers left
+# by 2026-11); any OpenRouter chat model works. Free models come and go: if
+# every summary fails, check the model still has a provider on OpenRouter.
+SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "google/gemma-4-31b-it:free").strip()
 # Whether OpenRouter may route summaries to providers that keep prompts. Off:
-# only providers that don't store data are used. Free-tier models are often
-# served only by providers that do, so trying one may need this on; if it is
-# on in production, the Privacy Policy has to say the provider may keep the
-# text (DECISIONS #42).
-SUMMARY_ALLOW_PROVIDER_LOGGING: bool = os.getenv("SUMMARY_ALLOW_PROVIDER_LOGGING", "false").strip().lower() == "true"
+# only providers that don't store data are used. The free Gemma is served only
+# through Google AI Studio's free tier, which may, so this defaults on in
+# staging (test data) to let it run there, and off everywhere else. On in
+# production means the Privacy Policy has to say the provider may keep the
+# text (DECISIONS #42). Setting it explicitly overrides the default anywhere.
+SUMMARY_ALLOW_PROVIDER_LOGGING: bool = (
+    os.getenv("SUMMARY_ALLOW_PROVIDER_LOGGING", "").strip().lower() or _summaries_default()
+) == "true"
 # Model calls per UTC day across every thread. The cost brake: once it's used,
 # summaries pause until midnight and the inbox shows ordinary previews.
 SUMMARY_DAILY_LIMIT: int = int(os.getenv("SUMMARY_DAILY_LIMIT", "50"))

@@ -201,6 +201,9 @@ class SummaryUnavailable(Exception):
     """No model to call (no key). Not a run: nothing was sent or spent."""
 
 
+# Sent as the start of the user message, not as a system message: some models
+# on OpenRouter (Gemma among them) don't take a system role, and every model
+# takes this.
 SYSTEM_PROMPT = f"""You write the one-line preview shown for a chat in an event-planning app's inbox. The app plans South Asian weddings and celebrations; the chat is between a client and their vendors. Members read the line to decide which chat to open first.
 
 Rules:
@@ -252,10 +255,16 @@ def call_openrouter(messages: list[dict]) -> str:
         model=config.SUMMARY_MODEL,
         messages=messages,
         temperature=0.2,
-        max_tokens=60,
-        extra_body={"provider": {
-            "data_collection": "allow" if config.SUMMARY_ALLOW_PROVIDER_LOGGING else "deny",
-        }},
+        # Room for the line plus some slack; check_line refuses anything long.
+        max_tokens=200,
+        extra_body={
+            "provider": {
+                "data_collection": "allow" if config.SUMMARY_ALLOW_PROVIDER_LOGGING else "deny",
+            },
+            # Models with a thinking mode (Gemma 4) would otherwise spend the
+            # token budget thinking about one sentence; ignored by the rest.
+            "reasoning": {"enabled": False},
+        },
     )
     return (completion.choices[0].message.content or "").strip()
 
@@ -613,8 +622,7 @@ def summarize_thread(
 
     transcript = build_transcript(conv_id, messages, db)
     prompt = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"<messages>\n{transcript.text}\n</messages>"},
+        {"role": "user", "content": f"{SYSTEM_PROMPT}\n\n<messages>\n{transcript.text}\n</messages>"},
     ]
 
     calls = 0

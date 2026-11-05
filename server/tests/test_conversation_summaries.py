@@ -60,7 +60,9 @@ class FakeModel:
         return len(self.prompts)
 
     def transcript(self, i=-1):
-        return self.prompts[i][1]["content"]
+        """The <messages> block of a call (the rules come before it)."""
+        content = self.prompts[i][0]["content"]
+        return content[content.index("<messages>"):]
 
 
 @pytest.fixture
@@ -172,7 +174,7 @@ class TestOffByDefault:
         try:
             assert fresh.SUMMARIES_ENABLED is False
             assert fresh.SUMMARY_DAILY_LIMIT == 50
-            assert fresh.SUMMARY_MODEL.startswith("meta-llama/llama-3.3-70b-instruct")
+            assert fresh.SUMMARY_MODEL == "google/gemma-4-31b-it:free"
             assert fresh.SUMMARY_ALLOW_PROVIDER_LOGGING is False
         finally:
             importlib.reload(config)
@@ -196,6 +198,22 @@ class TestOffByDefault:
                 monkeypatch.setenv(var, value)
         try:
             assert importlib.reload(config).SUMMARIES_ENABLED is expected
+        finally:
+            monkeypatch.undo()
+            importlib.reload(config)
+
+    def test_provider_logging_is_allowed_by_default_only_on_staging(self, monkeypatch):
+        import importlib
+
+        monkeypatch.delenv("SUMMARY_ALLOW_PROVIDER_LOGGING", raising=False)
+        try:
+            monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "staging")
+            assert importlib.reload(config).SUMMARY_ALLOW_PROVIDER_LOGGING is True
+            monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+            assert importlib.reload(config).SUMMARY_ALLOW_PROVIDER_LOGGING is False
+            monkeypatch.setenv("SUMMARY_ALLOW_PROVIDER_LOGGING", "false")
+            monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "staging")
+            assert importlib.reload(config).SUMMARY_ALLOW_PROVIDER_LOGGING is False
         finally:
             monkeypatch.undo()
             importlib.reload(config)
@@ -463,6 +481,37 @@ class TestRun:
         assert outcome == ("failed", 1)
         assert _row(world).text is None
 
+    @pytest.mark.parametrize("allow_logging,expected", [(False, "deny"), (True, "allow")])
+    def test_the_request_sent_to_openrouter(self, monkeypatch, allow_logging, expected):
+        import openai
+
+        sent = {}
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                sent.update(kwargs)
+                msg = type("M", (), {"content": "  DJ confirmed Nov 22  "})()
+                return type("C", (), {"choices": [type("Ch", (), {"message": msg})()]})()
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                sent["client"] = kwargs
+                self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+        monkeypatch.setattr(openai, "OpenAI", FakeClient)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setattr(config, "SUMMARY_MODEL", "google/gemma-4-31b-it:free")
+        monkeypatch.setattr(config, "SUMMARY_ALLOW_PROVIDER_LOGGING", allow_logging)
+
+        out = ss.call_openrouter([{"role": "user", "content": "hi"}])
+        assert out == "DJ confirmed Nov 22"
+        assert sent["model"] == "google/gemma-4-31b-it:free"
+        assert sent["client"]["base_url"] == "https://openrouter.ai/api/v1"
+        assert sent["client"]["timeout"] == 20.0 and sent["client"]["max_retries"] == 0
+        assert sent["extra_body"]["provider"] == {"data_collection": expected}
+        assert sent["extra_body"]["reasoning"] == {"enabled": False}
+        assert all(m["role"] != "system" for m in sent["messages"])
+
     def test_a_model_error_fails_the_thread_and_counts_the_call(self, world, on):
         _burst(world)
         assert _summarize(world, FakeModel(TimeoutError("slow"))) == ("failed", 1)
@@ -533,7 +582,9 @@ class TestTranscript:
         _summarize(world, model)
         t = model.transcript()
         assert t.count("</messages>") == 1 and "‹/messages›" in t
-        assert model.prompts[-1][0]["content"] == ss.SYSTEM_PROMPT
+        # The rules lead the one user message (no system role: Gemma has none).
+        first = model.prompts[-1][0]
+        assert first["role"] == "user" and first["content"].startswith(ss.SYSTEM_PROMPT)
 
     def test_offers_carry_the_negotiations_status_now(self, world, on):
         db = world["db"]

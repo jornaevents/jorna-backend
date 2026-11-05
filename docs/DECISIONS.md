@@ -1109,15 +1109,23 @@ call free models, so a staging mistake can't spend production's credits.
   refuses a reply that breaks it (or carries contact details, links, emoji,
   or runs past 80 characters) — the line appears in inboxes nobody asked
   for it in, so a wrong number is worse than none.
-- **Model:** Llama 3.3 70B on OpenRouter's free tier (`SUMMARY_MODEL`), to
-  try the feature at no cost. Any OpenRouter model is an env change.
+- **Model:** Gemma 4 31B on OpenRouter's free tier
+  (`google/gemma-4-31b-it:free`, `SUMMARY_MODEL`), to try the feature at no
+  cost. The plan was free Llama 3.3 70B, but by 2026-11-05 it had no
+  providers left on OpenRouter; free models come and go, so any OpenRouter
+  model is an env change. The rules ride at the start of the user message
+  (Gemma takes no system role) and thinking is turned off
+  (`reasoning: {enabled: false}`). `scripts/eval_summaries.py` runs a set of
+  made-up threads through the real model and the reply checks.
 - **Privacy:** covered by the Privacy Policy, which says message text is
   sent through OpenRouter to an AI provider to write these lines. Neither
   prompts nor replies are logged. "Show AI summaries"
   (`users.ai_summaries_enabled`) only hides them for that user. By default
-  only providers that don't keep prompts are used; free-tier models may only
-  be served by ones that do, which `SUMMARY_ALLOW_PROVIDER_LOGGING` allows —
-  and turning it on means the policy must say the provider may keep the text.
+  only providers that don't keep prompts are used. The free Gemma is only
+  served through Google AI Studio's free tier, which may keep them, so
+  `SUMMARY_ALLOW_PROVIDER_LOGGING` defaults on in staging (test data) and off
+  everywhere else. Turning it on in production means the policy must say the
+  provider may keep the text.
 - **No foreign keys** on `conversation_summaries`: threads are deleted along
   hand-written cascades, and a key would break any that forgot it. They call
   `summary_service.forget()`; an orphaned row is never read.
