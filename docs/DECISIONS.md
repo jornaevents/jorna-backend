@@ -1101,3 +1101,28 @@ chat row and on `GET /conversations/{id}`.
 - **Nor is a request on a plan the client hasn't sent**, which the vendor
   hasn't seen either (`sent_to_vendor`).
 - Two queries for the whole inbox, not one per chat. No migration.
+
+## 43. The vendor's Overview in one request
+
+The vendor web app's Overview opened with five requests — the vendor, their
+bookings, leads, inbox and pipeline — each paying its own round trip and its
+own token check and user lookup. `GET /vendors/me/overview`
+(`vendor_overview.py`) answers all five at once.
+
+- **Each section is its route's answer**, by calling the same service
+  functions, so nothing about a section can drift from what its own route
+  says; a test compares them one by one.
+- **A failing section is `null`,** logged, and the session rolled back so the
+  ones after it still read. Overview already shows each card on its own; a
+  broken inbox shouldn't blank the dashboard. Only "not a vendor" fails the
+  request (404, as `/vendors/me`).
+- **The sections run one after another,** in one session, where the browser
+  ran five requests side by side. Whether one request beats five depends on
+  how long each section takes against the round trips saved, so each
+  section's time comes back (`timings`, and a `Server-Timing` header) —
+  measured on staging rather than assumed. Running them in parallel would
+  take five pool connections per Overview load; not worth it unless the
+  timings say so.
+- **The separate routes stay.** Every other page still uses them, and an
+  older web app never asks for this one.
+
