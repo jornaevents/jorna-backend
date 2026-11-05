@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.services.message_labels import client_labels
 from app.services.names import vendor_user_display_name
 from app.db.models import (
     Booking, Bundle, Conversation, ConversationMember,
@@ -143,6 +144,7 @@ def _conversation_dict(
     unread_count: int = 0,
     db: Session | None = None,
     summary: dict | None = None,
+    label: dict | None = None,
 ) -> dict:
     return {
         "conversation_id": conv.conversation_id,
@@ -161,6 +163,10 @@ def _conversation_dict(
         # Per row, not one number for the whole inbox. The tab could say "you
         # have 4 unread" and not which of eleven chats they were in.
         "unread_count": unread_count,
+        # Inquiry, Negotiation, Booked or Closed, with the booking it's about —
+        # set only for the client in a chat with one vendor, who sees the same
+        # label that vendor does (message_labels). Null otherwise.
+        "label": label,
         "last_message": {
             "content": last_message.content,
             "sender_id": last_message.sender_id,
@@ -688,6 +694,7 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
     """Return every conversation the caller is in, newest activity first."""
     conversations = _live_conversations(caller_user_id, db)
     unread = _unread_by_conversation([c.conversation_id for c in conversations], caller_user_id, db)
+    labels = client_labels(conversations, caller_user_id, db)
 
     loaded = []
     for conv in conversations:
@@ -718,6 +725,7 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
             unread_count=unread.get(conv.conversation_id, 0),
             db=db,
             summary=summaries.get(conv.conversation_id),
+            label=labels.get(conv.conversation_id),
         ))
 
     # Ordered by what happened last, not by when the chat was made. Created-at
@@ -753,6 +761,7 @@ def get_conversation(*, conversation_id: str, caller_user_id: str, db: Session) 
         caller_user_id=caller_user_id,
         unread_count=unread.get(conversation_id, 0),
         db=db,
+        label=client_labels([conv], caller_user_id, db).get(conversation_id),
     )
 
 

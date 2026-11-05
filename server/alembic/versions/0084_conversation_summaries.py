@@ -1,4 +1,4 @@
-"""AI summary lines for the Messages inbox (DECISIONS #42)
+"""AI summary lines for the Messages inbox (DECISIONS #43)
 
 Revision ID: 0084_conversation_summaries
 Revises: 0083_guest_messages

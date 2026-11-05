@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Add to the Jorna Dev Board
         if: env.TOKEN != ''
-        uses: actions/add-to-project@v1
+        uses: actions/add-to-project@v2
         with:
           project-url: https://github.com/orgs/jornaevents/projects/1
           github-token: ${{ env.TOKEN }}

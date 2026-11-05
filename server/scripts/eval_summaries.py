@@ -1,4 +1,4 @@
-"""Try the inbox summary model on made-up threads (DECISIONS #42).
+"""Try the inbox summary model on made-up threads (DECISIONS #43).
 
 Sends each thread below to the real model, exactly as the sweep would (same
 prompt, same OpenRouter call, same retry for a long reply), runs the same

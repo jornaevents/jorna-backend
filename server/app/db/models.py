@@ -983,7 +983,7 @@ class GroupMessage(Base):
 
 
 class ConversationSummary(Base):
-    """The AI summary line a thread shows in the inbox (0084, DECISIONS #42).
+    """The AI summary line a thread shows in the inbox (0084, DECISIONS #43).
 
     One row per conversation, overwritten by each run. Written only by the
     summary sweep (summary_service), read only by list_conversations.

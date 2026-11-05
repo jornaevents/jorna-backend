@@ -13,51 +13,115 @@
 
 ## Goal
 
-Inbox AI summaries (DECISIONS #42): a one-line AI summary per busy thread,
-shown in the Messages inbox in place of the last message. Backend here,
-UI in jorna-website. Both on branch `claude/festive-fermi-4oqbv9`.
+Backend half of a vendor-dashboard redesign spanning this repo and a new
+frontend repo (`~/Documents/GitHub/jorna/jorna-vendor`, forked from
+`jorna-website`). Full plan:
+`/Users/yd/.claude/plans/delightful-leaping-starlight.md`. This repo's slice
+is Sections 1, 3, and 4 of that plan: the data model, the guard audit, and
+the new guest-booking/contracts/clients/leads endpoints.
 
-## Status
+## Current Status
 
-- Both branches are **pushed, no PRs**. **Don't open the PRs until the user
-  agrees.**
-- Live test done 2026-11-05 with the staging key (it's a plain
-  `OPENROUTER_API_KEY` env var in the session, not a proxy secret). Free
-  Gemma 4 31B (and 26B) returned 429 all day: Google AI Studio's shared free
-  pool is their only provider. At the user's request staging now defaults to
-  OpenRouter's Free Models Router, `SUMMARY_MODEL=openrouter/free`; the
-  router is asked again (up to 3×) when it lands on a model that refuses
-  `reasoning: {enabled: false}`; `clean_line` drops a trailing "NONE".
-  Result: 11/15 accepted, no errors (details in the PR draft). Outside
-  staging the default is still Gemma; **production needs a pinned model**
-  (DECISIONS #42), also listed in the proposal doc.
-- Tests 1342 passed, 21 skipped; CI's ruff selection clean.
-- Defaults: `SUMMARIES_ENABLED` and `SUMMARY_ALLOW_PROVIDER_LOGGING` on in
-  Railway staging, off elsewhere; `SUMMARY_DAILY_LIMIT` 50.
+Branch `feature/vendor-contracts-data-model`, **not pushed, no PR yet**.
+Sections 1 (data model), 4 (guard audit), and 3 (the actual endpoints) are
+all done and committed (`26e71d1`, `6aa13f7`). This repo's entire slice of
+the plan is done — remaining work is all in the frontend repo
+(`jorna-vendor`) now: see that repo's own `current-task.md`. **Not yet
+committed**: a bug fix (below) found while manually testing the frontend's
+new Contract-defaults settings UI — `Vendor.default_*` fields round-trip
+through `PATCH`/`GET /vendors/me` now; staged as an uncommitted change on
+this same branch, waiting on user go-ahead to commit.
 
-## Starting a new session
+## Bug found + fixed this session: `Vendor.default_*` never round-tripped
 
-Check out `claude/festive-fermi-4oqbv9` in **both** repos first (`git fetch
-origin claude/festive-fermi-4oqbv9 && git checkout claude/festive-fermi-4oqbv9`);
-this note and the code only exist on that branch.
+Manually testing `jorna-vendor`'s new "Contract defaults" settings section
+(saves via `PATCH /vendors/me`, reads via `GET /vendors/me`) showed the UI
+reporting "Saved" but the values never coming back on reload. Root cause was
+a triple gap, all three layers missing the six `default_*` fields
+independently:
+1. `UpdateVendorRequest` (`app/routers/vendors.py`) didn't declare them, so
+   Pydantic silently dropped them from the request body before any service
+   code ran.
+2. `update_vendor`'s (`app/services/vendor_service.py`) field-write
+   allowlist didn't include them either — belt-and-suspenders gap.
+3. `get_vendor`/`get_my_vendor`'s hand-built response dicts
+   (`app/services/vendor_service.py`) didn't return them, so even a correct
+   write would never have been visible.
+Fixed all three (response fields added only to `get_my_vendor`, not the
+public `get_vendor`, since these are private seed values for the vendor's
+own Contracts builder — not client-facing). Added
+`tests/test_vendor_contract_defaults.py` (2 new tests: round-trip, and
+absent-by-default). Full suite: 928 passed, 21 skipped (was 926 before this
+fix's 2 new tests). Re-verified manually end-to-end via the frontend's
+`/vendor-profile` Contract-defaults form → reload → `/contracts/new`
+pre-fill, all correct now.
 
-## Next step
+## What Was Done
 
-When the user agrees: open both PRs from
-`.claude/context/pr-drafts-inbox-summaries.md` (results already filled in;
-delete that file and empty this note in the same change). Re-run the eval
-first if the code changed: `cd server && RAILWAY_ENVIRONMENT_NAME=staging
-venv/bin/python -m scripts.eval_summaries` (~20 free calls).
+- Five additive Alembic migrations (`0058`–`0062`): `bookings.user_id`
+  nullable + guest contact fields + `contract_token`; contract terms
+  (deposit %, cancellation window, overtime/addon rates, `contract_terms`
+  JSON) + `signer_name`/`signed_at`; a second self-attestation pair
+  (`deposit_marked_paid_at`/`deposit_confirmed_received_at`, mirroring the
+  existing manual-payment pair); `Vendor.default_*` contract-defaults
+  columns; a new `leads` table.
+- `PaymentStatus` enum (`app/models/schemas.py`) gained
+  `DEPOSIT_MARKED_PAID`/`DEPOSIT_CONFIRMED_PAID`.
+- Guard audit: `message_service.send_message`,
+  `conversation_service.open_booking_thread`, and
+  `negotiation_service.start_negotiation` now explicitly 400 on a
+  `user_id IS NULL` booking. Everything else (change requests, reviews,
+  client-side check-in, `mark_booking_paid`) was confirmed to already fail
+  closed with no code change — see `docs/DECISIONS.md` #13 for the full
+  reasoning and `tests/test_guest_booking_guards.py` for the regression
+  tests that lock it in.
+- Also fixed a pre-existing structural bug in `docs/DECISIONS.md`: an
+  earlier session's edit had spliced entry #12 into the middle of entry
+  #11's own prose. Restored #11 as one contiguous block; #12 and the new
+  #13 now sit cleanly after it.
 
-## Where things are
+## Verification
 
-- Backend: `server/app/services/summary_service.py` (sweep, read path,
-  checks, prompt), `server/scripts/eval_summaries.py`, migration
-  `0084_conversation_summaries`, tests `server/tests/test_conversation_summaries.py`.
-- Website: `packages/shared/components/{SummaryPreview,AiSummarySetting}.tsx`,
-  both apps' `app/messages/page.tsx`, vendor `components/vendor/MessagesHub.tsx`.
-- Proposal doc (Claude Docs): https://claude.ai/artifact/UusFztY6jcqB8hSDw2zqJ9
-- After the test: open both PRs. Their bodies are drafted in
-  `.claude/context/pr-drafts-inbox-summaries.md` (fill in the live-test
-  results, delete that file in the same change). Rollout: merge → staging has it on;
-  production stays off until the Privacy Policy update.
+- Full migration chain (all 62 revisions, including the 5 new ones) applies
+  **and downgrades** cleanly against a real local Postgres 16 (throwaway
+  instance via Homebrew's `postgresql@16`, not Docker — Docker isn't
+  installed in this environment). Torn down after verifying; nothing
+  persists locally.
+- `venv/bin/python -m pytest -q` (note: use `venv/bin/python -m X`, not
+  `venv/bin/X` directly — the venv's script shebangs still hardcode this
+  repo's pre-reorg path, `.../GitHub/Desiconnect/...` instead of
+  `.../GitHub/jorna/Desiconnect/...`, and are broken as standalone
+  executables) — 928 passed, 21 skipped, nothing broken (as of the
+  `default_*` fix above).
+
+## Remaining Work (this repo)
+
+None for the plan as currently scoped. Possible later follow-ups, not
+blocking: (a) push this branch and open a PR once the frontend catches up
+enough to demo end-to-end — check with the user first, same as the
+`ESCROW_ENABLED` work's pattern; (b) the plan's Section 3 table originally
+called for a vendor-side "confirm-deposit-received" restricted to
+non-guest bookings — on closer reading during implementation this was
+loosened, correctly: `confirm_deposit_received` only ever checks the
+vendor's identity, never `booking.user_id`, so it already works for guest
+and real-account bookings alike with no separate guest-only path needed;
+documented in the commit message and `docs/ARCHITECTURE.md`, not a gap.
+
+Frontend work resumes in `jorna-vendor` (see that repo's own
+`current-task.md`) — Contracts builder UI, the public signing page,
+deposit-attestation UI, then the pipeline/Clients/Leads read-only views
+last. It talks to this repo's new endpoints
+(`POST /contracts`, `GET/PATCH /contracts/{id}`, `GET /vendors/me/clients`,
+`/leads*`, `/guest-bookings/{token}*`, `/payments/bookings/{id}/{mark,confirm}-deposit-*`).
+
+## Notes for the Next Agent
+
+- No PR open yet for this branch — check with the user before pushing/
+  opening one, same as the pattern from the recently-shipped
+  `ESCROW_ENABLED` work (branch, PR, wait for explicit "merge" before
+  landing — this repo auto-deploys to Railway with production migrations
+  on every push to `main`, no staging DB).
+- The email-receipt-on-signing decision (send via the existing Resend
+  integration, `RESEND_API_KEY`/`EMAIL_FROM` in `app/config.py`) means
+  `guest_email` should be validated non-empty before the sign endpoint
+  succeeds, not left truly optional.

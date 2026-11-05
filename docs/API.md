@@ -133,7 +133,7 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
 - `POST /conversations/{id}/unread` counts the thread as unread for the
   caller until they next open it (`GET …/messages` at offset 0).
 - `GET /conversations` rows carry `summary`: `{text, generated_at}` or
-  `null` (DECISIONS #42). Show `text` in place of `last_message` when it's
+  `null` (DECISIONS #43). Show `text` in place of `last_message` when it's
   set; the server only sets it when the caller has 3+ unread in the thread,
   the line covers the thread's newest message, nobody it quotes is blocked by
   the caller, and the caller hasn't turned summaries off. Always `null` while
@@ -147,6 +147,12 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   that vendor, else a new booking thread (DECISIONS #39) — so the returned
   thread's `booking_id` can be null. Offer and `system` messages carry
   `meta.booking_id` and `meta.bundle_id`.
+- `GET /conversations` rows and `GET /conversations/{id}` carry `label`:
+  for the client in a chat with one vendor, `{stage, booking_id,
+  service_name}` with `stage` one of `inquiry`, `negotiation`, `booked`,
+  `closed` — the label that vendor sees on the chat (DECISIONS #42). Null
+  for the vendor (their app works out its own), for plan chats, and when
+  nothing's been requested.
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`. Copying a contract link should call
   `POST /contracts/{id}/send` (no `email_client`) — that's what marks it

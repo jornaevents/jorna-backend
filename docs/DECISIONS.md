@@ -1078,7 +1078,31 @@ account — couldn't ask "can we start at 7:30?" without making one.
 - A declined or withdrawn contract's thread stays readable but takes no new
   messages, like everything else on the link (`_require_live`).
 
-## 42. AI summaries in the Messages inbox (0084)
+## 42. A client sees the label their vendor sees on a chat
+
+The vendor web app's Messages labels each chat Inquiry, Negotiation, Booked or
+Closed (jorna-website #221), working it out itself from the Leads pipeline and
+its bookings. The client app has neither — Leads is vendor-only, and a
+client's bookings are spread across their plans — so for the client the label
+comes from here: `message_labels.client_labels`, returned as `label` on each
+chat row and on `GET /conversations/{id}`.
+
+- **One rule, not two.** The stage is the Leads page's own
+  (`pipeline_service`: `_is_live_unsigned`, `_outcome`, `SENT_STATES`), and
+  the order — the chat's own agreed booking, an upcoming one, an open
+  request, a past booking, then Closed — is the vendor app's `relationFor`.
+  A change to either needs the other.
+- **Only for the client.** A vendor's chats get `label: null`; their app
+  already has a richer answer (it links to the lead, and shows the side
+  panel), and two sources for one pill would drift.
+- **A vendor's own leads aren't used.** A lead typed in or added from a
+  Messages thread shows Inquiry to the vendor but nothing to the client: it's
+  the vendor's note, and the client hasn't asked for anything yet.
+- **Nor is a request on a plan the client hasn't sent**, which the vendor
+  hasn't seen either (`sent_to_vendor`).
+- Two queries for the whole inbox, not one per chat. No migration.
+
+## 43. AI summaries in the Messages inbox (0084)
 
 Decided 2026-11-04. A busy thread's inbox row showed only its last message
 ("ok sounds good!"), which hides what happened. The inbox now shows a short

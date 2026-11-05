@@ -211,7 +211,7 @@ server-side. The client sends the full `state` object back on every
 ## Inbox AI summaries (`SUMMARIES_ENABLED`: on in staging, off elsewhere)
 
 `app/services/summary_service.py` writes the one-line summary the Messages
-inbox shows for a thread with several unread (DECISIONS #42). A sweep in
+inbox shows for a thread with several unread (DECISIONS #43). A sweep in
 `main.py` (`_periodic_conversation_summaries`, every 30s, in a worker thread
 because it waits on a model) finds threads whose newest message is newer than
 their row in `conversation_summaries` covers and whose burst has settled

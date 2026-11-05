@@ -333,7 +333,7 @@ def _summary_pass() -> None:
 
 
 async def _periodic_conversation_summaries():
-    """Write the inbox's AI summary lines (summary_service, DECISIONS #42).
+    """Write the inbox's AI summary lines (summary_service, DECISIONS #43).
 
     Only started when SUMMARIES_ENABLED is on. Same shape as the sweeps above,
     except that a pass runs in a worker thread: it waits on a model for up to
