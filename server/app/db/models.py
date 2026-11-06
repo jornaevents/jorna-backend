@@ -50,6 +50,11 @@ class User(Base):
     # sign-up (0082). NULL for accounts made before the box existed, and for
     # sign-ups from clients that don't send it yet (the iOS app).
     terms_accepted_at = Column(DateTime, nullable=True)
+    # When this account proved it can read its email: a 6-digit code entered
+    # after sign-up, or a Google sign-in, whose address Google has checked
+    # (0084, DECISIONS #44). Cleared when the email changes. NULL for older
+    # password accounts until they enter a code.
+    email_verified_at = Column(DateTime, nullable=True)
 
     # The card kept for this client, and the Stripe Customer it belongs to.
     # Collected once when a plan is sent and charged when a vendor accepts —
@@ -752,6 +757,24 @@ class SigningCode(Base):
     expires_at = Column(DateTime, nullable=False)
     attempts = Column(Integer, nullable=False, default=0, server_default="0")
     # Set when the code signs; a superseded code gets used_at with no signature.
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class EmailCode(Base):
+    """A one-time code emailed to an account to prove it can read its email
+    (0084, DECISIONS #44). Only a hash is kept. Bound to the address it went
+    to, so changing the email first makes it useless."""
+
+    __tablename__ = "email_codes"
+
+    code_id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String(255), nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    # Set when the code is entered; a superseded code gets used_at too.
     used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 

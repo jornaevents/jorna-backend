@@ -12,6 +12,7 @@ from app.db.models import (
     ContentReport,
     Conversation,
     ConversationMember,
+    EmailCode,
     Event,
     GroupMessage,
     GroupMessageRead,
@@ -59,6 +60,8 @@ def _user_dict(user: User) -> dict:
         # settings can offer "set a password" instead of asking for a current one
         # that does not exist. Never the hash itself.
         "has_password": user.password is not None,
+        # Whether the account has proved it reads this email (DECISIONS #44).
+        "email_verified": user.email_verified_at is not None,
         "open_to_price_negotiation": user.open_to_price_negotiation,
         "flexible_on_location": user.flexible_on_location,
     }
@@ -272,6 +275,7 @@ def delete_user(*, user_id: str, db: Session) -> None:
         db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user_id).delete(
             synchronize_session=False
         )
+        db.query(EmailCode).filter(EmailCode.user_id == user_id).delete(synchronize_session=False)
         db.query(ContentReport).filter(ContentReport.reporter_user_id == user_id).delete(
             synchronize_session=False
         )
@@ -319,6 +323,9 @@ def update_user(*, user_id: str, update_data: dict, db: Session) -> dict:
         ).first()
         if conflict:
             raise UserError(400, "Email is already in use by another account")
+        # A new address hasn't been proved yet (DECISIONS #44).
+        if (update_data["email"] or "").strip().lower() != (user.email or "").strip().lower():
+            user.email_verified_at = None
     for field, value in update_data.items():
         setattr(user, field, value)
     db.commit()

@@ -55,6 +55,7 @@ custom URL scheme can't be directly.
 | (negotiation routes in `contracts.py`, `guest_bookings.py`) | — | `field_negotiation_service.py` | Field-by-field contract negotiation in strict turns: per-field accept / counter / keep, settling into revisions, vendor locks, the signing gate — see DECISIONS #26 |
 | `taxonomy.py` | (no prefix) | `app/taxonomy/` | The service taxonomy every picker reads (`GET /taxonomy`), and the mapping from today's category/subcategory — see DECISIONS #35 |
 | `countersign.py` | (no prefix) | `countersign_service.py` | The vendor's countersignature on a contract or document the client signed, declining to sign, and the countersign reminders — see DECISIONS #34 |
+| `email_verification.py` | `/auth/email` | `email_verification_service.py` | An account proves its email with a 6-digit code; Google sign-ins count as proved — see DECISIONS #44 |
 | (PDF routes in `contracts.py`, `guest_bookings.py`, `contract_documents.py`) | — | `pdf_service.py` | Contracts and attached documents as PDF downloads, from the signed snapshot once signed — see DECISIONS #22 |
 
 `auth_service.py` backs the `/auth/*` routes defined directly in `main.py`
