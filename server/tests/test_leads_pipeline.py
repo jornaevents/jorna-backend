@@ -308,3 +308,66 @@ def test_a_request_on_a_plan_the_client_hasnt_sent_isnt_a_lead_yet():
     assert item is not None
     assert (item["attention"], item["attention_reason"]) == ("needs_you", "new_request")
     assert pipe["counts"]["needs_you"] == 1
+
+
+def _lead_row(lead_id):
+    db = TestingSessionLocal()
+    row = db.query(Lead).filter(Lead.lead_id == lead_id).first()
+    db.close()
+    return row
+
+
+def test_a_contract_for_a_lead_written_from_new_takes_the_lead_with_it(cleanup_leads):
+    # Written from New rather than the lead's own "Create contract", the lead
+    # used to stay "new" — one client on Leads twice, the contract waiting on
+    # them and the lead saying it needed the vendor (2026-11-05).
+    v = _setup_vendor()
+    by_email = client.post(
+        "/leads", json={"name": "Asha Rao", "email": "Asha.Rao@Example.com"}, headers=v["headers"],
+    ).json()
+    by_phone = client.post(
+        "/leads", json={"name": "Dev Iyer", "phone": "(732) 555-0142"}, headers=v["headers"],
+    ).json()
+    someone_else = client.post(
+        "/leads", json={"name": "Neha Patel", "email": "neha@example.com"}, headers=v["headers"],
+    ).json()
+    cleanup_leads.extend([by_email["lead_id"], by_phone["lead_id"], someone_else["lead_id"]])
+
+    asha = _create_contract(v, guest_name="Asha Rao", guest_email=" asha.rao@example.com ")
+    dev = _create_contract(v, draft=True, date_iso="2027-12-04", guest_name="Dev", guest_phone="+1 732 555 0142")
+
+    pipe = _pipeline(v)
+    assert _item(pipe, lead_id=by_email["lead_id"]) is None
+    assert _item(pipe, lead_id=by_phone["lead_id"]) is None
+    assert _item(pipe, booking_id=asha["booking_id"])["attention"] == "waiting"
+    assert _item(pipe, lead_id=someone_else["lead_id"])["attention"] == "needs_you"
+    assert _lead_row(by_email["lead_id"]).converted_booking_id == asha["booking_id"]
+    assert _lead_row(by_phone["lead_id"]).converted_booking_id == dev["booking_id"]
+    assert _lead_row(by_email["lead_id"]).status == "won"
+
+
+def test_adding_the_clients_email_later_takes_the_lead_too_but_not_a_lost_one(cleanup_leads):
+    v = _setup_vendor()
+    open_lead = client.post(
+        "/leads", json={"name": "Kiran Mehta", "email": "kiran@example.com"}, headers=v["headers"],
+    ).json()
+    lost = client.post(
+        "/leads", json={"name": "Kiran Mehta", "email": "kiran@example.com"}, headers=v["headers"],
+    ).json()
+    cleanup_leads.extend([open_lead["lead_id"], lost["lead_id"]])
+    resp = client.patch(f"/leads/{lost['lead_id']}", json={"status": "lost"}, headers=v["headers"])
+    assert resp.status_code == 200, resp.text
+
+    draft = _create_contract(v, draft=True, guest_name="Kiran")
+    assert _item(_pipeline(v), lead_id=open_lead["lead_id"]) is not None
+
+    resp = client.patch(
+        f"/contracts/{draft['booking_id']}", json={"guest_email": "kiran@example.com"}, headers=v["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert _item(_pipeline(v), lead_id=open_lead["lead_id"]) is None
+    assert _lead_row(open_lead["lead_id"]).converted_booking_id == draft["booking_id"]
+    # Closed is closed: a lost lead stays lost, under Archived.
+    assert _lead_row(lost["lead_id"]).converted_booking_id is None
+    assert _lead_row(lost["lead_id"]).status == "lost"
