@@ -1,29 +1,30 @@
-"""The public inquiry form: anyone, signed in or not, can send a vendor an
-inquiry, and it lands in the vendor's Leads as a new lead (docs/DECISIONS.md
-#32).
+"""The inquiry form: a signed-in client with a confirmed email sends a
+vendor an inquiry. It opens (or reuses) their message thread with the vendor
+and lands in the vendor's Leads (docs/DECISIONS.md #32, #45).
 
-No caller to check, so the guards are about the vendor and about abuse:
+The guards:
 - the vendor must exist and have a package (a vendor still in setup isn't
   taking inquiries);
+- the sender must be a client whose email is confirmed (#44), never a vendor
+  account;
 - a filled-in honeypot field (the hidden "website" input) gets the normal
   reply but nothing is saved or sent;
-- at most DAILY_CAP inquiries per vendor per 24 hours (the per-IP limit is
-  the router's);
-- the confirmation to the person who asked is fixed wording plus the
-  vendor's name, never anything they typed, and at most one per address per
-  vendor per day, so the form can't be used to send text to any inbox.
+- at most DAILY_CAP inquiries per vendor per 24 hours, and the thread limits
+  every first question to a vendor has (conversation_service);
+- the confirmation repeats what they sent, safe now that the address is
+  proved, and goes at most once per client per vendor per day.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.config import WEB_APP_URL
+from app.config import CLIENT_WEB_APP_URL, WEB_APP_URL
 from app.db.models import Lead, Service, User, Vendor
-from app.services.contract_service import _EMAIL, ContractError, _check_lead
+from app.services.contract_service import ContractError, _check_lead
+from app.services.conversation_service import ConversationError, open_enquiry
 from app.services.email_service import send_email
 from app.services.names import vendor_user_display_name
 
@@ -66,33 +67,54 @@ def _recent_inquiries(vendor_id: str, since: datetime, db: Session):
     )
 
 
+def _date_label(iso: str | None) -> str | None:
+    if not iso:
+        return None
+    day = date.fromisoformat(iso)
+    return f"{day:%b} {day.day}, {day.year}"
+
+
+def _details_line(checked: dict) -> str:
+    """"Sangeet · Mar 12, 2027 · about 180 guests" — what they filled in."""
+    parts = [
+        checked["event_type"],
+        _date_label(checked["event_date_iso"]),
+        f"about {checked['guest_count']:,} guests" if checked["guest_count"] else None,
+    ]
+    return " · ".join(p for p in parts if p)
+
+
+def _thread_message(details: str, note: str | None) -> str:
+    """The inquiry as the first (or next) message in their thread."""
+    parts = [p for p in (details, note) if p]
+    return "\n\n".join(parts) if parts else "Sent you an inquiry from your Jorna page."
+
+
 def send_inquiry(
-    *, vendor_id: str, name: str, email: str, phone: str | None, event_date_iso: str | None,
+    *, vendor_id: str, caller: User, phone: str | None, event_date_iso: str | None,
     event_type: str | None, guest_count: int | None, note: str | None, website: str | None,
     db: Session,
 ) -> dict:
-    _, vendor_user = _open_vendor(vendor_id, db)
+    vendor, vendor_user = _open_vendor(vendor_id, db)
     vendor_name = _vendor_name(vendor_user)
-    reply = {"received": True, "vendor_name": vendor_name}
+    if db.query(Vendor.vendor_id).filter(Vendor.user_id == caller.user_id).first():
+        raise InquiryError(403, "Switch to a client account to send inquiries")
+    if caller.email_verified_at is None:
+        raise InquiryError(403, "Confirm your email before sending an inquiry")
+    reply = {"received": True, "vendor_name": vendor_name, "conversation_id": None}
     if (website or "").strip():
         logger.info("Inquiry to vendor %s dropped: honeypot filled", vendor_id)
         return reply
 
-    name = (name or "").strip()
-    if not name:
-        raise InquiryError(422, "Add your name so they know who's asking")
-    email = (email or "").strip()
-    if not email:
-        raise InquiryError(422, "Add your email so they can reply")
-    if not _EMAIL.match(email):
-        raise InquiryError(422, "That email doesn't look right — check it")
+    name = f"{caller.f_name or ''} {caller.l_name or ''}".strip() or caller.email
     try:
         checked = _check_lead({
-            "email": email, "phone": phone, "event_date_iso": event_date_iso,
+            "email": caller.email, "phone": phone or caller.phone, "event_date_iso": event_date_iso,
             "event_type": event_type, "guest_count": guest_count,
         })
     except ContractError as e:
         raise InquiryError(e.status_code, e.detail)
+    note = (note or "").strip() or None
 
     now = _utcnow()
     day_ago = now - timedelta(days=1)
@@ -100,38 +122,77 @@ def send_inquiry(
         raise InquiryError(429, f"{vendor_name} has had a lot of inquiries today — try again tomorrow")
     # Asked this vendor already today? Then they've had their confirmation.
     asked_before = (
-        _recent_inquiries(vendor_id, day_ago, db)
-        .filter(func.lower(Lead.email) == checked["email"].lower())
+        db.query(Lead.lead_id)
+        .filter(
+            Lead.vendor_id == vendor_id, Lead.user_id == caller.user_id,
+            Lead.source == "inquiry_form", Lead.updated_at >= day_ago,
+        )
         .first()
         is not None
     )
 
-    lead = Lead(
-        vendor_id=vendor_id, name=name[:255], email=checked["email"], phone=checked["phone"],
-        event_date_iso=checked["event_date_iso"], event_type=checked["event_type"],
-        guest_count=checked["guest_count"], note=(note or "").strip() or None,
-        status="new", source="inquiry_form", created_at=now, updated_at=now,
-    )
-    db.add(lead)
+    details = _details_line(checked)
+    try:
+        thread = open_enquiry(
+            vendor_id=vendor_id, content=_thread_message(details, note),
+            caller_user_id=caller.user_id, db=db,
+        )
+    except ConversationError as e:
+        raise InquiryError(e.status_code, e.detail)
+
+    lead = _lead_for(vendor.vendor_id, caller, thread["conversation_id"], checked, name, note, now, db)
+    _email_vendor(lead, vendor_user, thread["conversation_id"])
+    if not asked_before:
+        _email_confirmation(caller.email, vendor_name, details, note, thread["conversation_id"])
+    return {**reply, "conversation_id": thread["conversation_id"], "message": thread["message"]}
+
+
+def _lead_for(
+    vendor_id: str, caller: User, conversation_id: str, checked: dict, name: str, note: str | None,
+    now: datetime, db: Session,
+) -> Lead:
+    """Their open lead on this thread, brought up to date and back to "needs
+    you" — a second inquiry is the same client asking again, not a new one —
+    or a new lead."""
+    lead = db.query(Lead).filter(
+        Lead.vendor_id == vendor_id,
+        Lead.conversation_id == conversation_id,
+        Lead.converted_booking_id.is_(None),
+        Lead.status.notin_(("won", "lost")),
+    ).first()
+    if lead:
+        for field in ("phone", "event_date_iso", "event_type", "guest_count"):
+            if checked[field] is not None:
+                setattr(lead, field, checked[field])
+        if note:
+            lead.note = note
+        lead.status = "new"
+        lead.source = "inquiry_form"
+        lead.archived_at = None
+        lead.updated_at = now
+    else:
+        lead = Lead(
+            vendor_id=vendor_id, name=name[:255], email=checked["email"], phone=checked["phone"],
+            event_date_iso=checked["event_date_iso"], event_type=checked["event_type"],
+            guest_count=checked["guest_count"], note=note, status="new", source="inquiry_form",
+            user_id=caller.user_id, conversation_id=conversation_id, created_at=now, updated_at=now,
+        )
+        db.add(lead)
     db.commit()
     db.refresh(lead)
-
-    _email_vendor(lead, vendor_user)
-    if not asked_before:
-        _email_confirmation(lead.email, vendor_name)
-    return reply
+    return lead
 
 
-def _email_vendor(lead: Lead, vendor_user: User | None) -> None:
-    """The lead, in full, to the vendor. Replying goes to the person who
-    asked. Best effort: the lead is saved either way."""
+def _email_vendor(lead: Lead, vendor_user: User | None, conversation_id: str) -> None:
+    """The lead, in full, to the vendor. Replying by email goes to the client;
+    the thread is in Messages too. Best effort: the lead is saved either way."""
     if not vendor_user or not vendor_user.email:
         return
     rows = [
         ("Email", lead.email),
         ("Phone", lead.phone),
         ("Event", lead.event_type),
-        ("Date", lead.event_date_iso or "Not sure yet"),
+        ("Date", _date_label(lead.event_date_iso) or "Not sure yet"),
         ("Guests", f"About {lead.guest_count:,}" if lead.guest_count else None),
     ]
     details = "".join(
@@ -142,11 +203,12 @@ def _email_vendor(lead: Lead, vendor_user: User | None) -> None:
         f'<p style="white-space:pre-wrap;border-left:3px solid #ddd;padding-left:12px">{escape(lead.note)}</p>'
         if lead.note else ""
     )
+    base = WEB_APP_URL.rstrip("/")
     html = (
         f"<p><strong>{escape(lead.name)}</strong> sent you an inquiry from your Jorna page.</p>"
         f"<table>{details}</table>{message}"
-        "<p>Reply to this email to answer them, or open it in "
-        f'<a href="{WEB_APP_URL}/leads/">your Leads</a> to send a contract.</p>'
+        f'<p><a href="{base}/conversation/?id={conversation_id}">Reply in Messages</a>, reply to this email, '
+        f'or open it in <a href="{base}/leads/">your Leads</a> to send a contract.</p>'
     )
     try:
         send_email(
@@ -156,14 +218,19 @@ def _email_vendor(lead: Lead, vendor_user: User | None) -> None:
         logger.warning("Inquiry email to vendor failed for lead %s: %s", lead.lead_id, exc)
 
 
-def _email_confirmation(to: str, vendor_name: str) -> None:
-    """Fixed wording and the vendor's name only — nothing the sender typed."""
-    who = escape(vendor_name)
+def _email_confirmation(to: str, vendor_name: str, details: str, note: str | None, conversation_id: str) -> None:
+    """A copy of what they sent. Their own words are safe to repeat: the
+    address is the account's, and the account has proved it reads it (#44)."""
+    sent = "".join(
+        f'<p style="white-space:pre-wrap;border-left:3px solid #ddd;padding-left:12px">{escape(part)}</p>'
+        for part in (details, note) if part
+    )
     html = (
-        f"<p>Your inquiry reached {who}. They'll reply to this address.</p>"
-        "<p>If you didn't send it, you can ignore this email.</p>"
+        f"<p>Your inquiry reached {escape(vendor_name)}. Here's what you sent:</p>{sent}"
+        f'<p>Their reply will be in <a href="{CLIENT_WEB_APP_URL.rstrip("/")}/conversation/?id={conversation_id}">'
+        "your messages on Jorna</a>, and we'll email you when it comes.</p>"
     )
     try:
-        send_email(to=to, subject=f"Your message reached {vendor_name}", html=html)
+        send_email(to=to, subject=f"Your inquiry to {vendor_name}", html=html)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Inquiry confirmation email failed: %s", exc)

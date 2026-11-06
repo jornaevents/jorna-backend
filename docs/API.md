@@ -116,14 +116,22 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   `guest_count` and `source` (`manual` | `messages` | `inquiry_form`); lead
   items in the pipeline have them as `event_name`, `guest_count` and
   `lead_source`.
-- `POST /vendors/{vendor_id}/inquiries` — **no auth**, the public inquiry
-  form (DECISIONS #32). Body: `name`, `email` (required), `phone`,
-  `event_date_iso`, `event_type`, `guest_count`, `note` (≤2000), and
-  `website` (a honeypot; leave it empty). 201 `{received: true,
-  vendor_name}`. 404 for an unknown vendor or one with no package, 422 with
-  a plain message for a bad field, 429 at 5/minute per IP or 50/day per
-  vendor. Makes a `new` lead with `source: inquiry_form`, emails the vendor
-  (Reply-To the sender) and sends the sender a fixed confirmation.
+- `POST /vendors/{vendor_id}/inquiries` — Bearer JWT, the inquiry form
+  (DECISIONS #32, #45). The sender is a client account with a confirmed email
+  (#44); name and email come from it (a `name`/`email` in the body is
+  ignored). Body: `phone` (else the account's), `event_date_iso`,
+  `event_type`, `guest_count`, `note` (≤2000), and `website` (a honeypot;
+  leave it empty). 201 `{received: true, vendor_name, conversation_id}` —
+  the client's thread with the vendor, which the inquiry is posted into.
+  401 signed out; 403 "Confirm your email before sending an inquiry", 403
+  "Switch to a client account to send inquiries", or 403 when either side
+  has blocked the other; 404 for an unknown vendor or one with no package;
+  422 with a plain message for a bad field; 429 at 5/minute per IP, 50/day
+  per vendor, or the thread limits (3 vendors unanswered, 10 new a day).
+  Makes a `new` lead with `source: inquiry_form`, `user_id` and
+  `conversation_id` (or brings the client's open lead on that thread back
+  to `new`), emails the vendor (Reply-To the client) and sends the client a
+  copy of what they sent, once per vendor per day.
 - Removing a sent request from a plan (`DELETE /bundles/{id}/bookings/{booking_id}`
   while the plan isn't a draft) keeps the booking: `status: rejected`,
   `rejected_reason: client_cancelled`, `cancelled_at` set. Removing it again

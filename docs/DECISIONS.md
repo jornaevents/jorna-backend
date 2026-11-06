@@ -801,6 +801,8 @@ start from, and every package has one by default (web DECISIONS, 2026-10-15).
 
 ## 32. Anyone can send a vendor an inquiry, and it lands in Leads (0077)
 
+*"Anyone" is replaced by #45: an account with a confirmed email is needed now. The rest stands.*
+
 `POST /vendors/{vendor_id}/inquiries` takes an inquiry with no account: from the vendor's Jorna
 page or a link they share (user, 2026-10-17; backend #66). It makes a lead with
 `source: inquiry_form`, status `new`, so it's "needs you" in the pipeline and counts on the Leads
@@ -1150,3 +1152,31 @@ next step; #32 stays as-is until then).
   apps' call (the client web app asks right after sign-up; the vendor app and
   iOS don't yet). The inquiry form is the first thing that will require it.
   Accounts made before this are unverified until they enter a code.
+
+## 45. An inquiry needs a client account, and opens the thread
+
+Reverses the "no account" part of #32 (user, 2026-11-06).
+`POST /vendors/{id}/inquiries` now takes a signed-in client whose email is
+confirmed (#44).
+
+- **Who it's from is the account.** Name, email and (unless typed) phone come
+  from the user. A `name` or `email` in the body is ignored, so an older page
+  still works.
+- **A vendor account can't send one** (403 "Switch to a client account…"),
+  not even to another vendor. An unconfirmed email is 403 "Confirm your email
+  before sending an inquiry", which the client app answers with the code
+  step.
+- **It's a message too.** The inquiry is posted into the client's thread with
+  the vendor (`open_enquiry`: one thread per pair, reused if they've already
+  asked a question, with the same block check and first-question limits), so
+  the vendor can answer in Messages and the client sees it in theirs. The
+  lead carries `user_id` and `conversation_id`.
+- **Asking again isn't a new lead.** If the client's lead on that thread is
+  still open, it takes the new details and goes back to `new` ("needs you");
+  a won, lost or converted one gets a fresh lead.
+- **The confirmation repeats what they sent.** #32 kept it to fixed words
+  because anyone could put any address on the form; the address is now the
+  account's own, proved by a code. Still once per client per vendor per day.
+- **Kept from #32:** the honeypot, 5 a minute per IP, 50 a day per vendor,
+  the vendor email with Reply-To the client.
+
