@@ -438,6 +438,7 @@ def create_contract(
         doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
         if email_client:
             sent = _email_client(booking, vendor, db)
+    claim_open_leads(booking, db)
     db.commit()
     db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
@@ -517,6 +518,8 @@ def update_contract(
     else:
         proposal_service.close_open(db, booking, "superseded", "vendor")
         proposal_service.drop_draft(db, booking, "vendor")
+    if booking.signed_at is None and {"guest_email", "guest_phone"} & set(update_data):
+        claim_open_leads(booking, db)
     db.commit()
     db.refresh(booking)
     if proposal is not None:
@@ -922,6 +925,7 @@ def attach_proposal(
     doc.snapshot_revision(db, booking)
     doc.record(db, booking, "created", "vendor", {"from_request": True})
     doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
+    claim_open_leads(booking, db)
 
 
 def send_proposal_email(booking: Booking, vendor: Vendor, db: Session) -> bool:
@@ -1273,6 +1277,43 @@ def delete_lead(*, lead_id: str, caller_user_id: str, db: Session) -> dict:
     db.delete(lead)
     db.commit()
     return {"message": "Lead deleted"}
+
+
+def _phone_key(phone: str | None) -> str | None:
+    """The last ten digits — enough to see "(732) 555-0101" and "+1 732 555
+    0101" are one number, without guessing at country codes."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return digits[-10:] if len(digits) >= 7 else None
+
+
+def claim_open_leads(booking: Booking, db: Session) -> None:
+    """Link this contract to the vendor's open leads for the same client, as
+    convert_lead does for the one it starts from. A vendor who wrote the
+    contract from New instead of the lead's own "Create contract" left the
+    lead behind as "new" — so Leads showed one client twice, the contract
+    waiting on them and the lead "needs you" (2026-11-05). Same email, same
+    phone, or the same account; a lead already converted, won or lost is
+    left alone. Doesn't commit."""
+    email = (booking.guest_email or "").strip().lower() or None
+    phone = _phone_key(booking.guest_phone)
+    if not (email or phone or booking.user_id):
+        return
+    candidates = db.query(Lead).filter(
+        Lead.vendor_id == booking.vendor_id,
+        Lead.converted_booking_id.is_(None),
+        Lead.status.notin_(("won", "lost")),
+    ).all()
+    now = datetime.now(timezone.utc)
+    for lead in candidates:
+        same = (
+            (email and (lead.email or "").strip().lower() == email)
+            or (phone and _phone_key(lead.phone) == phone)
+            or (booking.user_id and lead.user_id == booking.user_id)
+        )
+        if same:
+            lead.converted_booking_id = booking.booking_id
+            lead.status = "won"
+            lead.updated_at = now
 
 
 def convert_lead(*, lead_id: str, caller_user_id: str, db: Session, **contract_fields) -> dict:
