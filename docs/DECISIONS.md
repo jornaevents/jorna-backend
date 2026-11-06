@@ -1200,3 +1200,17 @@ package** — a pick from the vendor's packages, defaulting to "not sure yet".
 - A later inquiry fills in what it gives; it never clears a place or
   package an earlier one gave.
 
+## 47. An inquiry needs a package and a date
+
+Changes #46 (user, 2026-11-06): the client **must pick one of the vendor's
+packages** — there's no "not sure yet" — and **must give the event date**.
+422 "Pick the package you're asking about" / "Add your event date" otherwise.
+Everything else on the form stays optional.
+
+- **Why:** a lead with a package and a date is one the vendor can answer or
+  turn into a contract straight away.
+- **Which packages:** the form lists the vendor's active ones (what the
+  client can see). The server still accepts any of theirs that isn't
+  archived, as #46 did. A vendor whose packages are all hidden can't get
+  inquiries from the form; the form says so.
+

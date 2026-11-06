@@ -108,10 +108,19 @@ def _future(days=200) -> str:
     return (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
 
 
+def _package_id(vendor_id: str) -> str | None:
+    db = TestingSessionLocal()
+    try:
+        row = db.query(Service).filter(Service.vendor_id == vendor_id, Service.status != "archived").first()
+        return row.service_id if row else None
+    finally:
+        db.close()
+
 def _send(vendor_id: str, who: dict | None, **overrides):
     body = {
         "phone": "(732) 555-0100", "event_date_iso": _future(), "event_type": "Sangeet",
         "guest_count": 180, "note": "Looking for someone for our sangeet in Edison.",
+        "service_id": _package_id(vendor_id),
     }
     body.update(overrides)
     return client.post(f"/vendors/{vendor_id}/inquiries", json=body, headers=who["headers"] if who else {})
@@ -271,18 +280,6 @@ def test_each_field_is_checked(emails, field, value, message):
     assert _leads(v["vendor_id"]) == [] and emails.call_count == 0
 
 
-def test_optional_fields_can_be_left_out(emails):
-    v, c = _vendor(), _client(phone="(201) 555-0199")
-    resp = client.post(f"/vendors/{v['vendor_id']}/inquiries", json={}, headers=c["headers"])
-    assert resp.status_code == 201, resp.text
-    [lead] = _leads(v["vendor_id"])
-    assert (lead.event_date_iso, lead.guest_count, lead.event_type) == (None, None, None)
-    # The account's phone when none is typed.
-    assert lead.phone == "(201) 555-0199"
-    assert "Not sure yet" in emails.call_args_list[0].kwargs["html"]
-    [message] = _thread_messages(resp.json()["conversation_id"])
-    assert message.content == "Sent you an inquiry from your Jorna page."
-
 
 def test_a_filled_honeypot_gets_the_normal_reply_and_nothing_else(emails):
     v = _vendor()
@@ -341,13 +338,6 @@ def test_vendor_added_leads_take_the_new_fields_too():
     assert bad.status_code == 422
 
 
-def _package_id(vendor_id: str) -> str:
-    db = TestingSessionLocal()
-    try:
-        return db.query(Service).filter(Service.vendor_id == vendor_id).first().service_id
-    finally:
-        db.close()
-
 
 def test_location_and_package_land_on_the_lead_the_thread_and_the_emails(emails):
     v, c = _vendor(), _client()
@@ -377,20 +367,12 @@ def test_location_and_package_land_on_the_lead_the_thread_and_the_emails(emails)
     )
 
 
-def test_no_package_is_not_sure_yet(emails):
-    v = _vendor()
-    resp = _send(v["vendor_id"], _client())
-    assert resp.status_code == 201
-    [lead] = _leads(v["vendor_id"])
-    assert (lead.service_id, lead.event_location) == (None, None)
-    assert "Not sure yet" in emails.call_args_list[0].kwargs["html"]
-
 
 def test_someone_elses_or_an_archived_package_is_refused(emails):
     v, other = _vendor(), _vendor()
     resp = _send(v["vendor_id"], _client(), service_id=_package_id(other["vendor_id"]))
     assert resp.status_code == 422
-    assert "package isn't available" in resp.json()["detail"]
+    assert resp.json()["detail"] == "That package isn't available — pick another"
 
     db = TestingSessionLocal()
     db.query(Service).filter(Service.vendor_id == v["vendor_id"]).update({Service.status: "archived"})
@@ -415,3 +397,34 @@ def test_the_vendor_can_edit_the_location():
     resp = client.patch(f"/leads/{lead.lead_id}", json={"event_location": "Oak Tree Manor, Edison"}, headers=v["headers"])
     assert resp.status_code == 200, resp.text
     assert resp.json()["event_location"] == "Oak Tree Manor, Edison"
+
+
+def test_the_rest_can_be_left_out(emails):
+    v, c = _vendor(), _client(phone="(201) 555-0199")
+    package = _package_id(v["vendor_id"])
+    resp = client.post(
+        f"/vendors/{v['vendor_id']}/inquiries",
+        json={"event_date_iso": _future(), "service_id": package}, headers=c["headers"],
+    )
+    assert resp.status_code == 201, resp.text
+    [lead] = _leads(v["vendor_id"])
+    assert (lead.guest_count, lead.event_type, lead.event_location, lead.note) == (None, None, None, None)
+    # The account's phone when none is typed.
+    assert lead.phone == "(201) 555-0199"
+    [message] = _thread_messages(resp.json()["conversation_id"])
+    assert "Sangeet coverage" in message.content
+
+
+@pytest.mark.parametrize("field,value,message", [
+    ("service_id", None, "Pick the package you're asking about"),
+    ("service_id", "", "Pick the package you're asking about"),
+    ("event_date_iso", None, "Add your event date"),
+    ("event_date_iso", "  ", "Add your event date"),
+])
+def test_a_package_and_a_date_are_required(emails, field, value, message):
+    v = _vendor()
+    resp = _send(v["vendor_id"], _client(), **{field: value})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == message
+    assert _leads(v["vendor_id"]) == [] and emails.call_count == 0
+
