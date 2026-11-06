@@ -116,8 +116,8 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   `guest_count` and `source` (`manual` | `messages` | `inquiry_form`), plus
   `event_location`, `service_id` and `service_name` (#46; the vendor can
   PATCH `event_location`); lead items in the pipeline have them as
-  `event_name`, `guest_count`, `lead_source`, `location` and
-  `service_name`.
+  `event_name`, `guest_count`, `lead_source`, `location`,
+  `service_name` and `service_id`.
 - `POST /vendors/{vendor_id}/inquiries` — Bearer JWT, the inquiry form
   (DECISIONS #32, #45). The sender is a client account with a confirmed email
   (#44); name and email come from it (a `name`/`email` in the body is

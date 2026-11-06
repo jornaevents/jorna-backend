@@ -370,7 +370,7 @@ def test_location_and_package_land_on_the_lead_the_thread_and_the_emails(emails)
         i for i in client.get("/leads/pipeline", headers=v["headers"]).json()["items"]
         if i["id"] == f"lead:{lead.lead_id}"
     )
-    assert (item["location"], item["service_name"]) == ("Edison, NJ", "Sangeet coverage")
+    assert (item["location"], item["service_name"], item["service_id"]) == ("Edison, NJ", "Sangeet coverage", package)
     listed = client.get("/leads", headers=v["headers"]).json()["items"][0]
     assert (listed["event_location"], listed["service_id"], listed["service_name"]) == (
         "Edison, NJ", package, "Sangeet coverage",
