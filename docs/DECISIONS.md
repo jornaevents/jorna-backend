@@ -1126,3 +1126,27 @@ own token check and user lookup. `GET /vendors/me/overview`
 - **The separate routes stay.** Every other page still uses them, and an
   older web app never asks for this one.
 
+## 44. Accounts prove their email with a code (0084)
+
+Sign-up never checked the address, so an account said nothing about who can
+read its email. The user chose (2026-11-06) that **every client confirms
+their email with a code right after sign-up**: it's what lets the inquiry
+form require an account and send the client a copy of what they asked (the
+next step; #32 stays as-is until then).
+
+- **`users.email_verified_at`**, set by `POST /auth/email/verify` with the
+  latest code from `POST /auth/email/send-code` (`email_verification_service`).
+  `GET /me` says `email_verified`.
+- **Codes work like signing codes (#27):** six digits, only a hash kept, a new
+  one retires the old, ten minutes, five wrong guesses and it's gone, bound to
+  the address it went to. The staging test code (`SIGNING_TEST_CODE`) works
+  here too, so the E2E suite can sign up; never in production.
+- **Google counts as proved.** A Google sign-up, or a Google sign-in whose
+  address is the account's own, sets it; 0084 marks every Google-linked
+  account. Google has already checked the address.
+- **A new email un-proves it.** `PATCH /me` with a different address clears
+  `email_verified_at`, and a code sent to the old address no longer works.
+- **Nothing is blocked here.** Which screens ask for the code is the client
+  apps' call (the client web app asks right after sign-up; the vendor app and
+  iOS don't yet). The inquiry form is the first thing that will require it.
+  Accounts made before this are unverified until they enter a code.

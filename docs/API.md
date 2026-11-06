@@ -32,6 +32,13 @@ alone. For which router owns which resource, see `docs/MODULE_MAP.md`.
   `503` when Supabase's JWKS can't be fetched.
 - `POST /auth/forgot-password` always returns `200` regardless of whether the
   email exists — an intentional anti-enumeration measure, not a bug.
+- `POST /auth/email/send-code` and `POST /auth/email/verify {code}` (Bearer
+  JWT): prove the account reads its email with a 6-digit code (DECISIONS
+  #44). Both answer `{email_verified: true, email}` once it's proved;
+  send-code otherwise answers `{email_verified: false, sent_to,
+  expires_in_minutes}` (`sent_to` masked). Wrong / expired / too many tries
+  are `400` with a readable `detail`; a failed send is `502`. `GET /me`
+  carries `email_verified`; changing the email in `PATCH /me` clears it.
 - `POST /auth/logout` invalidates all access tokens; pass `refresh_token` in
   the body to log out only that device, or omit it to invalidate every
   refresh token for the user (all devices).

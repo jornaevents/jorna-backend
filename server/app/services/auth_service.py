@@ -180,6 +180,13 @@ def _unique_username_from_email(email: str, db: Session) -> str:
     return username
 
 
+def _google_verified(user: User, claims: dict) -> None:
+    """A Google sign-in proves the address when it's the account's own:
+    Google has checked it (DECISIONS #44). Never un-verifies."""
+    if user.email_verified_at is None and (claims.get("email") or "").lower() == (user.email or "").lower():
+        user.email_verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     """
     Verify a Supabase Google token and look up any existing Jorna account.
@@ -199,6 +206,7 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
         google_picture = meta.get("avatar_url") or meta.get("picture") or None
         if google_picture and user.pfp_url != google_picture:
             user.pfp_url = google_picture
+        _google_verified(user, claims)
         access = _make_token(user.user_id, user.email, user.token_version)
         refresh = _make_refresh_token(user.user_id, db)
         db.commit()
@@ -225,6 +233,7 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
             existing.supabase_user_id = sub
         if pfp_url and not existing.pfp_url:
             existing.pfp_url = pfp_url
+        _google_verified(existing, claims)
         access = _make_token(existing.user_id, existing.email, existing.token_version)
         refresh = _make_refresh_token(existing.user_id, db)
         db.commit()
@@ -295,6 +304,7 @@ def google_register(*, access_token: str, accept_terms: bool = False, db: Sessio
         pfp_url=meta.get("avatar_url") or meta.get("picture") or None,
         # The sign-up form's terms box, ticked before "Continue with Google".
         terms_accepted_at=_terms_time(accept_terms),
+        email_verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(user)
     db.commit()
@@ -390,6 +400,8 @@ def register_user(
         supabase_user_id=supabase_user_id,
         pfp_url=google_picture,
         terms_accepted_at=_terms_time(accept_terms),
+        # Linked to Google, whose token carried this same address.
+        email_verified_at=datetime.now(timezone.utc).replace(tzinfo=None) if supabase_user_id else None,
     )
     db.add(user)
     db.commit()
