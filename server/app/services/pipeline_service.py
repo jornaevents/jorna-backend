@@ -199,8 +199,10 @@ def _lead_item(lead: Lead) -> dict:
         "event_name": lead.event_type,
         "event_date": lead.event_date_iso,
         "event_date_end": None,
-        "location": None,
-        "service_name": None,
+        "location": lead.event_location,
+        "service_name": lead.service.name if lead.service else None,
+        # So "Create contract" can start from the package they asked about.
+        "service_id": lead.service_id,
         "estimated_value_cents": None,
         "contract_status": None,
         "hold_expires_at": None,

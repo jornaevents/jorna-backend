@@ -557,6 +557,7 @@ class LeadUpdateRequest(BaseModel):
     email: Optional[str] = None
     event_date_iso: Optional[str] = None
     event_type: Optional[str] = None
+    event_location: Optional[str] = Field(default=None, max_length=255)
     guest_count: Optional[int] = None
     note: Optional[str] = None
     status: Optional[str] = None

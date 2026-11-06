@@ -339,3 +339,79 @@ def test_vendor_added_leads_take_the_new_fields_too():
     assert changed.json()["guest_count"] == 300
     bad = client.patch(f"/leads/{lead_id}", json={"guest_count": -4}, headers=v["headers"])
     assert bad.status_code == 422
+
+
+def _package_id(vendor_id: str) -> str:
+    db = TestingSessionLocal()
+    try:
+        return db.query(Service).filter(Service.vendor_id == vendor_id).first().service_id
+    finally:
+        db.close()
+
+
+def test_location_and_package_land_on_the_lead_the_thread_and_the_emails(emails):
+    v, c = _vendor(), _client()
+    package = _package_id(v["vendor_id"])
+    resp = _send(v["vendor_id"], c, event_location="  Edison, NJ ", service_id=package)
+    assert resp.status_code == 201, resp.text
+
+    [lead] = _leads(v["vendor_id"])
+    assert (lead.event_location, lead.service_id) == ("Edison, NJ", package)
+
+    [message] = _thread_messages(resp.json()["conversation_id"])
+    assert "Edison, NJ" in message.content and "Sangeet coverage" in message.content
+    assert message.meta and message.meta.get("service_id") == package
+
+    to_vendor, to_client = (call.kwargs for call in emails.call_args_list)
+    assert "Edison, NJ" in to_vendor["html"] and "Sangeet coverage" in to_vendor["html"]
+    assert "Edison, NJ" in to_client["html"]
+
+    item = next(
+        i for i in client.get("/leads/pipeline", headers=v["headers"]).json()["items"]
+        if i["id"] == f"lead:{lead.lead_id}"
+    )
+    assert (item["location"], item["service_name"], item["service_id"]) == ("Edison, NJ", "Sangeet coverage", package)
+    listed = client.get("/leads", headers=v["headers"]).json()["items"][0]
+    assert (listed["event_location"], listed["service_id"], listed["service_name"]) == (
+        "Edison, NJ", package, "Sangeet coverage",
+    )
+
+
+def test_no_package_is_not_sure_yet(emails):
+    v = _vendor()
+    resp = _send(v["vendor_id"], _client())
+    assert resp.status_code == 201
+    [lead] = _leads(v["vendor_id"])
+    assert (lead.service_id, lead.event_location) == (None, None)
+    assert "Not sure yet" in emails.call_args_list[0].kwargs["html"]
+
+
+def test_someone_elses_or_an_archived_package_is_refused(emails):
+    v, other = _vendor(), _vendor()
+    resp = _send(v["vendor_id"], _client(), service_id=_package_id(other["vendor_id"]))
+    assert resp.status_code == 422
+    assert "package isn't available" in resp.json()["detail"]
+
+    db = TestingSessionLocal()
+    db.query(Service).filter(Service.vendor_id == v["vendor_id"]).update({Service.status: "archived"})
+    db.add(Service(
+        name="Haldi", price=900.0, price_unit="event", vendor_id=v["vendor_id"],
+        experience="e", category="photography", negotiable=False, status="active",
+    ))
+    db.commit(); db.close()
+    db = TestingSessionLocal()
+    old = db.query(Service).filter(Service.vendor_id == v["vendor_id"], Service.status == "archived").first().service_id
+    db.close()
+    resp = _send(v["vendor_id"], _client(), service_id=old)
+    assert resp.status_code == 422
+    assert _leads(v["vendor_id"]) == [] and emails.call_count == 0
+
+
+def test_the_vendor_can_edit_the_location():
+    v, c = _vendor(), _client()
+    with patch("app.services.inquiry_service.send_email", return_value={"success": True}):
+        _send(v["vendor_id"], c, event_location="Edison")
+    [lead] = _leads(v["vendor_id"])
+    resp = client.patch(f"/leads/{lead.lead_id}", json={"event_location": "Oak Tree Manor, Edison"}, headers=v["headers"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["event_location"] == "Oak Tree Manor, Edison"

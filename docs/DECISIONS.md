@@ -1180,3 +1180,23 @@ confirmed (#44).
 - **Kept from #32:** the honeypot, 5 a minute per IP, 50 a day per vendor,
   the vendor email with Reply-To the client.
 
+## 46. An inquiry can say where the event is and which package (0085)
+
+The inquiry form asks two more optional things (user, 2026-11-06): **where
+the event is** (free text, like the contract's location) and **which
+package** — a pick from the vendor's packages, defaulting to "not sure yet".
+
+- **Kept on the lead:** `leads.event_location` and `leads.service_id`. The
+  lead and the pipeline item show them (`event_location`, `service_name`;
+  the pipeline's `location` / `service_name`, which were always empty for
+  leads). The vendor can edit the location like the other lead fields.
+- **The package must be this vendor's and not archived** (422 otherwise). A
+  hidden package is accepted, as #32 counts it; the form only lists the
+  ones the client can see.
+- **In the thread,** the place and package join the details line, and the
+  package rides along as the message's reference card (`meta.service_id`),
+  as "Ask a question" from a package does. Both emails list them; the
+  vendor's says "Not sure yet" when no package was picked.
+- A later inquiry fills in what it gives; it never clears a place or
+  package an earlier one gave.
+

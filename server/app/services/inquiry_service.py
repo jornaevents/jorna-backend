@@ -74,14 +74,30 @@ def _date_label(iso: str | None) -> str | None:
     return f"{day:%b} {day.day}, {day.year}"
 
 
-def _details_line(checked: dict) -> str:
-    """"Sangeet · Mar 12, 2027 · about 180 guests" — what they filled in."""
+def _details_line(checked: dict, service: Service | None) -> str:
+    """"Sangeet · Mar 12, 2027 · Edison, NJ · about 180 guests · Sangeet
+    coverage" — what they filled in."""
     parts = [
         checked["event_type"],
         _date_label(checked["event_date_iso"]),
+        checked["event_location"],
         f"about {checked['guest_count']:,} guests" if checked["guest_count"] else None,
+        service.name if service else None,
     ]
     return " · ".join(p for p in parts if p)
+
+
+def _package(vendor_id: str, service_id: str | None, db: Session) -> Service | None:
+    """The package they asked about: one of this vendor's that isn't
+    archived, or none ("not sure yet")."""
+    if not service_id:
+        return None
+    service = db.query(Service).filter(
+        Service.service_id == service_id, Service.vendor_id == vendor_id, Service.status != "archived",
+    ).first()
+    if service is None:
+        raise InquiryError(422, "That package isn't available — pick another, or choose not sure yet")
+    return service
 
 
 def _thread_message(details: str, note: str | None) -> str:
@@ -93,7 +109,7 @@ def _thread_message(details: str, note: str | None) -> str:
 def send_inquiry(
     *, vendor_id: str, caller: User, phone: str | None, event_date_iso: str | None,
     event_type: str | None, guest_count: int | None, note: str | None, website: str | None,
-    db: Session,
+    db: Session, event_location: str | None = None, service_id: str | None = None,
 ) -> dict:
     vendor, vendor_user = _open_vendor(vendor_id, db)
     vendor_name = _vendor_name(vendor_user)
@@ -110,11 +126,12 @@ def send_inquiry(
     try:
         checked = _check_lead({
             "email": caller.email, "phone": phone or caller.phone, "event_date_iso": event_date_iso,
-            "event_type": event_type, "guest_count": guest_count,
+            "event_type": event_type, "event_location": event_location, "guest_count": guest_count,
         })
     except ContractError as e:
         raise InquiryError(e.status_code, e.detail)
     note = (note or "").strip() or None
+    service = _package(vendor_id, service_id, db)
 
     now = _utcnow()
     day_ago = now - timedelta(days=1)
@@ -131,16 +148,18 @@ def send_inquiry(
         is not None
     )
 
-    details = _details_line(checked)
+    details = _details_line(checked, service)
     try:
         thread = open_enquiry(
             vendor_id=vendor_id, content=_thread_message(details, note),
             caller_user_id=caller.user_id, db=db,
+            # The package rides along as the message's reference card.
+            service_id=service.service_id if service else None,
         )
     except ConversationError as e:
         raise InquiryError(e.status_code, e.detail)
 
-    lead = _lead_for(vendor.vendor_id, caller, thread["conversation_id"], checked, name, note, now, db)
+    lead = _lead_for(vendor.vendor_id, caller, thread["conversation_id"], checked, service, name, note, now, db)
     _email_vendor(lead, vendor_user, thread["conversation_id"])
     if not asked_before:
         _email_confirmation(caller.email, vendor_name, details, note, thread["conversation_id"])
@@ -148,8 +167,8 @@ def send_inquiry(
 
 
 def _lead_for(
-    vendor_id: str, caller: User, conversation_id: str, checked: dict, name: str, note: str | None,
-    now: datetime, db: Session,
+    vendor_id: str, caller: User, conversation_id: str, checked: dict, service: Service | None,
+    name: str, note: str | None, now: datetime, db: Session,
 ) -> Lead:
     """Their open lead on this thread, brought up to date and back to "needs
     you" — a second inquiry is the same client asking again, not a new one —
@@ -161,9 +180,11 @@ def _lead_for(
         Lead.status.notin_(("won", "lost")),
     ).first()
     if lead:
-        for field in ("phone", "event_date_iso", "event_type", "guest_count"):
+        for field in ("phone", "event_date_iso", "event_type", "event_location", "guest_count"):
             if checked[field] is not None:
                 setattr(lead, field, checked[field])
+        if service:
+            lead.service_id = service.service_id
         if note:
             lead.note = note
         lead.status = "new"
@@ -174,7 +195,8 @@ def _lead_for(
         lead = Lead(
             vendor_id=vendor_id, name=name[:255], email=checked["email"], phone=checked["phone"],
             event_date_iso=checked["event_date_iso"], event_type=checked["event_type"],
-            guest_count=checked["guest_count"], note=note, status="new", source="inquiry_form",
+            guest_count=checked["guest_count"], event_location=checked["event_location"],
+            service_id=service.service_id if service else None, note=note, status="new", source="inquiry_form",
             user_id=caller.user_id, conversation_id=conversation_id, created_at=now, updated_at=now,
         )
         db.add(lead)
@@ -193,7 +215,9 @@ def _email_vendor(lead: Lead, vendor_user: User | None, conversation_id: str) ->
         ("Phone", lead.phone),
         ("Event", lead.event_type),
         ("Date", _date_label(lead.event_date_iso) or "Not sure yet"),
+        ("Where", lead.event_location),
         ("Guests", f"About {lead.guest_count:,}" if lead.guest_count else None),
+        ("Package", lead.service.name if lead.service else "Not sure yet"),
     ]
     details = "".join(
         f'<tr><td style="padding:2px 12px 2px 0;color:#888">{label}</td><td>{escape(str(value))}</td></tr>'

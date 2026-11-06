@@ -29,6 +29,9 @@ class InquiryRequest(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=50)
     event_date_iso: Optional[str] = Field(default=None, max_length=50)
     event_type: Optional[str] = Field(default=None, max_length=50)
+    event_location: Optional[str] = Field(default=None, max_length=255)
+    # One of the vendor's packages, or null for "not sure yet".
+    service_id: Optional[str] = Field(default=None, max_length=36)
     guest_count: Optional[int] = None
     note: Optional[str] = Field(default=None, max_length=2000)
     # The honeypot: hidden on the form, so only a bot fills it in.
