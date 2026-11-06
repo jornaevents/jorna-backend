@@ -818,6 +818,11 @@ class Lead(Base):
     guest_count = Column(Integer, nullable=True)
     # manual | messages | inquiry_form — where the lead came from (0077).
     source = Column(String(20), nullable=False, default="manual", server_default="manual")
+    # Where the event is, as the client wrote it, and the package they asked
+    # about, from the inquiry form (0085). Both optional.
+    event_location = Column(String(255), nullable=True)
+    service_id = Column(String(36), ForeignKey("services.service_id", ondelete="SET NULL"), nullable=True)
+    service = relationship("Service", lazy="joined")
 
 
 class Bundle(Base):

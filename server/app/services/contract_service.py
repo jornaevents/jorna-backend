@@ -1162,6 +1162,9 @@ def _lead_dict(lead: Lead) -> dict:
         "event_date_iso": lead.event_date_iso,
         "event_type": lead.event_type,
         "guest_count": lead.guest_count,
+        "event_location": lead.event_location,
+        "service_id": lead.service_id,
+        "service_name": lead.service.name if lead.service else None,
         "note": lead.note,
         "status": lead.status,
         "source": lead.source or "manual",
@@ -1205,6 +1208,8 @@ def _check_lead(data: dict) -> dict:
         out["event_date_iso"] = raw
     if "event_type" in data:
         out["event_type"] = (data["event_type"] or "").strip()[:50] or None
+    if "event_location" in data:
+        out["event_location"] = (data["event_location"] or "").strip()[:255] or None
     if "guest_count" in data and data["guest_count"] is not None:
         count = data["guest_count"]
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100_000:
@@ -1259,7 +1264,7 @@ def _own_lead(*, lead_id: str, caller_user_id: str, db: Session) -> Lead:
 def update_lead(*, lead_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:
     lead = _own_lead(lead_id=lead_id, caller_user_id=caller_user_id, db=db)
     update_data = _check_lead(update_data)
-    for field in ("name", "phone", "email", "event_date_iso", "event_type", "guest_count", "note", "status"):
+    for field in ("name", "phone", "email", "event_date_iso", "event_type", "event_location", "guest_count", "note", "status"):
         if field in update_data:
             setattr(lead, field, update_data[field])
     # Archiving hides a lead from the active list; it isn't a status, so it
