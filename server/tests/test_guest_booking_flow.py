@@ -8,8 +8,9 @@ import uuid
 
 import pytest
 
-from app.db.models import Booking, Service, User, Vendor
+from app.db.models import Booking, Conversation, GroupMessage, Service, User, Vendor
 from app.limiter import limiter
+from tests.chat_helpers import as_link_contract, new_chat
 from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 
@@ -90,9 +91,13 @@ def _create_contract(v, **overrides):
     return resp.json()
 
 
-def test_vendor_creates_a_guest_contract_with_no_client_account():
+def test_a_sent_contract_belongs_to_the_client_on_the_chat():
+    """DECISIONS #48: contracts go out in the client's chat, so a sent one
+    is tied to that client's account; one with no client is refused, and a
+    draft can wait for one."""
     v = _setup_vendor()
-    contract = _create_contract(v)
+    chat = new_chat(v["headers"])
+    contract = _create_contract(v, conversation_id=chat)
     assert contract["deposit_amount_cents"] == 70_000
     assert contract["location"] == "TBD"
     assert contract["signed_at"] is None
@@ -100,9 +105,27 @@ def test_vendor_creates_a_guest_contract_with_no_client_account():
 
     db = TestingSessionLocal()
     booking = db.query(Booking).filter(Booking.booking_id == contract["booking_id"]).first()
-    assert booking.user_id is None
+    conv = db.query(Conversation).filter(Conversation.conversation_id == chat).first()
+    assert booking.user_id == conv.client_user_id
     assert booking.status == "approved"
+    assert booking.guest_name == "Chat Client" and booking.guest_email.startswith("chat_client_")
     db.close()
+
+    nobody = client.post("/contracts", json={
+        "service_id": v["service_id"], "date_iso": "2027-11-20", "time_start": "19:00", "time_end": "23:00",
+        "amount_cents": 140_000, "conversation_id": None,
+    }, headers=v["headers"])
+    assert nobody.status_code == 400
+    assert "client's chat" in nobody.json()["detail"]
+    draft = _create_contract(v, date_iso="2027-11-21", draft=True)
+    sent = client.post(f"/contracts/{draft['booking_id']}/send", json={}, headers=v["headers"])
+    assert sent.status_code == 400 and "client's chat" in sent.json()["detail"]
+
+    stranger_chat = client.post("/contracts", json={
+        "service_id": v["service_id"], "date_iso": "2027-11-22", "time_start": "19:00", "time_end": "23:00",
+        "amount_cents": 140_000, "conversation_id": str(uuid.uuid4()),
+    }, headers=v["headers"])
+    assert stranger_chat.status_code == 400
 
 
 def test_vendor_cannot_create_a_contract_for_someone_elses_service():
@@ -157,6 +180,8 @@ def test_public_link_full_flow_read_fill_sign():
 def test_signing_requires_an_email_on_file():
     v = _setup_vendor()
     contract = _create_contract(v)
+    # Only a contract sent by link before #48 can be missing one.
+    as_link_contract(contract["booking_id"], TestingSessionLocal, email=None)
     token = contract["contract_token"]
 
     resp = client.post(f"/guest-bookings/{token}/sign", json={"signer_name": "Priya Mehta"})
@@ -189,6 +214,7 @@ def test_guest_booking_shows_contract_fields_in_the_vendors_general_list():
     fields too -- a pipeline view can't derive a stage without them."""
     v = _setup_vendor()
     contract = _create_contract(v)
+    as_link_contract(contract["booking_id"], TestingSessionLocal)
 
     listed = client.get(f"/bookings/vendor/{v['vendor_id']}", headers=v["headers"])
     assert listed.status_code == 200, listed.text
@@ -245,34 +271,55 @@ def test_vendor_cannot_read_own_authenticated_booking_via_guest_endpoint():
 
 # ── Telling the vendor whether the email went ───────────────────────
 
-def test_email_sent_reports_whether_the_client_was_actually_emailed():
+def test_sending_puts_it_in_the_chat_and_emails_the_client_to_look_there():
+    """DECISIONS #48: a contract card in the client's thread, and an email
+    pointing to it — no signing link. email_sent says whether it landed."""
     from unittest.mock import patch
 
     v = _setup_vendor()
-    # Not asked to email: null, so the app doesn't claim either way.
-    assert _create_contract(v)["email_sent"] is None
-
-    with patch("app.services.contract_service.send_email", return_value={"success": True, "id": "e1"}):
-        sent = _create_contract(v, date_iso="2027-11-14", guest_email="meera@example.com", email_client=True)
+    chat = new_chat(v["headers"])
+    with patch("app.services.contract_service.send_email", return_value={"success": True, "id": "e1"}) as mail:
+        sent = _create_contract(v, conversation_id=chat)
     assert sent["email_sent"] is True
-    timeline = client.get(f"/contracts/{sent['booking_id']}", headers=v["headers"]).json()["timeline"]
-    assert any(e["kind"] == "emailed" for e in timeline)
+    html = mail.call_args.kwargs["html"]
+    assert f"/client/conversation/?id={chat}" in html
+    assert "booking-link" not in html and sent["contract_token"] not in html
+    assert mail.call_args.kwargs["to"].startswith("chat_client_")
+
+    db = TestingSessionLocal()
+    card = db.query(GroupMessage).filter(
+        GroupMessage.conversation_id == chat, GroupMessage.kind == "contract",
+    ).one()
+    assert card.meta["booking_id"] == sent["booking_id"]
+    assert "sent you a contract" in card.content
+    db.close()
+    kinds = [e["kind"] for e in client.get(f"/contracts/{sent['booking_id']}", headers=v["headers"]).json()["timeline"]]
+    assert "posted_to_chat" in kinds and "emailed" in kinds
 
     with patch("app.services.contract_service.send_email", return_value={"success": False, "error": "Email not configured"}):
-        failed = _create_contract(v, date_iso="2027-11-15", guest_email="meera@example.com", email_client=True)
+        failed = _create_contract(v, date_iso="2027-11-15")
     assert failed["email_sent"] is False
     kinds = [e["kind"] for e in client.get(f"/contracts/{failed['booking_id']}", headers=v["headers"]).json()["timeline"]]
     assert "email_failed" in kinds and "emailed" not in kinds
 
 
-def test_send_reports_email_sent_too():
+def test_a_draft_for_a_chat_is_sent_there_and_a_resend_says_updated():
     from unittest.mock import patch
 
     v = _setup_vendor()
-    draft = _create_contract(v, guest_email="meera@example.com", draft=True)
+    chat = new_chat(v["headers"])
+    draft = _create_contract(v, conversation_id=chat, draft=True)
+    db = TestingSessionLocal()
+    assert db.query(GroupMessage).filter(GroupMessage.conversation_id == chat, GroupMessage.kind == "contract").count() == 0
+    db.close()
     with patch("app.services.contract_service.send_email", return_value={"success": False, "error": "boom"}):
-        r = client.post(f"/contracts/{draft['booking_id']}/send", json={"email_client": True}, headers=v["headers"])
+        r = client.post(f"/contracts/{draft['booking_id']}/send", json={}, headers=v["headers"])
     assert r.status_code == 200, r.text
     assert r.json()["email_sent"] is False
-    r = client.post(f"/contracts/{draft['booking_id']}/send", json={}, headers=v["headers"])
-    assert r.json()["email_sent"] is None
+    with patch("app.services.contract_service.send_email", return_value={"success": True}) as mail:
+        r = client.post(f"/contracts/{draft['booking_id']}/send", json={}, headers=v["headers"])
+    assert r.json()["email_sent"] is True
+    assert "updated contract" in mail.call_args.kwargs["subject"]
+    db = TestingSessionLocal()
+    assert db.query(GroupMessage).filter(GroupMessage.conversation_id == chat, GroupMessage.kind == "contract").count() == 2
+    db.close()

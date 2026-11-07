@@ -163,9 +163,7 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   for the vendor (their app works out its own), for plan chats, and when
   nothing's been requested.
 - Vendor booking payloads now carry `created_at` (null before 0066),
-  `sent_at` and `vendor_archived_at`. Copying a contract link should call
-  `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
-  sent and starts the hold.
+  `sent_at` and `vendor_archived_at`.
 
 ## Vendor overview (vendor, DECISIONS #43)
 
@@ -233,14 +231,25 @@ Addenda and cancellations attached to an agreed booking:
   - `POST …/decline` `{reason?}`.
   - Voided or declined documents get a 410; an already-signed document gets a 400 on sign.
 
-## Emailing the client their link
+## Sending a contract: in the client's chat (DECISIONS #48)
 
-`POST /contracts`, `POST /leads/{lead_id}/convert`, `POST /contracts/{id}/send` and
-`POST /bookings/{id}/propose` (accepting a request with a proposal) return the contract plus
-`email_sent`: `true` when the email provider accepted the client's link email, `false` when it
-didn't (no email configured, provider error), and `null` when the vendor didn't ask us to email.
-Accepting a request with the vendor's usual terms (`PUT /bookings/{id}/status` to `approved`) returns `email_sent` the same way. The timeline records `emailed` or `email_failed`. The vendor app says "We emailed the link" only
-on `true`.
+A contract goes out in the client's chat. `POST /contracts`, `POST /leads/{lead_id}/convert`,
+`POST /contracts/{id}/send`, `POST /bookings/{id}/propose` and accepting a request with the
+vendor's usual terms (`PUT /bookings/{id}/status` to `approved`) post a `kind: "contract"` message
+(`meta.booking_id`, `meta.contract_status`) into the client's thread with the vendor, and email
+the client a note pointing to it (`{CLIENT_WEB_APP_URL}/conversation/?id=…`). The email has **no
+signing link**. `email_client` is ignored.
+
+- **Which client:** `conversation_id` on `POST /contracts` / convert (one of the vendor's threads;
+  400 otherwise), else the lead's account (`leads.user_id`), else the marketplace request's.
+  Sending without one is 400 "Send contracts from your client's chat on Jorna — start it from
+  Messages or their lead". A draft can be saved without one.
+- The contract's `user_id` is that client, so it's in their bookings (`GET /bookings/{id}` gives
+  them `contract_token`), and they open it in their app.
+- `email_sent` is `true`/`false` for whether the provider took the email. The timeline records
+  `posted_to_chat` and `emailed` or `email_failed`. A resend says "an updated contract".
+- A contract sent by link before #48 (no `user_id`) can still be resent with `email_client`,
+  the old way.
 
 ## Change proposals (vendor + public)
 

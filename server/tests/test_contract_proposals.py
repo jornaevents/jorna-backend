@@ -4,7 +4,8 @@ deposit, clause text, signing a specific revision into a frozen snapshot,
 the timeline, account templates, and emailing the link.
 """
 
-from app.db.models import Booking, ContractEvent, Lead, Service
+from app.db.models import Booking, ContractEvent, Conversation, Lead, Service
+from tests.chat_helpers import new_chat
 from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
@@ -242,7 +243,13 @@ def test_the_timeline_records_each_step_and_is_derived_for_older_contracts():
     client.post(f"/guest-bookings/{token}/mark-deposit-paid")
 
     kinds = [e["kind"] for e in client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["timeline"]]
-    assert kinds == ["created", "sent", "viewed", "edited", "signed", "countersigned", "payment_marked"]
+    delivery = ("posted_to_chat", "emailed", "email_failed")
+    # The client's account email is on file now (#48), so the helper's
+    # different one reads as a change.
+    assert [k for k in kinds if k not in delivery] == [
+        "created", "sent", "viewed", "edited", "details_updated", "signed", "countersigned", "payment_marked",
+    ]
+    assert "posted_to_chat" in kinds
 
     # A contract from before events existed still gets a timeline.
     db = TestingSessionLocal()
@@ -271,47 +278,65 @@ def test_templates_live_on_the_account_and_stay_private():
     assert client.get("/contract-templates", headers=v["headers"]).json()["total"] == 0
 
 
-def test_sending_can_email_the_client_their_link(monkeypatch):
+def test_sending_goes_to_the_chat_and_the_email_points_there(monkeypatch):
+    """DECISIONS #48: no signing link by email any more."""
     import app.services.contract_service as cs
 
     sent = []
     monkeypatch.setattr(cs, "send_email", lambda **kw: sent.append(kw) or {"success": True})
     v = _with_addon(_setup_vendor())
 
-    no_email = client.post("/contracts", json={
+    no_client = client.post("/contracts", json={
         "date_iso": "2027-11-16", "time_start": "19:00", "time_end": "23:00",
-        "line_items": [{"kind": "package", "service_id": v["service_id"]}], "email_client": True,
+        "line_items": [{"kind": "package", "service_id": v["service_id"]}], "conversation_id": None,
     }, headers=v["headers"])
-    assert no_email.status_code == 400
+    assert no_client.status_code == 400
 
-    c = _proposal(v, date_iso="2027-11-17", guest_email="priya@example.com", email_client=True)
-    assert sent[0]["to"] == "priya@example.com"
-    assert f"booking-link?t={c['contract_token']}" in sent[0]["html"]
+    c = _proposal(v, date_iso="2027-11-17")
+    assert sent[0]["to"].startswith("chat_client_")
+    assert "/client/conversation/?id=" in sent[0]["html"]
+    assert c["contract_token"] not in sent[0]["html"]
 
-    client.post(f"/contracts/{c['booking_id']}/send", json={"email_client": True}, headers=v["headers"])
+    client.post(f"/contracts/{c['booking_id']}/send", json={}, headers=v["headers"])
     assert len(sent) == 2
     kinds = [e["kind"] for e in client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()["timeline"]]
-    assert kinds.count("emailed") == 2 and "resent" in kinds
+    assert kinds.count("emailed") == 2 and kinds.count("posted_to_chat") == 2 and "resent" in kinds
 
 
-def test_a_lead_converts_into_a_proposal_using_its_email(monkeypatch):
+def test_a_lead_converts_into_a_contract_in_its_clients_chat(monkeypatch):
     import app.services.contract_service as cs
 
     sent = []
     monkeypatch.setattr(cs, "send_email", lambda **kw: sent.append(kw) or {"success": True})
     v = _with_addon(_setup_vendor())
     lead = client.post("/leads", json={"name": "Rohan Das", "email": "rohan@example.com"}, headers=v["headers"]).json()
-
-    resp = client.post(f"/leads/{lead['lead_id']}/convert", json={
+    body = {
         "date_iso": "2027-11-18", "time_start": "19:00", "time_end": "23:00",
-        "line_items": [{"kind": "package", "service_id": v["service_id"]}], "email_client": True,
-    }, headers=v["headers"])
+        "line_items": [{"kind": "package", "service_id": v["service_id"]}],
+    }
+
+    # A lead with no account and no chat can't be sent one.
+    alone = client.post(f"/leads/{lead['lead_id']}/convert", json={**body, "conversation_id": None}, headers=v["headers"])
+    assert alone.status_code == 400
+
+    # One from the inquiry form carries the client's account: it goes there.
+    chat = new_chat(v["headers"])
+    db = TestingSessionLocal()
+    conv = db.query(Conversation).filter(Conversation.conversation_id == chat).one()
+    db.query(Lead).filter(Lead.lead_id == lead["lead_id"]).update({Lead.user_id: conv.client_user_id})
+    db.commit()
+    client_id = conv.client_user_id
+    db.close()
+
+    resp = client.post(f"/leads/{lead['lead_id']}/convert", json={**body, "conversation_id": None}, headers=v["headers"])
     assert resp.status_code == 201, resp.text
     _created["bookings"].append(resp.json()["booking_id"])
     assert resp.json()["guest_name"] == "Rohan Das"
-    assert sent[0]["to"] == "rohan@example.com"
+    assert sent[0]["to"].startswith("chat_client_")
+    assert f"/client/conversation/?id={chat}" in sent[0]["html"]
 
     db = TestingSessionLocal()
+    assert db.query(Booking).filter(Booking.booking_id == resp.json()["booking_id"]).one().user_id == client_id
     assert db.query(Lead).filter(Lead.lead_id == lead["lead_id"]).first().status == "won"
     db.query(Lead).filter(Lead.lead_id == lead["lead_id"]).delete()
     db.commit()
