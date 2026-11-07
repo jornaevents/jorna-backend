@@ -9,6 +9,7 @@ The guards:
   account;
 - a filled-in honeypot field (the hidden "website" input) gets the normal
   reply but nothing is saved or sent;
+- a package and an event date are required (#47);
 - at most DAILY_CAP inquiries per vendor per 24 hours, and the thread limits
   every first question to a vendor has (conversation_service);
 - the confirmation repeats what they sent, safe now that the address is
@@ -74,7 +75,7 @@ def _date_label(iso: str | None) -> str | None:
     return f"{day:%b} {day.day}, {day.year}"
 
 
-def _details_line(checked: dict, service: Service | None) -> str:
+def _details_line(checked: dict, service: Service) -> str:
     """"Sangeet · Mar 12, 2027 · Edison, NJ · about 180 guests · Sangeet
     coverage" — what they filled in."""
     parts = [
@@ -82,28 +83,27 @@ def _details_line(checked: dict, service: Service | None) -> str:
         _date_label(checked["event_date_iso"]),
         checked["event_location"],
         f"about {checked['guest_count']:,} guests" if checked["guest_count"] else None,
-        service.name if service else None,
+        service.name,
     ]
     return " · ".join(p for p in parts if p)
 
 
-def _package(vendor_id: str, service_id: str | None, db: Session) -> Service | None:
-    """The package they asked about: one of this vendor's that isn't
-    archived, or none ("not sure yet")."""
+def _package(vendor_id: str, service_id: str | None, db: Session) -> Service:
+    """The package they're asking about: required, and one of this vendor's
+    that isn't archived (DECISIONS #47)."""
     if not service_id:
-        return None
+        raise InquiryError(422, "Pick the package you're asking about")
     service = db.query(Service).filter(
         Service.service_id == service_id, Service.vendor_id == vendor_id, Service.status != "archived",
     ).first()
     if service is None:
-        raise InquiryError(422, "That package isn't available — pick another, or choose not sure yet")
+        raise InquiryError(422, "That package isn't available — pick another")
     return service
 
 
 def _thread_message(details: str, note: str | None) -> str:
     """The inquiry as the first (or next) message in their thread."""
-    parts = [p for p in (details, note) if p]
-    return "\n\n".join(parts) if parts else "Sent you an inquiry from your Jorna page."
+    return "\n\n".join(p for p in (details, note) if p)
 
 
 def send_inquiry(
@@ -123,6 +123,8 @@ def send_inquiry(
         return reply
 
     name = f"{caller.f_name or ''} {caller.l_name or ''}".strip() or caller.email
+    if not (event_date_iso or "").strip():
+        raise InquiryError(422, "Add your event date")
     try:
         checked = _check_lead({
             "email": caller.email, "phone": phone or caller.phone, "event_date_iso": event_date_iso,
@@ -154,7 +156,7 @@ def send_inquiry(
             vendor_id=vendor_id, content=_thread_message(details, note),
             caller_user_id=caller.user_id, db=db,
             # The package rides along as the message's reference card.
-            service_id=service.service_id if service else None,
+            service_id=service.service_id,
         )
     except ConversationError as e:
         raise InquiryError(e.status_code, e.detail)
@@ -167,7 +169,7 @@ def send_inquiry(
 
 
 def _lead_for(
-    vendor_id: str, caller: User, conversation_id: str, checked: dict, service: Service | None,
+    vendor_id: str, caller: User, conversation_id: str, checked: dict, service: Service,
     name: str, note: str | None, now: datetime, db: Session,
 ) -> Lead:
     """Their open lead on this thread, brought up to date and back to "needs
@@ -183,8 +185,7 @@ def _lead_for(
         for field in ("phone", "event_date_iso", "event_type", "event_location", "guest_count"):
             if checked[field] is not None:
                 setattr(lead, field, checked[field])
-        if service:
-            lead.service_id = service.service_id
+        lead.service_id = service.service_id
         if note:
             lead.note = note
         lead.status = "new"
@@ -196,7 +197,7 @@ def _lead_for(
             vendor_id=vendor_id, name=name[:255], email=checked["email"], phone=checked["phone"],
             event_date_iso=checked["event_date_iso"], event_type=checked["event_type"],
             guest_count=checked["guest_count"], event_location=checked["event_location"],
-            service_id=service.service_id if service else None, note=note, status="new", source="inquiry_form",
+            service_id=service.service_id, note=note, status="new", source="inquiry_form",
             user_id=caller.user_id, conversation_id=conversation_id, created_at=now, updated_at=now,
         )
         db.add(lead)
@@ -214,10 +215,10 @@ def _email_vendor(lead: Lead, vendor_user: User | None, conversation_id: str) ->
         ("Email", lead.email),
         ("Phone", lead.phone),
         ("Event", lead.event_type),
-        ("Date", _date_label(lead.event_date_iso) or "Not sure yet"),
+        ("Date", _date_label(lead.event_date_iso)),
         ("Where", lead.event_location),
         ("Guests", f"About {lead.guest_count:,}" if lead.guest_count else None),
-        ("Package", lead.service.name if lead.service else "Not sure yet"),
+        ("Package", lead.service.name if lead.service else None),
     ]
     details = "".join(
         f'<tr><td style="padding:2px 12px 2px 0;color:#888">{label}</td><td>{escape(str(value))}</td></tr>'

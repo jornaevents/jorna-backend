@@ -121,9 +121,10 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
 - `POST /vendors/{vendor_id}/inquiries` — Bearer JWT, the inquiry form
   (DECISIONS #32, #45). The sender is a client account with a confirmed email
   (#44); name and email come from it (a `name`/`email` in the body is
-  ignored). Body: `phone` (else the account's), `event_date_iso`,
-  `event_type`, `event_location` (≤255), `service_id` (one of the vendor's
-  packages, not archived; null = not sure yet; 422 otherwise), `guest_count`, `note` (≤2000), and `website` (a honeypot;
+  ignored). Body: `service_id` and `event_date_iso` **required** (#47; 422 "Pick the
+  package you're asking about" / "Add your event date"; the package must be
+  the vendor's and not archived), and optional `phone` (else the
+  account's), `event_type`, `event_location` (≤255), `guest_count`, `note` (≤2000), and `website` (a honeypot;
   leave it empty). 201 `{received: true, vendor_name, conversation_id}` —
   the client's thread with the vendor, which the inquiry is posted into.
   401 signed out; 403 "Confirm your email before sending an inquiry", 403
