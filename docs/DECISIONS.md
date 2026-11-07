@@ -801,6 +801,8 @@ start from, and every package has one by default (web DECISIONS, 2026-10-15).
 
 ## 32. Anyone can send a vendor an inquiry, and it lands in Leads (0077)
 
+*"Anyone" is replaced by #45: an account with a confirmed email is needed now. The rest stands.*
+
 `POST /vendors/{vendor_id}/inquiries` takes an inquiry with no account: from the vendor's Jorna
 page or a link they share (user, 2026-10-17; backend #66). It makes a lead with
 `source: inquiry_form`, status `new`, so it's "needs you" in the pipeline and counts on the Leads
@@ -1102,7 +1104,139 @@ chat row and on `GET /conversations/{id}`.
   hasn't seen either (`sent_to_vendor`).
 - Two queries for the whole inbox, not one per chat. No migration.
 
-## 43. AI summaries in the Messages inbox (0084)
+## 43. The vendor's Overview in one request
+
+The vendor web app's Overview opened with five requests — the vendor, their
+bookings, leads, inbox and pipeline — each paying its own round trip and its
+own token check and user lookup. `GET /vendors/me/overview`
+(`vendor_overview.py`) answers all five at once.
+
+- **Each section is its route's answer**, by calling the same service
+  functions, so nothing about a section can drift from what its own route
+  says; a test compares them one by one.
+- **A failing section is `null`,** logged, and the session rolled back so the
+  ones after it still read. Overview already shows each card on its own; a
+  broken inbox shouldn't blank the dashboard. Only "not a vendor" fails the
+  request (404, as `/vendors/me`).
+- **The sections run one after another,** in one session, where the browser
+  ran five requests side by side. Whether one request beats five depends on
+  how long each section takes against the round trips saved, so each
+  section's time comes back (`timings`, and a `Server-Timing` header) —
+  measured on staging rather than assumed. Running them in parallel would
+  take five pool connections per Overview load; not worth it unless the
+  timings say so.
+- **The separate routes stay.** Every other page still uses them, and an
+  older web app never asks for this one.
+
+## 44. Accounts prove their email with a code (0084)
+
+Sign-up never checked the address, so an account said nothing about who can
+read its email. The user chose (2026-11-06) that **every client confirms
+their email with a code right after sign-up**: it's what lets the inquiry
+form require an account and send the client a copy of what they asked (the
+next step; #32 stays as-is until then).
+
+- **`users.email_verified_at`**, set by `POST /auth/email/verify` with the
+  latest code from `POST /auth/email/send-code` (`email_verification_service`).
+  `GET /me` says `email_verified`.
+- **Codes work like signing codes (#27):** six digits, only a hash kept, a new
+  one retires the old, ten minutes, five wrong guesses and it's gone, bound to
+  the address it went to. The staging test code (`SIGNING_TEST_CODE`) works
+  here too, so the E2E suite can sign up; never in production.
+- **Google counts as proved.** A Google sign-up, or a Google sign-in whose
+  address is the account's own, sets it; 0084 marks every Google-linked
+  account. Google has already checked the address.
+- **A new email un-proves it.** `PATCH /me` with a different address clears
+  `email_verified_at`, and a code sent to the old address no longer works.
+- **Nothing is blocked here.** Which screens ask for the code is the client
+  apps' call (the client web app asks right after sign-up; the vendor app and
+  iOS don't yet). The inquiry form is the first thing that will require it.
+  Accounts made before this are unverified until they enter a code.
+
+## 45. An inquiry needs a client account, and opens the thread
+
+Reverses the "no account" part of #32 (user, 2026-11-06).
+`POST /vendors/{id}/inquiries` now takes a signed-in client whose email is
+confirmed (#44).
+
+- **Who it's from is the account.** Name, email and (unless typed) phone come
+  from the user. A `name` or `email` in the body is ignored, so an older page
+  still works.
+- **A vendor account can't send one** (403 "Switch to a client account…"),
+  not even to another vendor. An unconfirmed email is 403 "Confirm your email
+  before sending an inquiry", which the client app answers with the code
+  step.
+- **It's a message too.** The inquiry is posted into the client's thread with
+  the vendor (`open_enquiry`: one thread per pair, reused if they've already
+  asked a question, with the same block check and first-question limits), so
+  the vendor can answer in Messages and the client sees it in theirs. The
+  lead carries `user_id` and `conversation_id`.
+- **Asking again isn't a new lead.** If the client's lead on that thread is
+  still open, it takes the new details and goes back to `new` ("needs you");
+  a won, lost or converted one gets a fresh lead.
+- **The confirmation repeats what they sent.** #32 kept it to fixed words
+  because anyone could put any address on the form; the address is now the
+  account's own, proved by a code. Still once per client per vendor per day.
+- **Kept from #32:** the honeypot, 5 a minute per IP, 50 a day per vendor,
+  the vendor email with Reply-To the client.
+
+## 46. An inquiry can say where the event is and which package (0085)
+
+The inquiry form asks two more optional things (user, 2026-11-06): **where
+the event is** (free text, like the contract's location) and **which
+package** — a pick from the vendor's packages, defaulting to "not sure yet".
+
+- **Kept on the lead:** `leads.event_location` and `leads.service_id`. The
+  lead and the pipeline item show them (`event_location`, `service_name`;
+  the pipeline's `location` / `service_name`, which were always empty for
+  leads). The vendor can edit the location like the other lead fields.
+- **The package must be this vendor's and not archived** (422 otherwise). A
+  hidden package is accepted, as #32 counts it; the form only lists the
+  ones the client can see.
+- **In the thread,** the place and package join the details line, and the
+  package rides along as the message's reference card (`meta.service_id`),
+  as "Ask a question" from a package does. Both emails list them; the
+  vendor's says "Not sure yet" when no package was picked.
+- A later inquiry fills in what it gives; it never clears a place or
+  package an earlier one gave.
+
+## 47. An inquiry needs a package and a date
+
+Changes #46 (user, 2026-11-06): the client **must pick one of the vendor's
+packages** — there's no "not sure yet" — and **must give the event date**.
+422 "Pick the package you're asking about" / "Add your event date" otherwise.
+Everything else on the form stays optional.
+
+- **Why:** a lead with a package and a date is one the vendor can answer or
+  turn into a contract straight away.
+- **Which packages:** the form lists the vendor's active ones (what the
+  client can see). The server still accepts any of theirs that isn't
+  archived, as #46 did. A vendor whose packages are all hidden can't get
+  inquiries from the form; the form says so.
+
+## 48. Contracts are sent in the client's chat
+
+The user, 2026-11-06: a contract goes out **in the chat**, and the client
+reviews and signs it **in their app**, not through a link. The e-sign legal
+review has cleared, which lifts the hold on the signed-in client view
+(#13's no-login link stays only for contracts already sent that way).
+
+- **Sending posts a contract card** (`kind: "contract"`, `meta.booking_id`)
+  into the client's thread with the vendor, and emails the client a note
+  pointing there — no signing link. Every path that sends: a new contract,
+  Send on a draft, a resend ("an updated contract"), a lead converted, and a
+  marketplace request accepted with a proposal or the usual terms.
+- **A contract needs a client account to be sent.** The client comes from
+  the thread it's started in (`conversation_id`), the lead's account, or the
+  request. No account, no send (400); a draft can wait. Vendors can no
+  longer email a link or copy one (the web apps drop both).
+- **The contract is the client's booking** (`user_id`), so the client app
+  reads it as theirs and opens the same review → changes → sign steps, with
+  the same email code, consent and signed record (#27).
+- **Older link contracts keep working**: their link still opens, and they
+  can still be resent by email.
+
+## 49. AI summaries in the Messages inbox (0086)
 
 Decided 2026-11-04. A busy thread's inbox row showed only its last message
 ("ok sounds good!"), which hides what happened. The inbox now shows a short

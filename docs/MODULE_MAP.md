@@ -27,7 +27,7 @@ custom URL scheme can't be directly.
 
 | Router | Prefix | Service | Responsibility |
 |---|---|---|---|
-| `vendors.py` | `/vendors` | `vendor_service.py` | Vendor profiles, search, categories/subcategories, Stripe Connect onboarding status |
+| `vendors.py` | `/vendors` | `vendor_service.py`, `vendor_overview.py` | Vendor profiles, search, categories/subcategories, Stripe Connect onboarding status, the vendor's Overview in one request (`/me/overview`) |
 | `calendar.py` | `/vendors` (calendar sub-routes) | `calendar_service.py` | Google Calendar OAuth + vendor availability sync |
 | `bookings.py` | `/bookings` | `booking_service.py` | Booking lifecycle: create, accept/decline, cancel, status transitions |
 | `bundles.py` | `/bundles` | `bundle_service.py` | Grouping multiple vendor bookings under one event; bundle comparison/selection |
@@ -48,13 +48,14 @@ custom URL scheme can't be directly.
 | `admin.py` | `/admin` | — | Admin-only endpoints (disputes, moderation review) |
 | `users.py` | (no prefix) | `user_service.py` | User profile CRUD outside of auth |
 | `contracts.py` (leads routes) | (no prefix) | `pipeline_service.py`, `contract_service.py` | The vendor's leads pipeline (`GET /leads/pipeline`), archiving requests/contracts and leads — see DECISIONS #20 |
-| `inquiries.py` | `/vendors` | `inquiry_service.py` | The public inquiry form, `POST /vendors/{id}/inquiries`: no auth, makes a lead and emails both sides — see DECISIONS #32 |
+| `inquiries.py` | `/vendors` | `inquiry_service.py` | The inquiry form, `POST /vendors/{id}/inquiries`: a signed-in client with a confirmed email; posts into their thread with the vendor, makes a lead and emails both sides — see DECISIONS #32, #45 |
 | (ledger routes in `contracts.py`) | — | `ledger_service.py`, `payment_reminder_service.py` | The vendor's earnings ledger, "Remind client" and undoing a payment's status — see DECISIONS #33 |
 | `contract_documents.py` | (no prefix) | `document_service.py` | Addenda and cancellation agreements attached to a signed booking, signed on the public link — see DECISIONS #21 |
 | (proposal routes in `contracts.py`, `guest_bookings.py`) | — | `proposal_service.py` | The client's change proposals on an unsigned contract, and the vendor's accept / decline / revise; each side's saved draft — see DECISIONS #23, #24 |
 | (negotiation routes in `contracts.py`, `guest_bookings.py`) | — | `field_negotiation_service.py` | Field-by-field contract negotiation in strict turns: per-field accept / counter / keep, settling into revisions, vendor locks, the signing gate — see DECISIONS #26 |
 | `taxonomy.py` | (no prefix) | `app/taxonomy/` | The service taxonomy every picker reads (`GET /taxonomy`), and the mapping from today's category/subcategory — see DECISIONS #35 |
 | `countersign.py` | (no prefix) | `countersign_service.py` | The vendor's countersignature on a contract or document the client signed, declining to sign, and the countersign reminders — see DECISIONS #34 |
+| `email_verification.py` | `/auth/email` | `email_verification_service.py` | An account proves its email with a 6-digit code; Google sign-ins count as proved — see DECISIONS #44 |
 | (PDF routes in `contracts.py`, `guest_bookings.py`, `contract_documents.py`) | — | `pdf_service.py` | Contracts and attached documents as PDF downloads, from the signed snapshot once signed — see DECISIONS #22 |
 
 `auth_service.py` backs the `/auth/*` routes defined directly in `main.py`

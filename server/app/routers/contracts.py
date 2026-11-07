@@ -76,12 +76,16 @@ class ContractTermsRequest(BaseModel):
     discount_cents: Optional[int] = Field(default=None, ge=0)
     payment_schedule: Optional[list[dict]] = Field(default=None, max_length=12)
     terms_clauses: Optional[list[dict]] = Field(default=None, max_length=30)
-    # Also email the client their link (ignored for a draft).
+    # Ignored: contracts go out in the client's chat (DECISIONS #48).
     email_client: bool = False
     # The document editor (0067): its title and blocks; terms sections in
     # the blocks become terms_clauses.
     document_title: Optional[str] = Field(default=None, max_length=200)
     document_layout: Optional[list[dict]] = Field(default=None, max_length=40)
+    # The vendor's thread with the client it's for (Send contract in
+    # Messages). Sending needs a client account: this, a lead's, or a
+    # marketplace request's (#48).
+    conversation_id: Optional[str] = Field(default=None, max_length=36)
 
 
 CLEARABLE_ON_UPDATE = frozenset({
@@ -557,6 +561,7 @@ class LeadUpdateRequest(BaseModel):
     email: Optional[str] = None
     event_date_iso: Optional[str] = None
     event_type: Optional[str] = None
+    event_location: Optional[str] = Field(default=None, max_length=255)
     guest_count: Optional[int] = None
     note: Optional[str] = None
     status: Optional[str] = None

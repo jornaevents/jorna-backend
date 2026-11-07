@@ -17,7 +17,9 @@ vendor can't answer it until it's sent (booking_service.sent_to_vendor).
 Signed contracts are bookings, not leads, and leave this list. Closed ones
 (a declined request, a request the client cancelled, a declined contract, a
 lead marked lost) stay in it archived, with an `outcome` saying how they
-ended (DECISIONS #28). Voided contracts and converted leads leave it.
+ended (DECISIONS #28). Voided contracts and converted leads leave it — a
+lead converts from its own "Create contract", or when any contract is
+written for the same client (contract_service.claim_open_leads).
 Archived items stay in it, flagged, so the page can show them on request.
 """
 
@@ -197,8 +199,10 @@ def _lead_item(lead: Lead) -> dict:
         "event_name": lead.event_type,
         "event_date": lead.event_date_iso,
         "event_date_end": None,
-        "location": None,
-        "service_name": None,
+        "location": lead.event_location,
+        "service_name": lead.service.name if lead.service else None,
+        # So "Create contract" can start from the package they asked about.
+        "service_id": lead.service_id,
         "estimated_value_cents": None,
         "contract_status": None,
         "hold_expires_at": None,

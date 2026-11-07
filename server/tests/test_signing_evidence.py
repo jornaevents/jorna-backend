@@ -12,6 +12,7 @@ import pytest
 from app import config
 from app.db.models import Booking, ContractDocument, ContractEvent, SigningCode
 from app.services import esign_consent
+from tests.chat_helpers import as_link_contract
 from tests.countersign_helpers import countersign_document, countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
@@ -261,6 +262,8 @@ def test_the_staging_test_code_signs(required, monkeypatch):
 def test_a_code_needs_an_email_on_file():
     v = _setup_vendor()
     c = _create_contract(v)
+    # Only a link contract from before #48 can lack one.
+    as_link_contract(c["booking_id"], TestingSessionLocal, email=None)
     r = client.post(f"/guest-bookings/{c['contract_token']}/signing-code")
     assert r.status_code == 400
     assert "email" in r.json()["detail"]

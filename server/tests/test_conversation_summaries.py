@@ -1,4 +1,4 @@
-"""AI summary lines for the Messages inbox (summary_service, DECISIONS #43).
+"""AI summary lines for the Messages inbox (summary_service, DECISIONS #49).
 
 Off by default is the property that matters most, so it's pinned first: with
 SUMMARIES_ENABLED unset nothing is written, nothing is called, and every inbox

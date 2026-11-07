@@ -32,6 +32,13 @@ alone. For which router owns which resource, see `docs/MODULE_MAP.md`.
   `503` when Supabase's JWKS can't be fetched.
 - `POST /auth/forgot-password` always returns `200` regardless of whether the
   email exists — an intentional anti-enumeration measure, not a bug.
+- `POST /auth/email/send-code` and `POST /auth/email/verify {code}` (Bearer
+  JWT): prove the account reads its email with a 6-digit code (DECISIONS
+  #44). Both answer `{email_verified: true, email}` once it's proved;
+  send-code otherwise answers `{email_verified: false, sent_to,
+  expires_in_minutes}` (`sent_to` masked). Wrong / expired / too many tries
+  are `400` with a readable `detail`; a failed send is `502`. `GET /me`
+  carries `email_verified`; changing the email in `PATCH /me` clears it.
 - `POST /auth/logout` invalidates all access tokens; pass `refresh_token` in
   the body to log out only that device, or omit it to invalidate every
   refresh token for the user (all devices).
@@ -106,17 +113,29 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
 - `POST /leads` and `PATCH /leads/{id}` return 422 for an email that doesn't
   look like one, a phone that isn't 7–15 digits, an event date in the past,
   or a `guest_count` outside 1–100,000. Leads carry `event_type`,
-  `guest_count` and `source` (`manual` | `messages` | `inquiry_form`); lead
-  items in the pipeline have them as `event_name`, `guest_count` and
-  `lead_source`.
-- `POST /vendors/{vendor_id}/inquiries` — **no auth**, the public inquiry
-  form (DECISIONS #32). Body: `name`, `email` (required), `phone`,
-  `event_date_iso`, `event_type`, `guest_count`, `note` (≤2000), and
-  `website` (a honeypot; leave it empty). 201 `{received: true,
-  vendor_name}`. 404 for an unknown vendor or one with no package, 422 with
-  a plain message for a bad field, 429 at 5/minute per IP or 50/day per
-  vendor. Makes a `new` lead with `source: inquiry_form`, emails the vendor
-  (Reply-To the sender) and sends the sender a fixed confirmation.
+  `guest_count` and `source` (`manual` | `messages` | `inquiry_form`), plus
+  `event_location`, `service_id` and `service_name` (#46; the vendor can
+  PATCH `event_location`); lead items in the pipeline have them as
+  `event_name`, `guest_count`, `lead_source`, `location`,
+  `service_name` and `service_id`.
+- `POST /vendors/{vendor_id}/inquiries` — Bearer JWT, the inquiry form
+  (DECISIONS #32, #45). The sender is a client account with a confirmed email
+  (#44); name and email come from it (a `name`/`email` in the body is
+  ignored). Body: `service_id` and `event_date_iso` **required** (#47; 422 "Pick the
+  package you're asking about" / "Add your event date"; the package must be
+  the vendor's and not archived), and optional `phone` (else the
+  account's), `event_type`, `event_location` (≤255), `guest_count`, `note` (≤2000), and `website` (a honeypot;
+  leave it empty). 201 `{received: true, vendor_name, conversation_id}` —
+  the client's thread with the vendor, which the inquiry is posted into.
+  401 signed out; 403 "Confirm your email before sending an inquiry", 403
+  "Switch to a client account to send inquiries", or 403 when either side
+  has blocked the other; 404 for an unknown vendor or one with no package;
+  422 with a plain message for a bad field; 429 at 5/minute per IP, 50/day
+  per vendor, or the thread limits (3 vendors unanswered, 10 new a day).
+  Makes a `new` lead with `source: inquiry_form`, `user_id` and
+  `conversation_id` (or brings the client's open lead on that thread back
+  to `new`), emails the vendor (Reply-To the client) and sends the client a
+  copy of what they sent, once per vendor per day.
 - Removing a sent request from a plan (`DELETE /bundles/{id}/bookings/{booking_id}`
   while the plan isn't a draft) keeps the booking: `status: rejected`,
   `rejected_reason: client_cancelled`, `cancelled_at` set. Removing it again
@@ -133,7 +152,7 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
 - `POST /conversations/{id}/unread` counts the thread as unread for the
   caller until they next open it (`GET …/messages` at offset 0).
 - `GET /conversations` rows carry `summary`: `{text, generated_at}` or
-  `null` (DECISIONS #43). Show `text` in place of `last_message` when it's
+  `null` (DECISIONS #49). Show `text` in place of `last_message` when it's
   set; the server only sets it when the caller has 3+ unread in the thread,
   the line covers the thread's newest message, nobody it quotes is blocked by
   the caller, and the caller hasn't turned summaries off. Always `null` while
@@ -154,9 +173,16 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   for the vendor (their app works out its own), for plan chats, and when
   nothing's been requested.
 - Vendor booking payloads now carry `created_at` (null before 0066),
-  `sent_at` and `vendor_archived_at`. Copying a contract link should call
-  `POST /contracts/{id}/send` (no `email_client`) — that's what marks it
-  sent and starts the hold.
+  `sent_at` and `vendor_archived_at`.
+
+## Vendor overview (vendor, DECISIONS #43)
+
+- `GET /vendors/me/overview` — what the vendor web app's Overview opens with, in one request:
+  `{vendor, bookings, leads, conversations, pipeline, timings}`. Each section is exactly what its
+  own route returns (`GET /vendors/me`, `GET /bookings/vendor/{vendor_id}?limit=100`,
+  `GET /leads`, `GET /conversations`, `GET /leads/pipeline`), or `null` if that section failed —
+  the rest still come. `timings` is each section's milliseconds, repeated as a `Server-Timing`
+  header. 404 when the caller has no vendor profile, as `/vendors/me`.
 
 ## Earnings ledger (vendor, DECISIONS #33)
 
@@ -215,14 +241,25 @@ Addenda and cancellations attached to an agreed booking:
   - `POST …/decline` `{reason?}`.
   - Voided or declined documents get a 410; an already-signed document gets a 400 on sign.
 
-## Emailing the client their link
+## Sending a contract: in the client's chat (DECISIONS #48)
 
-`POST /contracts`, `POST /leads/{lead_id}/convert`, `POST /contracts/{id}/send` and
-`POST /bookings/{id}/propose` (accepting a request with a proposal) return the contract plus
-`email_sent`: `true` when the email provider accepted the client's link email, `false` when it
-didn't (no email configured, provider error), and `null` when the vendor didn't ask us to email.
-Accepting a request with the vendor's usual terms (`PUT /bookings/{id}/status` to `approved`) returns `email_sent` the same way. The timeline records `emailed` or `email_failed`. The vendor app says "We emailed the link" only
-on `true`.
+A contract goes out in the client's chat. `POST /contracts`, `POST /leads/{lead_id}/convert`,
+`POST /contracts/{id}/send`, `POST /bookings/{id}/propose` and accepting a request with the
+vendor's usual terms (`PUT /bookings/{id}/status` to `approved`) post a `kind: "contract"` message
+(`meta.booking_id`, `meta.contract_status`) into the client's thread with the vendor, and email
+the client a note pointing to it (`{CLIENT_WEB_APP_URL}/conversation/?id=…`). The email has **no
+signing link**. `email_client` is ignored.
+
+- **Which client:** `conversation_id` on `POST /contracts` / convert (one of the vendor's threads;
+  400 otherwise), else the lead's account (`leads.user_id`), else the marketplace request's.
+  Sending without one is 400 "Send contracts from your client's chat on Jorna — start it from
+  Messages or their lead". A draft can be saved without one.
+- The contract's `user_id` is that client, so it's in their bookings (`GET /bookings/{id}` gives
+  them `contract_token`), and they open it in their app.
+- `email_sent` is `true`/`false` for whether the provider took the email. The timeline records
+  `posted_to_chat` and `emailed` or `email_failed`. A resend says "an updated contract".
+- A contract sent by link before #48 (no `user_id`) can still be resent with `email_client`,
+  the old way.
 
 ## Change proposals (vendor + public)
 

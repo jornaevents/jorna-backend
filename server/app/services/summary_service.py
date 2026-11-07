@@ -1,4 +1,4 @@
-"""AI summary lines for the Messages inbox (docs/DECISIONS.md #43).
+"""AI summary lines for the Messages inbox (docs/DECISIONS.md #49).
 
 A thread with a burst of new messages gets one short line describing it —
 "DJ confirmed Nov 22 and asked the client for the song list" — which the inbox
@@ -54,7 +54,7 @@ from app.services.names import vendor_display_name
 
 logger = logging.getLogger(__name__)
 
-# ── Rules (the Product rules in the proposal; DECISIONS #43) ─────────
+# ── Rules (the Product rules in the proposal; DECISIONS #49) ─────────
 
 # What a summary covers: the latest burst, at most this many messages from
 # at most this far back.

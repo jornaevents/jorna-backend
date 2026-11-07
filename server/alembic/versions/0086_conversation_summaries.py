@@ -1,7 +1,7 @@
-"""AI summary lines for the Messages inbox (DECISIONS #43)
+"""AI summary lines for the Messages inbox (DECISIONS #49)
 
-Revision ID: 0084_conversation_summaries
-Revises: 0083_guest_messages
+Revision ID: 0086_conversation_summaries
+Revises: 0085_lead_location_package
 Create Date: 2026-11-04
 
 conversation_summaries holds one line per thread, written by the summary
@@ -16,8 +16,8 @@ SUMMARIES_ENABLED is set.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0084_conversation_summaries"
-down_revision = "0083_guest_messages"
+revision = "0086_conversation_summaries"
+down_revision = "0085_lead_location_package"
 branch_labels = None
 depends_on = None
 

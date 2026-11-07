@@ -13,8 +13,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.config import WEB_APP_URL
-from app.db.models import Booking, ContractTemplate, Lead, Service, User, Vendor
+from app.config import CLIENT_WEB_APP_URL, WEB_APP_URL
+from app.db.models import Booking, ContractTemplate, Conversation, Lead, Service, User, Vendor
 from app.models.schemas import BookingStatus, PaymentStatus, RejectionReason
 from app.services import contract_document as doc
 from app.services.booking_service import HOLDING_CONTRACT_STATUSES, vendor_has_conflicting_booking
@@ -293,6 +293,64 @@ def _email_client(booking: Booking, vendor: Vendor, db: Session) -> bool:
     return sent
 
 
+NEEDS_CHAT = "Send contracts from your client's chat on Jorna — start it from Messages or their lead"
+
+
+def _client_from_thread(conversation_id: str, vendor: Vendor, db: Session) -> User:
+    """The client on one of this vendor's threads (DECISIONS #48)."""
+    conv = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
+    if not conv or conv.vendor_id != vendor.vendor_id or not conv.client_user_id:
+        raise ContractError(400, "That conversation isn't with one of your clients")
+    client = db.query(User).filter(User.user_id == conv.client_user_id).first()
+    if not client:
+        raise ContractError(400, "That conversation isn't with one of your clients")
+    return client
+
+
+def _deliver(booking: Booking, vendor: Vendor, db: Session, *, resend: bool = False) -> bool:
+    """Send the contract in the chat (DECISIONS #48): a contract card in the
+    client's thread, which opens it in their app, and an email telling them
+    it's there — no signing link in the email. Best effort, like every
+    other email here: the contract is already sent (and holding). Returns
+    whether the email provider took the email. Commits."""
+    from app.services.conversation_service import post_contract_message
+
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first()
+    vendor_name = _vendor_name(vendor_user, vendor) or "Your vendor"
+    client = db.query(User).filter(User.user_id == booking.user_id).first()
+    what = "an updated contract" if resend else "a contract"
+    conversation_id = post_contract_message(
+        booking_id=booking.booking_id, sender_user_id=vendor.user_id,
+        content=f"{vendor_name} sent you {what} to review and sign.",
+        meta={"contract_status": booking.contract_status}, db=db,
+    )
+    to = (client.email if client else None) or booking.guest_email
+    sent = False
+    if to:
+        where = (
+            f"{CLIENT_WEB_APP_URL.rstrip('/')}/conversation/?id={conversation_id}"
+            if conversation_id else f"{CLIENT_WEB_APP_URL.rstrip('/')}/messages/"
+        )
+        held = (
+            f" {vendor_name} is holding the date for you until "
+            f"{booking.hold_expires_at.strftime('%B')} {booking.hold_expires_at.day}."
+            if booking.hold_expires_at else ""
+        )
+        result = send_email(
+            to=to,
+            subject=f"{vendor_name} sent you {what}",
+            html=(
+                f"<p>{vendor_name} sent you {what} for {booking.date_iso}.{held}</p>"
+                f'<p><a href="{where}">Open it in your messages on Jorna</a> to review and sign.</p>'
+            ),
+        )
+        sent = bool(result.get("success"))
+    doc.record(db, booking, "posted_to_chat", "vendor", {"conversation_id": conversation_id})
+    doc.record(db, booking, "emailed" if sent else "email_failed", "vendor", {"to": to})
+    db.commit()
+    return sent
+
+
 def _with_email(contract: dict, sent: bool | None) -> dict:
     """email_sent on a create/send response: true or false when the vendor
     asked us to email the client, null when they didn't."""
@@ -330,9 +388,14 @@ def create_contract(
     email_client: bool = False,
     document_title: str | None = None,
     document_layout: list | None = None,
+    conversation_id: str | None = None,
+    client_user_id: str | None = None,
 ) -> dict:
-    """A vendor authors the whole booking for a client who hasn't shown up
-    yet — no user_id, no login. location defaults to "TBD" when the vendor
+    """A vendor authors the whole booking for one of their clients — the
+    one on `conversation_id` (Send contract in Messages) or `client_user_id`
+    (a lead's account). Sending needs that client: contracts go out in the
+    chat (DECISIONS #48), and `email_client` is ignored. A draft can be kept
+    without one. location defaults to "TBD" when the vendor
     doesn't know the venue yet; the client fills it in themselves via the
     public link (guest_booking_service.fill_details).
 
@@ -373,9 +436,20 @@ def create_contract(
         layout, clauses = None, doc.normalize_clauses(terms_clauses)
 
     _check_dates(date_iso, date_end)
-    guest_email = (guest_email or "").strip() or None
-    if email_client and not draft and not guest_email:
-        raise ContractError(400, "Add your client's email to send it to them")
+    client = (
+        _client_from_thread(conversation_id, vendor, db) if conversation_id
+        else db.query(User).filter(User.user_id == client_user_id).first() if client_user_id
+        else None
+    )
+    if client is not None and client.user_id == vendor.user_id:
+        raise ContractError(400, "You can't send a contract to yourself")
+    if not draft and client is None:
+        raise ContractError(400, NEEDS_CHAT)
+    guest_email = (guest_email or "").strip() or (client.email if client else None)
+    if not guest_name and client is not None:
+        guest_name = f"{client.f_name or ''} {client.l_name or ''}".strip() or None
+    if not guest_phone and client is not None:
+        guest_phone = client.phone
     if not draft:
         _check_schedule(schedule, date_iso)
         _check_clash(
@@ -384,7 +458,7 @@ def create_contract(
         )
 
     booking = Booking(
-        user_id=None,
+        user_id=client.user_id if client else None,
         vendor_id=vendor.vendor_id,
         service_id=primary_service_id,
         date_iso=date_iso,
@@ -436,9 +510,10 @@ def create_contract(
     sent = None
     if not draft:
         doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
-        if email_client:
-            sent = _email_client(booking, vendor, db)
+    claim_open_leads(booking, db)
     db.commit()
+    if not draft:
+        sent = _deliver(booking, vendor, db)
     db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     return _with_email(_contract_dict(booking, service, vendor, db), sent)
@@ -517,6 +592,8 @@ def update_contract(
     else:
         proposal_service.close_open(db, booking, "superseded", "vendor")
         proposal_service.drop_draft(db, booking, "vendor")
+    if booking.signed_at is None and {"guest_email", "guest_phone"} & set(update_data):
+        claim_open_leads(booking, db)
     db.commit()
     db.refresh(booking)
     if proposal is not None:
@@ -701,8 +778,10 @@ def send_contract(
     restarting the hold from now. The date has to still be free: a lapsed
     hold let someone else take it, and that booking wins.
 
-    email_client also emails the client their link; otherwise the vendor
-    shares it themselves. Signed, declined and voided contracts can't be sent.
+    It goes out in the client's chat with an email pointing there
+    (DECISIONS #48), so a first send needs the client's account; a contract
+    sent by link before that can still be resent by link. email_client is
+    for those. Signed, declined and voided contracts can't be sent.
     """
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking or not booking.contract_token:
@@ -714,7 +793,9 @@ def send_contract(
         raise ContractError(400, "Your client declined this contract — start a new one to offer again")
     if booking.status == BookingStatus.REJECTED.value:
         raise ContractError(400, "This contract was voided and can't be sent")
-    if email_client and not booking.guest_email:
+    if booking.user_id is None and booking.sent_at is None:
+        raise ContractError(400, NEEDS_CHAT)
+    if booking.user_id is None and email_client and not booking.guest_email:
         raise ContractError(400, "Add your client's email to send it to them")
 
     _check_dates(booking.date_iso, booking.date_end)
@@ -734,8 +815,13 @@ def send_contract(
     resend = booking.sent_at is not None
     _start_hold(booking, vendor, hold_days)
     doc.record(db, booking, "resent" if resend else "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
-    sent = _email_client(booking, vendor, db) if email_client else None
-    db.commit()
+    if booking.user_id is None:
+        # Sent by link before contracts went into the chat.
+        sent = _email_client(booking, vendor, db) if email_client else None
+        db.commit()
+    else:
+        db.commit()
+        sent = _deliver(booking, vendor, db, resend=resend)
     db.refresh(booking)
     service = db.query(Service).filter(Service.service_id == booking.service_id).first()
     return _with_email(_contract_dict(booking, service, vendor, db), sent)
@@ -922,16 +1008,13 @@ def attach_proposal(
     doc.snapshot_revision(db, booking)
     doc.record(db, booking, "created", "vendor", {"from_request": True})
     doc.record(db, booking, "sent", "vendor", {"hold_expires_at": _iso(booking.hold_expires_at)})
+    claim_open_leads(booking, db)
 
 
 def send_proposal_email(booking: Booking, vendor: Vendor, db: Session) -> bool:
-    """After the acceptance commits: the client's link, to their account's
-    email. Records the event, so it commits its own row."""
-    if not booking.guest_email:
-        return False
-    sent = _email_client(booking, vendor, db)
-    db.commit()
-    return sent
+    """After the acceptance commits: the contract in the client's chat, and
+    an email pointing there (DECISIONS #48). Commits."""
+    return _deliver(booking, vendor, db)
 
 
 def propose_from_request(
@@ -955,10 +1038,9 @@ def propose_from_request(
     attach_proposal(booking, vendor, db, **document)
     db.commit()
     db.refresh(booking)
-    sent = None
-    if email_client:
-        sent = send_proposal_email(booking, vendor, db)
-        db.refresh(booking)
+    # Always in the chat now (DECISIONS #48); email_client is ignored.
+    sent = send_proposal_email(booking, vendor, db)
+    db.refresh(booking)
 
     from app.services.calendar_service import sync_booking_to_calendar
 
@@ -1158,6 +1240,9 @@ def _lead_dict(lead: Lead) -> dict:
         "event_date_iso": lead.event_date_iso,
         "event_type": lead.event_type,
         "guest_count": lead.guest_count,
+        "event_location": lead.event_location,
+        "service_id": lead.service_id,
+        "service_name": lead.service.name if lead.service else None,
         "note": lead.note,
         "status": lead.status,
         "source": lead.source or "manual",
@@ -1201,6 +1286,8 @@ def _check_lead(data: dict) -> dict:
         out["event_date_iso"] = raw
     if "event_type" in data:
         out["event_type"] = (data["event_type"] or "").strip()[:50] or None
+    if "event_location" in data:
+        out["event_location"] = (data["event_location"] or "").strip()[:255] or None
     if "guest_count" in data and data["guest_count"] is not None:
         count = data["guest_count"]
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100_000:
@@ -1255,7 +1342,7 @@ def _own_lead(*, lead_id: str, caller_user_id: str, db: Session) -> Lead:
 def update_lead(*, lead_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:
     lead = _own_lead(lead_id=lead_id, caller_user_id=caller_user_id, db=db)
     update_data = _check_lead(update_data)
-    for field in ("name", "phone", "email", "event_date_iso", "event_type", "guest_count", "note", "status"):
+    for field in ("name", "phone", "email", "event_date_iso", "event_type", "event_location", "guest_count", "note", "status"):
         if field in update_data:
             setattr(lead, field, update_data[field])
     # Archiving hides a lead from the active list; it isn't a status, so it
@@ -1275,6 +1362,43 @@ def delete_lead(*, lead_id: str, caller_user_id: str, db: Session) -> dict:
     return {"message": "Lead deleted"}
 
 
+def _phone_key(phone: str | None) -> str | None:
+    """The last ten digits — enough to see "(732) 555-0101" and "+1 732 555
+    0101" are one number, without guessing at country codes."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return digits[-10:] if len(digits) >= 7 else None
+
+
+def claim_open_leads(booking: Booking, db: Session) -> None:
+    """Link this contract to the vendor's open leads for the same client, as
+    convert_lead does for the one it starts from. A vendor who wrote the
+    contract from New instead of the lead's own "Create contract" left the
+    lead behind as "new" — so Leads showed one client twice, the contract
+    waiting on them and the lead "needs you" (2026-11-05). Same email, same
+    phone, or the same account; a lead already converted, won or lost is
+    left alone. Doesn't commit."""
+    email = (booking.guest_email or "").strip().lower() or None
+    phone = _phone_key(booking.guest_phone)
+    if not (email or phone or booking.user_id):
+        return
+    candidates = db.query(Lead).filter(
+        Lead.vendor_id == booking.vendor_id,
+        Lead.converted_booking_id.is_(None),
+        Lead.status.notin_(("won", "lost")),
+    ).all()
+    now = datetime.now(timezone.utc)
+    for lead in candidates:
+        same = (
+            (email and (lead.email or "").strip().lower() == email)
+            or (phone and _phone_key(lead.phone) == phone)
+            or (booking.user_id and lead.user_id == booking.user_id)
+        )
+        if same:
+            lead.converted_booking_id = booking.booking_id
+            lead.status = "won"
+            lead.updated_at = now
+
+
 def convert_lead(*, lead_id: str, caller_user_id: str, db: Session, **contract_fields) -> dict:
     """Turn a lead into a real contract/booking — create_contract's
     arguments, minus the vendor. The lead row is kept afterward (not
@@ -1289,6 +1413,9 @@ def convert_lead(*, lead_id: str, caller_user_id: str, db: Session, **contract_f
     # creating, so "email it to them" can use the lead's email.
     for field, fallback in (("guest_name", lead.name), ("guest_phone", lead.phone), ("guest_email", lead.email)):
         contract_fields[field] = (contract_fields.get(field) or "").strip() or fallback
+    # The lead's client account, so it can go out in their chat (#48).
+    if lead.user_id and not contract_fields.get("conversation_id"):
+        contract_fields["client_user_id"] = lead.user_id
 
     contract = create_contract(
         vendor_id=lead.vendor_id, caller_user_id=caller_user_id, db=db, **contract_fields,

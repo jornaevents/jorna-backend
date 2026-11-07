@@ -9,6 +9,7 @@ replies. With an account they write as themselves.
 import uuid
 
 from app.db.models import Booking, Conversation, GroupMessage, User
+from tests.chat_helpers import as_link_contract
 from tests.test_api import TestingSessionLocal, client, make_auth_headers
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
     _create_contract,
@@ -19,7 +20,9 @@ from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an aut
 
 
 def _link_contract(v, **overrides):
+    """A contract sent by link before #48: no client account behind it."""
     c = _create_contract(v, guest_name="Priya Mehta", guest_email="priya@example.com", **overrides)
+    as_link_contract(c["booking_id"], TestingSessionLocal)
     return c, c["contract_token"]
 
 

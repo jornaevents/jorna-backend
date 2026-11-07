@@ -96,9 +96,10 @@ def test_a_plain_accept_sends_a_proposal_built_from_the_vendors_usual_terms(worl
     assert req.terms_clauses[0]["body"] == "30 miles included."
     assert req.guest_email == w["client"].email
 
-    # The client is emailed their link.
+    # The client is emailed to look in their chat, where it is (#48).
     assert w["emails"][0]["to"] == w["client"].email
-    assert f"booking-link?t={req.contract_token}" in w["emails"][0]["html"]
+    assert "/client/conversation/?id=" in w["emails"][0]["html"]
+    assert req.contract_token not in w["emails"][0]["html"]
 
     # And the same no-login page opens it.
     page = client.get(f"/guest-bookings/{req.contract_token}").json()
@@ -164,7 +165,8 @@ def test_accepting_with_a_written_proposal(world):
     assert body["amount_cents"] == 100_000
     assert body["terms_clauses"][0]["title"] == "Meals"
     assert body["contract_status"] == "sent"
-    assert w["emails"] == []
+    # email_client is ignored now: it always goes to the chat, with an email (#48).
+    assert len(w["emails"]) == 1 and "/client/conversation/?id=" in w["emails"][0]["html"]
 
     again = client.post(f"/bookings/{req.booking_id}/propose", json={}, headers=w["vendor_h"])
     assert again.status_code == 400

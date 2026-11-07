@@ -10,8 +10,9 @@ import pytest
 
 from app.services import pdf_service
 from app.services.signing_evidence import name_check
+from tests.chat_helpers import as_link_contract
 from tests.countersign_helpers import countersign_token
-from tests.test_api import client
+from tests.test_api import TestingSessionLocal, client
 from tests.test_signing_evidence import (  # noqa: F401 — _clean, _isolate and outbox are fixtures
     _booking,
     _clean,
@@ -168,6 +169,8 @@ def test_giving_the_same_email_or_a_first_one_tells_nobody(outbox):
     _fill(token, guest_email="asha@example.com")
     v = _setup_vendor()
     blank = _create_contract(v, guest_name="Asha Mehta")
+    # A link contract from before #48 with no email yet.
+    as_link_contract(blank["booking_id"], TestingSessionLocal, email=None)
     _fill(blank["contract_token"], guest_email="asha@example.com")
     assert outbox.sent == []
 
