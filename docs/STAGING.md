@@ -37,7 +37,7 @@ real files:
 | Push (Firebase) | `FIREBASE_CREDENTIALS_JSON` | No push notifications |
 | File uploads (Supabase Storage) | `SUPABASE_SERVICE_KEY` | Uploads return a 500 "not configured" error |
 | Google Calendar | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `GOOGLE_CALENDAR_WEBHOOK_URL` | Calendar connect fails |
-| Chatbot (OpenRouter) | `OPENROUTER_API_KEY` | Bundle-builder chat fails; add a separate spend-limited key if needed |
+| Chatbot (OpenRouter) | `OPENROUTER_API_KEY` | Bundle-builder chat fails, and inbox AI summaries (on by default here, off in production — DECISIONS #49) mark every thread failed without calling anything. To try summaries, give staging its own OpenRouter key with a $0 credit limit, so it can only call free models and can't spend production's credits. Staging also defaults `SUMMARY_ALLOW_PROVIDER_LOGGING` on, since the free model's only provider may keep prompts |
 | Stripe | `STRIPE_*`, `ESCROW_ENABLED=false` | Same as production: no escrow |
 
 `SUPABASE_URL` is set, so Google sign-in still verifies tokens. If staging

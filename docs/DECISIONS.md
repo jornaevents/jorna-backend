@@ -1236,3 +1236,64 @@ review has cleared, which lifts the hold on the signed-in client view
 - **Older link contracts keep working**: their link still opens, and they
   can still be resent by email.
 
+## 49. AI summaries in the Messages inbox (0086)
+
+Decided 2026-11-04. A busy thread's inbox row showed only its last message
+("ok sounds good!"), which hides what happened. The inbox now shows a short
+AI line instead — "Priya's Catering confirmed the menu; waiting on the
+client's guest count" — to a reader with 3+ unread. `SUMMARIES_ENABLED` defaults on in Railway's
+staging environment and off everywhere else (production, local, CI), so it's
+tried on staging first; setting it explicitly overrides that anywhere.
+Staging gets its own OpenRouter key with a $0 credit limit, which can only
+call free models, so a staging mistake can't spend production's credits.
+
+- **One line per thread, shared by its members**, not one per reader: a
+  per-reader line costs a model call per member per burst. So it can't say
+  "you" — it names who a thread waits on by role or business name — and a
+  reader who blocked someone it quotes gets the ordinary preview, because
+  blocks are otherwise only filtered client-side.
+- **Written by a sweep, never on request.** The inbox reads stored lines and
+  never waits on a model. The sweep notices new messages by comparing each
+  thread's newest message with what its row covered, so no message writer
+  needs a hook and turning the flag on needs no backfill.
+- **When:** 90s after a thread goes quiet, or 5 minutes after the first
+  uncovered message, at most every 2 minutes and 40 times a day per thread,
+  and `SUMMARY_DAILY_LIMIT` (50) calls a day in all. Skipped below 3
+  meaningful messages; only "ok"s and emoji since the last line extend it
+  for free.
+- **Money and dates can't be invented.** Amounts only from offer messages,
+  with the negotiation's current status; "agreed" only when a negotiation is
+  accepted; dates as written. The prompt asks for this and `check_line`
+  refuses a reply that breaks it (or carries contact details, links, emoji,
+  or runs past 80 characters) — the line appears in inboxes nobody asked
+  for it in, so a wrong number is worse than none.
+- **Model:** free on OpenRouter, to try the feature at no cost
+  (`SUMMARY_MODEL`; any OpenRouter model is an env change). Staging uses
+  OpenRouter's Free Models Router (`openrouter/free`), which sends each call
+  to whichever free model is up: on 2026-11-05 the planned Gemma 4 31B free
+  (`google/gemma-4-31b-it:free`, still the default outside staging) was
+  rate-limited all day in Google AI Studio's shared free pool, its only
+  provider, and free Llama 3.3 70B had no providers left at all. The router
+  passed 11 of 15 eval threads with no errors. The cost is that the model,
+  and so the lines' tone and length, changes from call to call. **Production
+  needs one pinned model instead** (with its own key or a paid tier, and a
+  provider that doesn't keep prompts), re-run through the eval, before the
+  flag goes on there. The rules ride at the start of the user message (Gemma
+  takes no system role) and thinking is turned off
+  (`reasoning: {enabled: false}`); the router sometimes lands on a model that
+  can't turn it off and refuses the request, so it is asked again, up to
+  three times, rather than letting thinking on (a thinking model spends the
+  budget before it answers). `scripts/eval_summaries.py` runs a set of
+  made-up threads through the real model and the reply checks.
+- **Privacy:** covered by the Privacy Policy, which says message text is
+  sent through OpenRouter to an AI provider to write these lines. Neither
+  prompts nor replies are logged. "Show AI summaries"
+  (`users.ai_summaries_enabled`) only hides them for that user. By default
+  only providers that don't keep prompts are used. The free Gemma is only
+  served through Google AI Studio's free tier, which may keep them, so
+  `SUMMARY_ALLOW_PROVIDER_LOGGING` defaults on in staging (test data) and off
+  everywhere else. Turning it on in production means the policy must say the
+  provider may keep the text.
+- **No foreign keys** on `conversation_summaries`: threads are deleted along
+  hand-written cascades, and a key would break any that forgot it. They call
+  `summary_service.forget()`; an orphaned row is never read.

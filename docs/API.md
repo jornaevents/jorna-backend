@@ -151,6 +151,16 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   list them. Defaults to `true`.
 - `POST /conversations/{id}/unread` counts the thread as unread for the
   caller until they next open it (`GET …/messages` at offset 0).
+- `GET /conversations` rows carry `summary`: `{text, generated_at}` or
+  `null` (DECISIONS #49). Show `text` in place of `last_message` when it's
+  set; the server only sets it when the caller has 3+ unread in the thread,
+  the line covers the thread's newest message, nobody it quotes is blocked by
+  the caller, and the caller hasn't turned summaries off. Always `null` while
+  `SUMMARIES_ENABLED` is off (the default everywhere but staging). `GET /conversations/{id}` carries the key too,
+  always `null`.
+- `GET /me` and `PATCH /me` carry `ai_summaries_enabled` (default `true`),
+  the "Show AI summaries" setting. `false` only hides summaries from the
+  caller's own inbox; `null` in a PATCH leaves it unchanged.
 - `POST /conversations/booking/{booking_id}` returns the booking's own
   thread if it has one, else the client's question (`enquiry`) thread with
   that vendor, else a new booking thread (DECISIONS #39) — so the returned
