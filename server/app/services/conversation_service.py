@@ -547,6 +547,37 @@ def post_offer_message(
         logger.warning("Couldn't post offer message for booking %s: %s", booking_id, exc)
 
 
+def post_contract_message(
+    *, booking_id: str, sender_user_id: str, content: str, meta: dict | None, db: Session
+) -> str | None:
+    """A contract sent in the chat (docs/DECISIONS.md #48): a card in the
+    client's thread with the vendor that opens it in the client's app.
+    Returns the thread's id, or None if it couldn't be posted.
+
+    Best effort like post_offer_message — the contract is sent and holding
+    either way, and the client is emailed to look in their messages."""
+    try:
+        booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
+        if not booking:
+            return None
+        thread = open_booking_thread(
+            booking_id=booking_id, caller_user_id=sender_user_id, db=db
+        )
+        send_group_message(
+            conversation_id=thread["conversation_id"],
+            content=content,
+            caller_user_id=sender_user_id,
+            db=db,
+            kind="contract",
+            meta={**(meta or {}), **_booking_ref(booking)},
+            skip_limits=True,
+        )
+        return thread["conversation_id"]
+    except Exception as exc:
+        logger.warning("Couldn't post contract message for booking %s: %s", booking_id, exc)
+        return None
+
+
 def post_system_message(
     *, booking_id: str, sender_user_id: str, content: str, meta: dict | None, db: Session
 ) -> None:

@@ -1200,3 +1200,25 @@ package** — a pick from the vendor's packages, defaulting to "not sure yet".
 - A later inquiry fills in what it gives; it never clears a place or
   package an earlier one gave.
 
+## 48. Contracts are sent in the client's chat
+
+The user, 2026-11-06: a contract goes out **in the chat**, and the client
+reviews and signs it **in their app**, not through a link. The e-sign legal
+review has cleared, which lifts the hold on the signed-in client view
+(#13's no-login link stays only for contracts already sent that way).
+
+- **Sending posts a contract card** (`kind: "contract"`, `meta.booking_id`)
+  into the client's thread with the vendor, and emails the client a note
+  pointing there — no signing link. Every path that sends: a new contract,
+  Send on a draft, a resend ("an updated contract"), a lead converted, and a
+  marketplace request accepted with a proposal or the usual terms.
+- **A contract needs a client account to be sent.** The client comes from
+  the thread it's started in (`conversation_id`), the lead's account, or the
+  request. No account, no send (400); a draft can wait. Vendors can no
+  longer email a link or copy one (the web apps drop both).
+- **The contract is the client's booking** (`user_id`), so the client app
+  reads it as theirs and opens the same review → changes → sign steps, with
+  the same email code, consent and signed record (#27).
+- **Older link contracts keep working**: their link still opens, and they
+  can still be resent by email.
+

@@ -7,6 +7,7 @@ and send/resend.
 from datetime import datetime, timedelta, timezone
 
 from app.db.models import Booking
+from tests.chat_helpers import new_chat
 from tests.countersign_helpers import countersign_token
 from tests.test_api import TestingSessionLocal, client
 from tests.test_guest_booking_flow import (  # noqa: F401 — _isolate is an autouse fixture
@@ -92,7 +93,7 @@ def test_resending_restarts_the_hold_but_only_if_the_date_is_still_free():
 
 def test_a_draft_holds_nothing_and_its_link_doesnt_work_until_sent():
     v = _setup_vendor()
-    draft = _create_contract(v, date_iso="2027-10-05", draft=True)
+    draft = _create_contract(v, date_iso="2027-10-05", draft=True, conversation_id=new_chat(v["headers"]))
     assert draft["contract_status"] == "draft"
     assert draft["hold_expires_at"] is None
     assert client.get(f"/guest-bookings/{draft['contract_token']}").status_code == 404
