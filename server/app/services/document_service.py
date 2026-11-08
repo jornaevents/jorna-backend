@@ -335,7 +335,13 @@ def _deliver(d: ContractDocument, booking: Booking, vendor: Vendor, db: Session,
             subject=f"{name} sent you {('an ' if d.kind == 'addendum' else 'a ')}{KIND_LABEL[d.kind]} to sign",
             html=(
                 f"<p>{name} sent you “{d.title}” for your booking on {booking.date_iso}.</p>"
-                f'<p><a href="{_link(d)}">Review and sign</a> — no account needed.</p>'
+                + (
+                    # Addenda are signed on their own link, account or not;
+                    # an account holder just isn't told they don't need one.
+                    f'<p><a href="{_link(d)}">Review and sign</a>.</p>'
+                    if booking.user_id
+                    else f'<p><a href="{_link(d)}">Review and sign</a> — no account needed.</p>'
+                )
             ),
         )
         doc.record(db, booking, "document_emailed", "vendor", {"document_id": d.document_id, "to": to})
