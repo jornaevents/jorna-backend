@@ -47,10 +47,10 @@ from app.services import contract_document as doc
 from app.services.contract_service import (
     ContractError,
     _check_dates,
-    _link,
     _own_vendor,
     _vendor_name,
     apply_update,
+    contract_link_html,
     resend,
 )
 from app.services.email_service import send_email
@@ -761,7 +761,7 @@ def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: S
         html=(
             f"<p>{who} answered {what} on your contract. It's your turn: accept, counter or keep each one, "
             f"or sign once nothing is waiting.</p>"
-            f'<p><a href="{_link(booking)}">Open the contract</a></p>'
+            + contract_link_html(booking, db, "Open the contract")
         ),
     )
     return bool(result.get("success")) if isinstance(result, dict) else False

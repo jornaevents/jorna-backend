@@ -32,10 +32,10 @@ from app.services import contract_document as doc
 from app.services.contract_service import (
     ContractError,
     _check_dates,
-    _link,
     _own_vendor,
     _vendor_name,
     apply_update,
+    contract_link_html,
     get_contract,
     resend,
 )
@@ -410,7 +410,7 @@ def email_reply(booking: Booking, vendor: Vendor, p: ContractProposal, db: Sessi
     if not booking.guest_email:
         return
     who = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first()) or "Your vendor"
-    link = f'<p><a href="{_link(booking)}">Open the contract</a> — no account needed.</p>'
+    link = contract_link_html(booking, db, "Open the contract")
     note = f"<p>They said: “{p.response_note}”</p>" if p.response_note else ""
     if p.status == "accepted":
         subject = f"{who} accepted your changes"

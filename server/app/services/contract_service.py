@@ -7,6 +7,7 @@ lives in guest_booking_service.py instead — this file never trusts a
 contract_token as identity, only an authenticated vendor's own user_id.
 """
 import json
+import logging
 import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
@@ -21,6 +22,8 @@ from app.services.booking_service import HOLDING_CONTRACT_STATUSES, vendor_has_c
 from app.services.email_service import send_email
 from app.utils.timeutil import utc_iso
 from app.services.names import vendor_display_name, vendor_user_display_name
+
+logger = logging.getLogger(__name__)
 
 # How long a sent contract holds its date when the vendor hasn't set their
 # own Vendor.contract_hold_days. docs/DECISIONS.md #15.
@@ -266,6 +269,33 @@ def _link(booking: Booking) -> str:
     """The client's link — the same one the vendor web app shows
     (lib/contractLink.guestBookingLink there)."""
     return f"{WEB_APP_URL}/booking-link?t={booking.contract_token}"
+
+
+def client_chat_url(booking: Booking, db: Session) -> str | None:
+    """Where an account holder finds their contract (DECISIONS #48): their
+    thread with the vendor, in the client app. None for a client who only
+    has the link — a contract sent before contracts went into the chat."""
+    if booking.user_id is None:
+        return None
+    from app.services.conversation_service import _vendor_user, booking_thread
+
+    base = CLIENT_WEB_APP_URL.rstrip("/")
+    try:
+        conv = booking_thread(booking, _vendor_user(booking.vendor_id, db), db)
+        return f"{base}/conversation/?id={conv.conversation_id}"
+    except Exception as exc:
+        logger.warning("No thread for booking %s's email: %s", booking.booking_id, exc)
+        return f"{base}/messages/"
+
+
+def contract_link_html(booking: Booking, db: Session, label: str) -> str:
+    """The email's way back to the contract. An account holder opens it in
+    their messages — signing needs the account, so "no account needed" was
+    wrong for them. A link-only client keeps the link."""
+    chat = client_chat_url(booking, db)
+    if chat:
+        return f'<p><a href="{chat}">Open it in your messages on Jorna</a>.</p>'
+    return f'<p><a href="{_link(booking)}">{label}</a> — no account needed.</p>'
 
 
 def _email_client(booking: Booking, vendor: Vendor, db: Session) -> bool:
