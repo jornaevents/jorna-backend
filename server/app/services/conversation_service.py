@@ -143,6 +143,7 @@ def _conversation_dict(
     caller_user_id: str | None = None,
     unread_count: int = 0,
     db: Session | None = None,
+    summary: dict | None = None,
     label: dict | None = None,
 ) -> dict:
     return {
@@ -172,6 +173,10 @@ def _conversation_dict(
             "kind": last_message.kind,
             "created_at": last_message.created_at.isoformat(),
         } if last_message else None,
+        # An AI line describing the latest burst, shown in place of
+        # last_message to a reader with several unread (summary_service).
+        # Always null while SUMMARIES_ENABLED is off.
+        "summary": summary,
         "created_at": conv.created_at.isoformat(),
     }
 
@@ -722,7 +727,7 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
     unread = _unread_by_conversation([c.conversation_id for c in conversations], caller_user_id, db)
     labels = client_labels(conversations, caller_user_id, db)
 
-    result = []
+    loaded = []
     for conv in conversations:
         members_rows = db.query(ConversationMember).filter(
             ConversationMember.conversation_id == conv.conversation_id
@@ -735,11 +740,22 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
             .order_by(GroupMessage.created_at.desc())
             .first()
         )
+        loaded.append((conv, members, last_msg))
+
+    from app.services.summary_service import inbox_summaries
+    summaries = inbox_summaries(
+        rows=[(conv.conversation_id, last_msg) for conv, _, last_msg in loaded],
+        unread=unread, caller_user_id=caller_user_id, db=db,
+    )
+
+    result = []
+    for conv, members, last_msg in loaded:
         result.append(_conversation_dict(
             conv, members, last_msg,
             caller_user_id=caller_user_id,
             unread_count=unread.get(conv.conversation_id, 0),
             db=db,
+            summary=summaries.get(conv.conversation_id),
             label=labels.get(conv.conversation_id),
         ))
 

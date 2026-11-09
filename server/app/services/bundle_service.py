@@ -570,6 +570,8 @@ def _delete_booking_cascade(booking: Booking, db: Session) -> None:
         db.query(ConversationMember).filter(
             ConversationMember.conversation_id == conv.conversation_id
         ).delete(synchronize_session=False)
+        from app.services.summary_service import forget
+        forget([conv.conversation_id], db)
         db.delete(conv)
     # Flush so the dependent rows are gone in the DB before the booking row is
     # removed — without mapped relationships, SQLAlchemy won't order this for us.
@@ -1077,6 +1079,8 @@ def _delete_bundle_cascade(bundle: Bundle, db: Session) -> None:
             db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete()
         db.query(ConversationMember).filter(
             ConversationMember.conversation_id == conv.conversation_id).delete()
+        from app.services.summary_service import forget
+        forget([conv.conversation_id], db)
         db.delete(conv)
 
     # Flush so the booking/conversation deletes are applied before the
@@ -1318,6 +1322,8 @@ def cleanup_legacy_bundle_event_data(*, db: Session, dry_run: bool = True, stale
                 db.query(GroupMessage).filter(GroupMessage.conversation_id == conv.conversation_id).delete(synchronize_session=False)
             db.query(ConversationMember).filter(
                 ConversationMember.conversation_id == conv.conversation_id).delete(synchronize_session=False)
+            from app.services.summary_service import forget
+            forget([conv.conversation_id], db)
             db.delete(conv)
 
     if dry_run:

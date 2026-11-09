@@ -85,6 +85,46 @@ INITIAL_ADMIN_EMAIL: str = os.getenv("INITIAL_ADMIN_EMAIL", "")
 # endpoints/boot checks are skipped. See docs/DECISIONS.md #12.
 ESCROW_ENABLED: bool = os.getenv("ESCROW_ENABLED", "true").strip().lower() != "false"
 
+# AI summaries in the Messages inbox (docs/DECISIONS.md #49). While off,
+# nothing is written, nothing is sent to a model, and the inbox's `summary`
+# field is always null. On by default only in Railway's staging environment,
+# so it gets tried there first; off in production (until the Privacy Policy
+# covers it), locally and in CI. Setting SUMMARIES_ENABLED to true or false
+# overrides the default anywhere.
+def _summaries_default() -> str:
+    env = os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip().lower()
+    return "true" if env == "staging" else "false"
+
+
+SUMMARIES_ENABLED: bool = (
+    os.getenv("SUMMARIES_ENABLED", "").strip().lower() or _summaries_default()
+) == "true"
+# The OpenRouter model id for those summaries; any OpenRouter chat model
+# works. In staging, OpenRouter's Free Models Router ("openrouter/free"): each
+# call goes to whichever free model is up, so a busy free model (Gemma 4's
+# shared pool was rate-limited all of 2026-11-05) doesn't stop the feature,
+# but the model — and the lines' quality — changes from call to call.
+# Elsewhere, Gemma 4 31B free, the candidate to pin for production
+# (DECISIONS #49). Setting SUMMARY_MODEL overrides either.
+def _summary_model_default() -> str:
+    env = os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip().lower()
+    return "openrouter/free" if env == "staging" else "google/gemma-4-31b-it:free"
+
+
+SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", "").strip() or _summary_model_default()
+# Whether OpenRouter may route summaries to providers that keep prompts. Off:
+# only providers that don't store data are used. The free Gemma is served only
+# through Google AI Studio's free tier, which may, so this defaults on in
+# staging (test data) to let it run there, and off everywhere else. On in
+# production means the Privacy Policy has to say the provider may keep the
+# text (DECISIONS #49). Setting it explicitly overrides the default anywhere.
+SUMMARY_ALLOW_PROVIDER_LOGGING: bool = (
+    os.getenv("SUMMARY_ALLOW_PROVIDER_LOGGING", "").strip().lower() or _summaries_default()
+) == "true"
+# Model calls per UTC day across every thread. The cost brake: once it's used,
+# summaries pause until midnight and the inbox shows ordinary previews.
+SUMMARY_DAILY_LIMIT: int = int(os.getenv("SUMMARY_DAILY_LIMIT", "50"))
+
 # New contracts negotiate field by field (docs/DECISIONS.md #26) instead of
 # by whole proposal (#23). Off until the web workspace for it ships; turning
 # it on only affects contracts created afterwards.

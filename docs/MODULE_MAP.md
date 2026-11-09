@@ -37,7 +37,7 @@ custom URL scheme can't be directly.
 | `negotiations.py` | `/negotiations` | `negotiation_service.py` | Price/terms back-and-forth between client and vendor before a booking is confirmed |
 | `change_requests.py` | (no prefix) | `change_request_service.py` | Post-confirmation change requests (reschedule, scope change) |
 | `payments.py` | `/payments` | `stripe_service.py` | Stripe Checkout, Connect payouts, escrow hold/release/auto-release |
-| `conversations.py` | `/conversations` | `conversation_service.py`, `message_labels.py`, `message_service.py`, `ws_manager.py`, `pipeline_service.py` | Messaging threads (booking-subject and general), WebSocket delivery, mark-as-unread, "Add to leads", the client's label on each chat |
+| `conversations.py` | `/conversations` | `conversation_service.py`, `message_labels.py`, `message_service.py`, `ws_manager.py`, `pipeline_service.py`, `summary_service.py` | Messaging threads (booking-subject and general), WebSocket delivery, mark-as-unread, "Add to leads", the client's label on each chat, inbox AI summaries (written by a sweep, see ARCHITECTURE) |
 | `messages.py` | `/messages` | `message_service.py` | Message CRUD/pagination within a conversation |
 | `notifications.py` | `/notifications` | `notification_service.py` | Push (FCM) + in-app notification records |
 | `reviews.py` | `/reviews` | `review_service.py` | Post-event reviews/ratings |
