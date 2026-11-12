@@ -13,6 +13,18 @@ updates:
       server-minor-patch:
         update-types: ["minor", "patch"]
 
+  # server/Dockerfile's base image, pinned by digest
+  - package-ecosystem: "docker"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    # Stay on 3.13 (what CI tests). Moving to 3.14 is a deliberate change to
+    # this file and ci.yml together.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
