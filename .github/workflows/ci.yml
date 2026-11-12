@@ -122,12 +122,37 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: .github/scripts/deploy-railway.sh
 
+  # jorna-website's staging checks (a contract sent, negotiated and signed on
+  # the staging vendor site) against the backend just deployed to staging.
+  # Production waits for them: a backend change that broke the website
+  # (#176/#178) once reached production because only website merges ran them.
+  # A separate job so a failure can be re-run without redeploying staging.
+  # See .github/scripts/staging-e2e.sh (token, and what to do on a failure).
+  staging-checks:
+    name: Website staging checks
+    needs: [deploy-staging]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Holds WEBSITE_ACTIONS_TOKEN.
+    environment: staging
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run them and wait
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_ACTIONS_TOKEN }}
+          # Unique per attempt, so a re-run finds its own run.
+          TAG: backend ${{ github.sha }} run ${{ github.run_id }}.${{ github.run_attempt }}
+        run: .github/scripts/staging-e2e.sh
+
   # The `production` environment requires a reviewer's approval, so this job
-  # waits in the Actions tab after staging succeeds — check staging, then
-  # approve. Rejecting (or never approving) leaves production where it was.
+  # waits in the Actions tab after the staging checks pass — check staging,
+  # then approve. Rejecting (or never approving) leaves production where it was.
   deploy-production:
     name: Deploy to production
-    needs: [deploy-staging]
+    needs: [deploy-staging, staging-checks]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
