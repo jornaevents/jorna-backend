@@ -21,13 +21,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.14"
+          python-version: "3.13"  # what server/Dockerfile ships — keep in step
           cache: "pip"
-          cache-dependency-path: server/requirements.txt
+          cache-dependency-path: |
+            server/requirements.txt
+            server/requirements-dev.txt
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
           pip install ruff
 
       # Day-one gate is intentionally narrow: real errors only (syntax errors,
@@ -72,7 +74,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.14"
+          python-version: "3.13"  # what server/Dockerfile ships — keep in step
           cache: "pip"
           cache-dependency-path: server/requirements.txt
 

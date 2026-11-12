@@ -11,8 +11,6 @@ google-auth-httplib2==0.4.4
 google-auth-oauthlib==1.5.0
 httpx==0.28.1
 psycopg2-binary==2.9.13
-pytest==9.1.1
-pytest-mock==3.16.0
 python-dotenv==1.2.4
 python-multipart==0.0.32
 pyjwt==2.15.1
@@ -27,5 +25,7 @@ stripe==15.6.1
 tzdata==2026.5
 uvicorn==0.54.0
 websockets==17.1
-openai
-pytest-asyncio==1.4.0
+# Pinned like everything else: staging and production are separate Railway
+# builds, so an unpinned package can differ between what staging tested and
+# what production runs.
+openai==3.46.0

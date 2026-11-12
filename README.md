@@ -72,7 +72,7 @@ belongs, and [`docs/API.md`](docs/API.md) for the endpoints (or
 
 ```bash
 cd server
-python3 -m venv venv && venv/bin/pip install -r requirements.txt
+python3 -m venv venv && venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env        # then fill in SECRET_KEY at least
 venv/bin/python -m uvicorn main:app --reload
 ```

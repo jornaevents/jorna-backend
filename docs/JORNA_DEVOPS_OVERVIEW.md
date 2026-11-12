@@ -26,7 +26,7 @@ usually needs coordinated PRs across the backend plus one or both clients.
 ### Desiconnect (backend)
 ```bash
 cd server
-venv/bin/pip install -r requirements.txt
+venv/bin/pip install -r requirements-dev.txt
 venv/bin/python -m uvicorn main:app --reload   # local dev, needs .env (see app/config.py)
 venv/bin/python -m pytest -q                    # tests — local sqlite, no DB needed
 venv/bin/ruff check .                           # lint

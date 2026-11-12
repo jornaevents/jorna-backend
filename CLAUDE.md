@@ -163,7 +163,7 @@ line — never assume the filename is the ID.
 
 ```bash
 cd server
-venv/bin/pip install -r requirements.txt      # install/refresh deps
+venv/bin/pip install -r requirements-dev.txt  # install/refresh deps (app + test tools)
 venv/bin/python -m pytest -q                  # run the full test suite
 venv/bin/pip install ruff && venv/bin/ruff check .   # lint (see docs/TESTING.md for scope)
 venv/bin/python -m uvicorn main:app --reload  # run locally (needs a .env — see app/config.py)
