@@ -1,6 +1,6 @@
 # Everything the app runs on, plus what only the tests need. The production
 # image installs requirements.txt alone (server/Dockerfile).
 -r requirements.txt
-pytest==9.1.1
-pytest-asyncio==1.4.0
-pytest-mock==3.16.0
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+pytest-mock==3.17.0
