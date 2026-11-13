@@ -252,3 +252,21 @@ def test_one_package_at_a_time_is_most_popular():
     # And it can be taken off.
     client.patch(f"/services/{c['service_id']}", json={"is_popular": False}, headers=v["headers"])
     assert not any(p["is_popular"] for p in _own_list(v))
+
+
+def test_package_vibe_is_one_of_six_and_can_be_cleared():
+    v = _setup_vendor()
+    a = _package(v)
+    assert a["vibe"] is None
+
+    b = _package(v, name="Mehndi set", vibe="Playful")
+    assert b["vibe"] == "playful"
+
+    r = client.patch(f"/services/{a['service_id']}", json={"vibe": "fusion"}, headers=v["headers"])
+    assert r.status_code == 200 and r.json()["vibe"] == "fusion"
+
+    r = client.patch(f"/services/{a['service_id']}", json={"vibe": "rustic"}, headers=v["headers"])
+    assert r.status_code == 422
+
+    r = client.patch(f"/services/{a['service_id']}", json={"vibe": None}, headers=v["headers"])
+    assert r.status_code == 200 and r.json()["vibe"] is None

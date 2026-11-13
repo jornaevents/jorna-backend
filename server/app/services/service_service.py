@@ -55,6 +55,7 @@ def _service_dict(service: Service) -> dict:
         # say which service; the vendor is asked to pick.
         "service_key": service.service_key,
         "attributes": service.attributes or {},
+        "vibe": service.vibe,
     }
 
 
@@ -129,6 +130,7 @@ def create_service(
     is_popular: bool = False,
     service_key: Optional[str] = None,
     attributes: Optional[dict] = None,
+    vibe: Optional[str] = None,
     db: Session,
 ) -> dict:
     """Create a service for the vendor linked to *user_id*. Raises 403 if not a vendor.
@@ -181,6 +183,7 @@ def create_service(
         is_popular=is_popular,
         service_key=service_key,
         attributes=attributes,
+        vibe=vibe,
     )
     _sells(vendor, service_key)
     db.add(service)
