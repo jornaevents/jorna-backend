@@ -523,6 +523,9 @@ Since 0080:
 - **Packages** (`POST /services`, `PATCH /services/{id}`) take `service_key` and `attributes`
   (`{attribute key: option key | [option keys] | number | bool}`, checked against that service).
   Responses add both. A null `service_key` is a package saved under a vague category.
+- **Package vibe** (`POST /services`, `PATCH /services/{id}`): `vibe` is one of `elegant`,
+  `traditional`, `modern`, `fusion`, `playful`, `minimal` (case-insensitive in; stored lowercase),
+  or null for none picked. Anything else is a 422. Responses always include it.
 - **Search**: `GET /vendors/search?service=dj,dhol` filters packages by service. Group keys stand for
   all of their services. `category`/`subcategory` still work.
 

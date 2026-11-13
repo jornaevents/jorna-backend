@@ -83,6 +83,10 @@ class AddOn(BaseModel):
     price_unit: Literal["event", "person", "hour"] = "event"
 
 
+# A package's vibe (0086) — one of these, or null for "not picked".
+PACKAGE_VIBES = ("elegant", "traditional", "modern", "fusion", "playful", "minimal")
+
+
 class PackageDetails(BaseModel):
     """Phase 1 package fields, shared by create and update. Everything is
     optional so older clients that never send them keep working."""
@@ -102,6 +106,15 @@ class PackageDetails(BaseModel):
     # subcategory are derived from it; without, from them.
     service_key: Optional[str] = Field(default=None, max_length=50)
     attributes: Optional[dict] = None
+    vibe: Optional[Literal[PACKAGE_VIBES]] = None
+
+    @field_validator("vibe", mode="before")
+    @classmethod
+    def _clean_vibe(cls, v):
+        # "Playful" from a label reads the same as "playful"; blank is no vibe.
+        if isinstance(v, str):
+            return v.strip().lower() or None
+        return v
 
     @field_validator("inclusions")
     @classmethod
@@ -238,6 +251,7 @@ def create_service_route(
             is_popular=bool(body.is_popular),
             service_key=body.service_key,
             attributes=body.attributes,
+            vibe=body.vibe,
             db=db,
         )
     except ServiceError as e:

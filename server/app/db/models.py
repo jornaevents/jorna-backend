@@ -316,6 +316,9 @@ class Service(Base):
     # "Most popular" badge on the public listing (0071). At most one per
     # vendor; service_service clears the others when one is marked.
     is_popular = Column(Boolean, nullable=False, default=False, server_default=false())
+    # The package's feel (0086): one of PACKAGE_VIBES in routers/services.py,
+    # or null until the vendor picks one.
+    vibe = Column(String(20), nullable=True)
 
 
 class Booking(Base):
