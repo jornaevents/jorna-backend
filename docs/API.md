@@ -248,6 +248,17 @@ signing link**. `email_client` is ignored.
   them `contract_token`), and they open it in their app.
 - `email_sent` is `true`/`false` for whether the provider took the email. The timeline records
   `posted_to_chat` and `emailed` or `email_failed`. A resend says "an updated contract".
+
+**Unfinished drafts (DECISIONS #49).** With `draft: true` (and `PATCH /contracts/{id}` on a draft):
+- Blank `date_iso` / `time_start` / `time_end` are kept as `"TBD"`; typed dates must still be
+  YYYY-MM-DD (a past date is allowed). Blank `date_end` is null.
+- Line items may have a blank name (kept `""`), no price (0) or a bad quantity (1). At least one of
+  the vendor's packages is still required (400 otherwise).
+- A payment schedule may be partial or not add up; an empty one is stored as none.
+- Editing a draft keeps its `revision` and adds no `edited` timeline event.
+- `POST /contracts/{id}/send` on a never-sent contract checks all of it first (400): "Pick the event
+  date before sending", "Add a start and end time before sending", the strict line-item and
+  schedule messages, and "The total has to be more than $0 before sending".
 - A contract sent by link before #48 (no `user_id`) can still be resent with `email_client`,
   the old way.
 

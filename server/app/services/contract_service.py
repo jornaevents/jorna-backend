@@ -208,6 +208,46 @@ def _check_dates(date_iso: str, date_end: str | None) -> None:
         raise ContractError(400, "The end date is before the start date")
 
 
+TBD = "TBD"
+
+
+def _draft_when(fields: dict) -> dict:
+    """A draft's date and times as the editor has them so far (2026-11-14): a
+    blank one is kept as "TBD", the backend's word for not decided yet, so
+    the editor can save before the vendor knows them. What is typed has to
+    be a real date — a draft can still be in the past; sending checks that."""
+    out = dict(fields)
+    for f in ("date_iso", "time_start", "time_end"):
+        if f in out:
+            out[f] = (out[f] or "").strip() or TBD
+    if "date_end" in out:
+        out["date_end"] = (out["date_end"] or "").strip() or None
+    for f in ("date_iso", "date_end"):
+        v = out.get(f)
+        if v and v != TBD:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                raise ContractError(400, "Dates must be YYYY-MM-DD")
+    return out
+
+
+def _check_ready(booking: Booking, vendor: Vendor, db: Session) -> None:
+    """What a draft could leave unfinished, checked before it goes to a
+    client: the date and hours, every line named and priced, a total above
+    zero, and payments that add up to it."""
+    if (booking.date_iso or TBD) == TBD:
+        raise ContractError(400, "Pick the event date before sending")
+    if (booking.time_start or TBD) == TBD or (booking.time_end or TBD) == TBD:
+        raise ContractError(400, "Add a start and end time before sending")
+    if booking.line_items:
+        doc.normalize_line_items(booking.line_items, vendor_id=vendor.vendor_id, db=db)
+    if not booking.amount_cents or booking.amount_cents <= 0:
+        raise ContractError(400, "The total has to be more than $0 before sending")
+    if booking.payment_schedule:
+        doc.normalize_schedule(booking.payment_schedule, total_cents=booking.amount_cents)
+
+
 HELD_CLASH = "has this date held"
 
 
@@ -445,9 +485,12 @@ def create_contract(
     (send_contract). allow_held_clash sends over another offer's hold.
     """
     vendor = _own_vendor(vendor_id=vendor_id, caller_user_id=caller_user_id, db=db)
+    if draft:
+        when = _draft_when({"date_iso": date_iso, "date_end": date_end, "time_start": time_start, "time_end": time_end})
+        date_iso, date_end, time_start, time_end = when["date_iso"], when["date_end"], when["time_start"], when["time_end"]
 
     if line_items:
-        items, primary_service_id = doc.normalize_line_items(line_items, vendor_id=vendor.vendor_id, db=db)
+        items, primary_service_id = doc.normalize_line_items(line_items, vendor_id=vendor.vendor_id, db=db, draft=draft)
         _, total = doc.totals(items, discount_cents)
     else:
         service = _legacy_service(vendor, service_id, db)
@@ -455,7 +498,8 @@ def create_contract(
             raise ContractError(400, "amount_cents must be greater than zero")
         items, primary_service_id, total, discount_cents = doc.single_item(service, amount_cents), service.service_id, amount_cents, None
 
-    schedule = doc.normalize_schedule(payment_schedule, total_cents=total) if payment_schedule else None
+    schedule = doc.normalize_schedule(payment_schedule, total_cents=total, draft=draft) if payment_schedule else None
+    schedule = schedule or None
     if schedule is None:
         _check_deposit(deposit_percent)
     # The document editor sends its blocks; its terms sections are the
@@ -465,7 +509,8 @@ def create_contract(
     else:
         layout, clauses = None, doc.normalize_clauses(terms_clauses)
 
-    _check_dates(date_iso, date_end)
+    if not draft:
+        _check_dates(date_iso, date_end)
     client = (
         _client_from_thread(conversation_id, vendor, db) if conversation_id
         else db.query(User).filter(User.user_id == client_user_id).first() if client_user_id
@@ -656,10 +701,12 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
     # otherwise editing was a way around the double-booking guard.
     schedule_fields = ("date_iso", "date_end", "time_start", "time_end")
     draft = booking.contract_status == "draft"
+    if draft:
+        update_data.update(_draft_when({f: update_data[f] for f in schedule_fields if f in update_data}))
     if any(f in update_data for f in schedule_fields):
         new = {f: update_data.get(f, getattr(booking, f)) for f in schedule_fields}
-        _check_dates(new["date_iso"], new["date_end"])
         if not draft:
+            _check_dates(new["date_iso"], new["date_end"])
             _check_clash(
                 vendor_id=booking.vendor_id, date_iso=new["date_iso"], date_end=new["date_end"],
                 time_start=new["time_start"], time_end=new["time_end"], db=db,
@@ -670,7 +717,7 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
     total_before = booking.amount_cents
     if "line_items" in update_data or "discount_cents" in update_data:
         if "line_items" in update_data:
-            items, primary = doc.normalize_line_items(update_data["line_items"], vendor_id=vendor.vendor_id, db=db)
+            items, primary = doc.normalize_line_items(update_data["line_items"], vendor_id=vendor.vendor_id, db=db, draft=draft)
         else:
             items, primary = booking.line_items, booking.service_id
         discount = update_data.get("discount_cents", booking.discount_cents)
@@ -688,9 +735,13 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
             booking.line_items = [{**items[0], "unit_price_cents": booking.amount_cents, "total_cents": booking.amount_cents}]
 
     if "payment_schedule" in update_data:
-        booking.payment_schedule = doc.normalize_schedule(update_data["payment_schedule"], total_cents=booking.amount_cents)
+        booking.payment_schedule = (
+            doc.normalize_schedule(update_data["payment_schedule"] or [], total_cents=booking.amount_cents, draft=True) or None
+            if draft
+            else doc.normalize_schedule(update_data["payment_schedule"], total_cents=booking.amount_cents)
+        )
         doc.sync_legacy_payment_fields(booking)
-    elif booking.payment_schedule and booking.amount_cents != total_before:
+    elif booking.payment_schedule and booking.amount_cents != total_before and not draft:
         raise ContractError(400, "The total changed — update the payment schedule to match it")
     if "deposit_percent" in update_data and booking.payment_schedule:
         raise ContractError(400, "This contract uses a payment schedule — edit that instead of the deposit")
@@ -733,6 +784,12 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
             else None
         )
 
+    if draft:
+        # The editor saves a draft every few seconds (2026-11-14). Nobody has
+        # read it, so it stays one version, kept up to date — not a new
+        # revision and a timeline line per keystroke pause.
+        doc.snapshot_revision(db, booking, replace=True)
+        return
     booking.revision = (booking.revision or 1) + 1
     doc.snapshot_revision(db, booking)
     doc.record(db, booking, "edited", "vendor", {"revision": booking.revision, "fields": sorted(update_data)})
@@ -828,6 +885,8 @@ def send_contract(
     if booking.user_id is None and email_client and not booking.guest_email:
         raise ContractError(400, "Add your client's email to send it to them")
 
+    if booking.sent_at is None:
+        _check_ready(booking, vendor, db)
     _check_dates(booking.date_iso, booking.date_end)
     # A draft written weeks ago can have a payment whose day has since gone.
     # A resend doesn't re-check: the client has already seen that schedule,
