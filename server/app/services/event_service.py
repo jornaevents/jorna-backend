@@ -19,6 +19,7 @@ def _event_dict(event: Event) -> dict:
         "user_id": event.user_id,
         "name": event.name,
         "date_iso": event.date_iso,
+        "date_end": event.date_end,
         "location": event.location,
         "event_type": event.event_type,
         "description": event.description,
@@ -32,11 +33,33 @@ def _event_dict(event: Event) -> dict:
     }
 
 
+def _end_date(date_iso: Optional[str], date_end: Optional[str]) -> Optional[str]:
+    """The stored end date: None for a one-day event (blank, or the same day
+    as the start), else a real date on or after the start."""
+    from datetime import date
+
+    end = (date_end or "").strip()
+    if not end or end == date_iso:
+        return None
+    try:
+        last = date.fromisoformat(end)
+    except ValueError:
+        raise EventError(400, "The end date must be YYYY-MM-DD")
+    try:
+        first = date.fromisoformat(date_iso or "")
+    except ValueError:
+        return end
+    if last < first:
+        raise EventError(400, "The end date is before the start date")
+    return end
+
+
 def create_event(
     *,
     user_id: str,
     name: str,
     date_iso: str,
+    date_end: Optional[str] = None,
     location: str,
     event_type: Optional[str] = None,
     description: Optional[str] = None,
@@ -49,6 +72,7 @@ def create_event(
         user_id=user_id,
         name=name,
         date_iso=date_iso,
+        date_end=_end_date(date_iso, date_end),
         location=location,
         event_type=event_type,
         description=description,
@@ -73,6 +97,14 @@ def update_event(*, user_id: str, event_id: str, update_data: dict, db: Session)
         and "location" in update_data
         and (update_data.get("location") or "") != (event.location or "")
     )
+    # Checked against the start date as it will stand; a start moved past the
+    # end it had leaves a one-day event rather than a backwards one.
+    if "date_end" in update_data or "date_iso" in update_data:
+        start = update_data.get("date_iso", event.date_iso)
+        if "date_end" in update_data:
+            update_data["date_end"] = _end_date(start, update_data["date_end"])
+        elif event.date_end and event.date_end <= (start or ""):
+            update_data["date_end"] = None
     for field, value in update_data.items():
         setattr(event, field, value)
 

@@ -561,3 +561,10 @@ categories get added often enough that a prose copy would drift immediately.
 - Documents (`POST /contracts/{id}/documents`, `PATCH /contract-documents/{id}`) take
   `line_items: [{name, unit_price_cents, quantity}]` and `removed_line_ids` on an addendum,
   and return `changes`, `total_before`, `total_after` (DECISIONS #38).
+
+## Events: end date (0087)
+
+`POST /events` and `PATCH /events/{id}` take `date_end` (YYYY-MM-DD), the last day of a celebration
+that runs across several; responses include it. Null, blank or the same day as `date_iso` is a
+one-day event (stored null). An end before the start, or not a date, is 400. Moving `date_iso` past
+the stored end clears the end.
