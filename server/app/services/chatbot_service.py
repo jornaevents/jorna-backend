@@ -1030,6 +1030,17 @@ def _get_booked_vendor_ids(state: ChatbotState, db: Session) -> set[str]:
     }
 
 
+# A package whose own vibe (services.vibe, 0086) is one the client picked:
+# worth about a third of a rating star, enough to choose between two similar
+# vendors and not enough to pick a poorly rated one.
+VIBE_BONUS = 0.75
+
+
+def _vibe_bonus(service, style: list[str]) -> float:
+    vibe = (getattr(service, "vibe", None) or "").lower()
+    return VIBE_BONUS if vibe and vibe in {s.lower() for s in style} else 0.0
+
+
 def _score_vendor(
     vendor,
     prices: list[float] | None,
@@ -1154,7 +1165,7 @@ def _generate_bundle_from_db(state: ChatbotState, db: Session) -> Bundle:
                 _score_vendor(
                     v, None if pending else [amount],
                     state.style, state.preferences, tier, llm_relevant_tags,
-                ),
+                ) + _vibe_bonus(s, state.style),
                 amount,
                 s, v, u,
             )
