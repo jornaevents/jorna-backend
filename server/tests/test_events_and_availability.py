@@ -244,3 +244,30 @@ def test_an_event_with_plans_on_it_cannot_be_deleted():
         db.query(User).filter(User.user_id == user.user_id).delete()
         db.commit()
         db.close()
+
+
+def test_an_event_can_run_for_several_days(user_and_vendor):
+    headers = make_auth_headers(user_and_vendor["user"])
+    body = {"name": "Wedding weekend", "date_iso": "2027-05-22", "location": "Edison, NJ"}
+
+    one_day = client.post("/events", json=body, headers=headers).json()
+    assert one_day["date_end"] is None
+    # The same day as the start is a one-day event too.
+    assert client.post("/events", json={**body, "date_end": "2027-05-22"}, headers=headers).json()["date_end"] is None
+
+    weekend = client.post("/events", json={**body, "date_end": "2027-05-24"}, headers=headers)
+    assert weekend.status_code == 201 and weekend.json()["date_end"] == "2027-05-24"
+    event_id = weekend.json()["event_id"]
+
+    assert client.post("/events", json={**body, "date_end": "2027-05-20"}, headers=headers).status_code == 400
+    assert client.post("/events", json={**body, "date_end": "late May"}, headers=headers).status_code == 400
+
+    # Edited later; cleared with null; and a start moved past the end leaves one day.
+    r = client.patch(f"/events/{event_id}", json={"date_end": "2027-05-25"}, headers=headers)
+    assert r.status_code == 200 and r.json()["date_end"] == "2027-05-25"
+    assert client.patch(f"/events/{event_id}", json={"date_end": "2027-05-01"}, headers=headers).status_code == 400
+    r = client.patch(f"/events/{event_id}", json={"date_iso": "2027-06-10"}, headers=headers)
+    assert r.json()["date_iso"] == "2027-06-10" and r.json()["date_end"] is None
+    r = client.patch(f"/events/{event_id}", json={"date_end": "2027-06-12"}, headers=headers)
+    assert r.json()["date_end"] == "2027-06-12"
+    assert client.patch(f"/events/{event_id}", json={"date_end": None}, headers=headers).json()["date_end"] is None

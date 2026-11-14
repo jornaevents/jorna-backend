@@ -1106,6 +1106,9 @@ class Event(Base):
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     date_iso = Column(String(50), nullable=False)
+    # The last day, for a celebration that runs across several (0087); null
+    # for a one-day event. Never before date_iso (event_service).
+    date_end = Column(String(50), nullable=True)
     location = Column(String(255), nullable=False)
     event_type = Column(String(100), nullable=True)
     description = Column(Text, nullable=True)

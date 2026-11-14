@@ -20,6 +20,8 @@ router = APIRouter(prefix="/events", tags=["events"])
 class CreateEventRequest(BaseModel):
     name: str
     date_iso: str
+    # Last day of a multi-day celebration; omit or null for one day.
+    date_end: Optional[str] = None
     location: str
     event_type: Optional[str] = None
     description: Optional[str] = None
@@ -31,6 +33,7 @@ class CreateEventRequest(BaseModel):
 class UpdateEventRequest(BaseModel):
     name: Optional[str] = None
     date_iso: Optional[str] = None
+    date_end: Optional[str] = None
     location: Optional[str] = None
     event_type: Optional[str] = None
     description: Optional[str] = None
@@ -58,6 +61,7 @@ def create_event_route(
             user_id=current_user.user_id,
             name=body.name,
             date_iso=body.date_iso,
+            date_end=body.date_end,
             location=body.location,
             event_type=body.event_type,
             description=body.description,
