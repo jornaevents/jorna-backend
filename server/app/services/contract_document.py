@@ -63,10 +63,15 @@ def _money(cents: int) -> str:
 
 # ── Line items ───────────────────────────────────────────────────────
 
-def normalize_line_items(raw: list, *, vendor_id: str, db: Session) -> tuple[list[dict], str]:
+def normalize_line_items(raw: list, *, vendor_id: str, db: Session, draft: bool = False) -> tuple[list[dict], str]:
     """Validate and total a vendor's line items. Returns (items, the first
     package's service_id — Booking.service_id can't be null, so it names the
     lead package).
+
+    A draft keeps unfinished lines — a custom line not named yet, a price not
+    typed — so the editor can save as the vendor works (2026-11-14). It still
+    needs one of the vendor's packages: Booking.service_id names it. Sending
+    runs the strict version over what was kept (contract_service.send_contract).
 
     Prices come from the vendor, not the catalogue: quoting a package below
     list for one client is exactly what a contract is for. The catalogue
@@ -104,8 +109,9 @@ def normalize_line_items(raw: list, *, vendor_id: str, db: Session) -> tuple[lis
             catalogue_cents = round((addon.get("price") or 0) * 100)
 
         name = _text(r.get("name"), 200) or catalogue_name
-        if not name:
+        if not name and not draft:
             raise DocumentError("Every custom line item needs a name")
+        name = name or ""
         unit = r.get("unit") or catalogue_unit or "event"
         if unit not in UNITS:
             unit = "event"
@@ -113,10 +119,14 @@ def normalize_line_items(raw: list, *, vendor_id: str, db: Session) -> tuple[lis
         if unit_price is None:
             unit_price = catalogue_cents
         if unit_price is None or not isinstance(unit_price, int) or unit_price < 0:
-            raise DocumentError(f"“{name}” needs a price")
+            if not draft:
+                raise DocumentError(f"“{name}” needs a price")
+            unit_price = 0
         quantity = r.get("quantity", 1)
         if not isinstance(quantity, (int, float)) or isinstance(quantity, bool) or not (0 < quantity <= 100_000):
-            raise DocumentError(f"“{name}” needs a quantity above zero")
+            if not draft:
+                raise DocumentError(f"“{name}” needs a quantity above zero")
+            quantity = 1
 
         items.append({
             "id": _text(r.get("id"), 40) or _id(),
@@ -160,35 +170,47 @@ def single_item(service: Service, amount_cents: int) -> list[dict]:
 
 # ── Payment schedule ─────────────────────────────────────────────────
 
-def normalize_schedule(raw: list, *, total_cents: int) -> list[dict]:
+def normalize_schedule(raw: list, *, total_cents: int, draft: bool = False) -> list[dict]:
     """Installments that add up to the total, to the cent. Payment marks are
     never taken from the request — a schedule can only change before signing,
-    and nothing is paid before signing."""
+    and nothing is paid before signing.
+
+    A draft keeps a schedule mid-edit — a payment not named or priced yet,
+    one that doesn't add up yet — and sending checks it properly."""
     if not raw:
+        if draft:
+            return []
         raise DocumentError("A payment schedule needs at least one payment")
     if len(raw) > MAX_INSTALLMENTS:
         raise DocumentError(f"A payment schedule can have at most {MAX_INSTALLMENTS} payments")
     out = []
     for r in raw:
         label = _text(r.get("label"), 80)
-        if not label:
+        if not label and not draft:
             raise DocumentError("Every payment needs a name, like “Deposit” or “Final balance”")
         amount = r.get("amount_cents")
         if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
-            raise DocumentError(f"“{label}” needs an amount above $0")
+            if not draft:
+                raise DocumentError(f"“{label}” needs an amount above $0")
+            amount = amount if isinstance(amount, int) and not isinstance(amount, bool) and amount >= 0 else 0
         due_type = r.get("due_type") or "on_signing"
         if due_type not in DUE_TYPES:
-            raise DocumentError(f"“{label}” has an unknown due date rule")
+            if not draft:
+                raise DocumentError(f"“{label}” has an unknown due date rule")
+            due_type = "on_signing"
         due_date, due_days = None, None
         if due_type == "date":
             try:
                 due_date = date.fromisoformat(r.get("due_date") or "").isoformat()
             except ValueError:
-                raise DocumentError(f"“{label}” needs a due date")
+                if not draft:
+                    raise DocumentError(f"“{label}” needs a due date")
         elif due_type == "before_event":
             due_days = r.get("due_days")
             if not isinstance(due_days, int) or not (0 <= due_days <= 730):
-                raise DocumentError(f"“{label}” needs how many days before the event it's due")
+                if not draft:
+                    raise DocumentError(f"“{label}” needs how many days before the event it's due")
+                due_days = None
         out.append({
             "id": _text(r.get("id"), 40) or _id(),
             "label": label,
@@ -200,7 +222,7 @@ def normalize_schedule(raw: list, *, total_cents: int) -> list[dict]:
             "confirmed_at": None,
         })
     scheduled = sum(i["amount_cents"] for i in out)
-    if scheduled != total_cents:
+    if scheduled != total_cents and not draft:
         raise DocumentError(
             f"The payments add up to {_money(scheduled)} but the total is {_money(total_cents)}"
         )
@@ -280,7 +302,8 @@ def sync_legacy_payment_fields(booking: Booking) -> None:
     if len(schedule) >= 2:
         first = schedule[0]
         booking.deposit_amount_cents = first["amount_cents"]
-        booking.deposit_percent = round(100 * first["amount_cents"] / booking.amount_cents)
+        # A draft can still total $0 (prices not typed yet).
+        booking.deposit_percent = round(100 * first["amount_cents"] / booking.amount_cents) if booking.amount_cents else None
         booking.deposit_marked_paid_at = _parse(first.get("marked_paid_at"))
         booking.deposit_confirmed_received_at = _parse(first.get("confirmed_at"))
         rest = schedule[1:]
@@ -486,14 +509,21 @@ def terms(booking: Booking) -> dict:
     return out
 
 
-def snapshot_revision(db: Session, booking: Booking) -> None:
+def snapshot_revision(db: Session, booking: Booking, *, replace: bool = False) -> None:
     """Keep this revision's terms, once. Called wherever the revision number
     is set; a second call for the same number is a no-op, so the first
-    version of a revision is the one kept."""
+    version of a revision is the one kept.
+
+    replace=True overwrites it instead: an unsent draft is one version that
+    keeps changing as the editor saves, and nobody has read it to need the
+    old wording kept."""
     exists = db.query(ContractRevision).filter(
         ContractRevision.booking_id == booking.booking_id,
         ContractRevision.revision == booking.revision,
     ).first()
+    if exists is not None and replace:
+        exists.terms = terms(booking)
+        return
     if exists is None and booking.revision is not None:
         db.add(ContractRevision(
             booking_id=booking.booking_id, revision=booking.revision, terms=terms(booking), created_at=_now(),

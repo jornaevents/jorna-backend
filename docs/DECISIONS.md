@@ -1236,3 +1236,25 @@ review has cleared, which lifts the hold on the signed-in client view
 - **Older link contracts keep working**: their link still opens, and they
   can still be resent by email.
 
+
+## 49. A contract draft saves before it's finished
+
+2026-11-14. The vendor web editor saves contract drafts to the server as the vendor works,
+instead of only when they press Save as draft. Before this, drafts were lost two ways: an early
+Save as draft was refused (no date yet, or a line not named), and work that was never saved
+lived only in that browser's local backup.
+
+- **A draft takes what the editor has so far.** A blank date or time is stored as `"TBD"`, the
+  word the rest of the backend already reads as "not decided" (calendar, availability, payment
+  dates all skip it). Lines may be unnamed or unpriced, and payments may not add up yet.
+  `normalize_line_items` and `normalize_schedule` take `draft=True` for this.
+- **It still needs one of the vendor's packages.** `Booking.service_id` can't be null, and
+  contracts keep requiring a package (the 2026-10-26 plan); the editor waits for one before its
+  first save.
+- **Sending checks everything** (`_check_ready` in `send_contract`, on the first send): date,
+  hours, the strict line-item and schedule rules over what was kept, and a total above $0.
+- **A draft stays one version.** Editing it doesn't bump `revision` or record `edited`; the
+  current revision's snapshot is overwritten instead (`snapshot_revision(replace=True)`).
+  Otherwise every autosave would have added a revision and a timeline line. Nobody has read a
+  draft, so there's no earlier wording to keep.
+- Sent contracts are unchanged: every edit is still checked strictly and versioned.
