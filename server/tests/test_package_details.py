@@ -270,3 +270,13 @@ def test_package_vibe_is_one_of_six_and_can_be_cleared():
 
     r = client.patch(f"/services/{a['service_id']}", json={"vibe": None}, headers=v["headers"])
     assert r.status_code == 200 and r.json()["vibe"] is None
+
+
+def test_search_results_say_what_the_price_is_per():
+    v = _setup_vendor()
+    _package(v, name="Unit plated dinner", price=62, price_unit="person")
+    _package(v, name="Unit flat reception", price=1400, price_unit="event")
+    rows = client.get("/vendors/search", params={"service_name": "Unit "}).json()["items"]
+    units = {r["service_name"]: r["service_price_unit"] for r in rows}
+    assert units["Unit plated dinner"] == "person"
+    assert units["Unit flat reception"] == "event"
