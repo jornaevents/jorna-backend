@@ -539,6 +539,10 @@ def search_vendors(
                 "service_id": service.service_id,
                 "service_name": service.name,
                 "service_price": service.price,
+                # What the rate is per (person, hour, event…), so a card can
+                # say "$62 per person" rather than a bare $62 beside an $8,500
+                # venue.
+                "service_price_unit": service.price_unit,
                 "distance_miles": round(distance_miles, 2) if distance_miles is not None else None,
                 # The vendor's blended rating across everything they sell. Kept
                 # under this name because min_rating and sort_by=rating filter on
