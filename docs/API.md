@@ -578,3 +578,17 @@ A signed-in client's shortlist, for Explore's hearts and Compare.
   cheapest active package's rate (null with none listed).
 - `PUT /saved-vendors/{vendor_id}` → 204. Idempotent; 404 for an unknown vendor; 400 past 50 saved.
 - `DELETE /saved-vendors/{vendor_id}` → 204, whether or not it was saved.
+
+## Registry (0089)
+
+An event's gift registry, for its owner only (anyone else gets 404). Tracking only: no money moves
+through Jorna. Every write returns the whole registry, the shape `GET` returns.
+
+- `GET /events/{event_id}/registry` → `{event_id, funds: [{fund_id, name, goal_cents, raised_cents,
+  gifts: [{gift_id, from_name, amount_cents, thanked, created_at}]}], total_cents, gift_count,
+  thanked_count}`.
+- `POST /events/{event_id}/registry/funds` `{name, goal_cents?}` (up to 20 funds).
+- `PATCH /registry/funds/{fund_id}` `{name?, goal_cents?}` (null clears the goal) · `DELETE` removes
+  the fund and its gifts.
+- `POST /registry/funds/{fund_id}/gifts` `{from_name, amount_cents, thanked?}`.
+- `PATCH /registry/gifts/{gift_id}` `{from_name?, amount_cents?, thanked?}` · `DELETE`.

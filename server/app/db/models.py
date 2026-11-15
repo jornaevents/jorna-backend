@@ -782,6 +782,31 @@ class EmailCode(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class RegistryFund(Base):
+    """Something an event is collecting toward (0089) — a honeymoon, a first
+    home — with an optional goal. The host records gifts against it; Jorna
+    tracks them and moves no money."""
+    __tablename__ = "registry_funds"
+
+    fund_id = Column(String(36), primary_key=True, default=uuid_str)
+    event_id = Column(String(36), ForeignKey("events.event_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    goal_cents = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class RegistryGift(Base):
+    """A gift the host recorded, and whether they've thanked the giver."""
+    __tablename__ = "registry_gifts"
+
+    gift_id = Column(String(36), primary_key=True, default=uuid_str)
+    fund_id = Column(String(36), ForeignKey("registry_funds.fund_id", ondelete="CASCADE"), nullable=False, index=True)
+    from_name = Column(String(120), nullable=False)
+    amount_cents = Column(Integer, nullable=False)
+    thanked = Column(Boolean, nullable=False, default=False, server_default=false())
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class SavedVendor(Base):
     """A vendor a client hearted in Explore (0088), kept on the account so the
     shortlist and its side-by-side comparison follow them across devices."""
