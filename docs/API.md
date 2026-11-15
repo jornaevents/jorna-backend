@@ -568,3 +568,13 @@ categories get added often enough that a prose copy would drift immediately.
 that runs across several; responses include it. Null, blank or the same day as `date_iso` is a
 one-day event (stored null). An end before the start, or not a date, is 400. Moving `date_iso` past
 the stored end clears the end.
+
+## Saved vendors (0088)
+
+A signed-in client's shortlist, for Explore's hearts and Compare.
+
+- `GET /saved-vendors` → `{items: [{vendor_id, name, category, subcategory, pfp_url, location, rating,
+  num_reviews, years_experience, starting_price, saved_at}]}`, newest first. `starting_price` is the
+  cheapest active package's rate (null with none listed).
+- `PUT /saved-vendors/{vendor_id}` → 204. Idempotent; 404 for an unknown vendor; 400 past 50 saved.
+- `DELETE /saved-vendors/{vendor_id}` → 204, whether or not it was saved.

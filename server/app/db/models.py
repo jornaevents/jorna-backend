@@ -782,6 +782,18 @@ class EmailCode(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class SavedVendor(Base):
+    """A vendor a client hearted in Explore (0088), kept on the account so the
+    shortlist and its side-by-side comparison follow them across devices."""
+    __tablename__ = "saved_vendors"
+    __table_args__ = (UniqueConstraint("user_id", "vendor_id", name="uq_saved_vendors_user_vendor"),)
+
+    id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    vendor_id = Column(String(36), ForeignKey("vendors.vendor_id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class Lead(Base):
     """An informal, off-platform prospect a vendor wants to track before it
     becomes a real Booking — no client account, no committed date/price yet.
