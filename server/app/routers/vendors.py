@@ -261,10 +261,14 @@ def vendor_search(
     subcategory: Optional[str] = Query(None, description="Narrow to a service subcategory (e.g. 'dj', 'mehndi_artist') so a slot lists only that specialty"),
     state: Optional[str] = Query(None, description="Event state/region, used to filter when coords aren't given"),
     tag: Optional[str] = Query(None, description="Filter by tag (e.g. 'bridal mehndi')"),
-    min_price: Optional[float] = Query(None, ge=0, description="Minimum service price"),
-    max_price: Optional[float] = Query(None, ge=0, description="Maximum service price"),
+    min_price: Optional[float] = Query(None, ge=0, description="Minimum price — the estimated total when the quantities give one, else the rate"),
+    max_price: Optional[float] = Query(None, ge=0, description="Maximum price — the estimated total when the quantities give one, else the rate"),
     min_rating: Optional[float] = Query(None, ge=0, le=5, description="Minimum vendor rating (0–5)"),
-    sort_by: Optional[str] = Query("distance", description="Sort order: distance, rating, price"),
+    sort_by: Optional[str] = Query("distance", description="Sort order: distance, rating, price (estimated total; rows without one last)"),
+    guests: Optional[int] = Query(None, ge=1, le=5000, description="Guest count, for per-person estimates"),
+    days: Optional[int] = Query(None, ge=1, le=60, description="Event days, for per-day estimates"),
+    hours: Optional[float] = Query(None, gt=0, le=24, description="Hours, for per-hour estimates"),
+    performers: Optional[int] = Query(None, ge=1, le=100, description="Performers, for per-performer estimates"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     service: Optional[str] = Query(
@@ -291,6 +295,10 @@ def vendor_search(
         limit=limit,
         offset=offset,
         services=[k.strip() for k in service.split(",") if k.strip()] if service else None,
+        guests=guests,
+        days=days,
+        hours=hours,
+        performers=performers,
         db=db,
     )
 

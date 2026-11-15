@@ -280,3 +280,43 @@ def test_search_results_say_what_the_price_is_per():
     units = {r["service_name"]: r["service_price_unit"] for r in rows}
     assert units["Unit plated dinner"] == "person"
     assert units["Unit flat reception"] == "event"
+
+
+def test_search_estimates_the_total_for_the_event_described():
+    v = _setup_vendor()
+    _package(v, name="Qzest plated dinner", price=38, price_unit="person")
+    _package(v, name="Qzest flat reception", price=2000, price_unit="event")
+    _package(v, name="Qzest photo hours", price=300, price_unit="hour")
+
+    def rows(**params):
+        r = client.get("/vendors/search", params={"service_name": "Qzest ", "sort_by": "price", **params})
+        assert r.status_code == 200
+        return r.json()["items"]
+
+    # No quantities: the flat price is its own total, the rates have none and go
+    # last — by rate, not interleaved with totals they can't be compared to.
+    got = rows()
+    assert [r["service_name"] for r in got] == ["Qzest flat reception", "Qzest plated dinner", "Qzest photo hours"]
+    assert [r["estimated_total"] for r in got] == [2000, None, None]
+
+    # 200 guests and 6 hours: $1,800 photos < $2,000 flat < $7,600 dinner. Sorted
+    # by rate the $38 dinner would have come first.
+    got = rows(guests=200, hours=6)
+    assert [(r["service_name"], r["estimated_total"]) for r in got] == [
+        ("Qzest photo hours", 1800),
+        ("Qzest flat reception", 2000),
+        ("Qzest plated dinner", 7600),
+    ]
+    # The rate is still there for the card to show beside the total.
+    assert got[2]["service_price"] == 38 and got[2]["service_price_unit"] == "person"
+
+    # max_price reads the total once there is one, the rate until then.
+    names = {r["service_name"] for r in rows(guests=200, max_price=5000)}
+    assert names == {"Qzest flat reception", "Qzest photo hours"}
+    names = {r["service_name"] for r in rows(max_price=500)}
+    assert names == {"Qzest plated dinner", "Qzest photo hours"}
+
+
+def test_search_refuses_a_window_longer_than_a_day():
+    r = client.get("/vendors/search", params={"hours": 30})
+    assert r.status_code == 422

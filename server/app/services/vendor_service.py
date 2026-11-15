@@ -400,6 +400,37 @@ def list_vendors(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+def _search_estimate(
+    price: float | None,
+    price_unit: str | None,
+    *,
+    guests: int | None = None,
+    days: int | None = None,
+    hours: float | None = None,
+    performers: int | None = None,
+) -> float | None:
+    """What a listing would cost for the event the client described, in dollars.
+
+    Reads the unit the way booking does (_normalize_unit) so the marketplace and
+    the booking agree on what "per head" means. A flat or unrecognised unit is
+    already a total, as in resolve_total_cents. A rate whose quantity wasn't
+    given returns None. So does an unpriced listing — $0 isn't a price to sort
+    to the top. Hours cap at 24, the longest window a booking accepts.
+    """
+    from app.services.booking_service import _normalize_unit
+
+    rate = price or 0.0
+    if rate <= 0:
+        return None
+    unit = _normalize_unit(price_unit)
+    if unit in (None, "event"):
+        return rate
+    qty = {"person": guests, "day": days, "hour": hours, "performer": performers}[unit]
+    if not qty or qty <= 0 or (unit == "hour" and qty > 24):
+        return None
+    return round(rate * qty, 2)
+
+
 def search_vendors(
     *,
     service_name: str = "",
@@ -416,6 +447,10 @@ def search_vendors(
     limit: int = 20,
     offset: int = 0,
     services: list[str] | None = None,
+    guests: int | None = None,
+    days: int | None = None,
+    hours: float | None = None,
+    performers: int | None = None,
     db: Session,
 ) -> dict:
     """Search vendors offering a service. When coordinates are given, results are
@@ -426,6 +461,10 @@ def search_vendors(
     own location — coarse, and see the note there — and distance is omitted. `category`
     matches a vendor's category OR subcategory, so simplified keys like "dj" work
     alongside canonical ones like "music_entertainment".
+
+    `guests`/`days`/`hours`/`performers` are the client's event, as far as they've
+    told us. Each row gets an `estimated_total` from them, and price sorting and
+    the price bounds read that total — see _search_estimate.
     """
     from sqlalchemy import and_, or_
 
@@ -487,10 +526,9 @@ def search_vendors(
                  .join(Tag, vendor_tags.c.tag_id == Tag.tag_id)
                  .filter(Tag.name == normalized)
         )
-    if min_price is not None:
-        query = query.filter(Service.price >= min_price)
-    if max_price is not None:
-        query = query.filter(Service.price <= max_price)
+    # min_price/max_price are applied after the estimate below, not here: a
+    # "$500 max" has to mean the event's total for a per-person caterer once the
+    # guest count is known, and that isn't a column.
     if min_rating is not None:
         query = query.filter(Vendor.rating >= min_rating)
 
@@ -525,6 +563,17 @@ def search_vendors(
                 )
                 if not (vendor.open_to_long_distance or distance_miles <= vendor.travel_radius_miles):
                     continue
+        estimated_total = _search_estimate(
+            service.price, service.price_unit,
+            guests=guests, days=days, hours=hours, performers=performers,
+        )
+        # What the price bounds compare: the total when there is one, else the
+        # bare rate — which is all they ever compared before quantities existed.
+        comparable = estimated_total if estimated_total is not None else (service.price or 0)
+        if min_price is not None and comparable < min_price:
+            continue
+        if max_price is not None and comparable > max_price:
+            continue
         nearby_vendors.append(
             {
                 "vendor_id": vendor.vendor_id,
@@ -543,6 +592,10 @@ def search_vendors(
                 # say "$62 per person" rather than a bare $62 beside an $8,500
                 # venue.
                 "service_price_unit": service.price_unit,
+                # Rate x the client's quantity, or the flat price. None when the
+                # unit needs a quantity the client hasn't given — not zero, and
+                # not the rate: "$38" isn't what a 200-guest dinner costs.
+                "estimated_total": estimated_total,
                 "distance_miles": round(distance_miles, 2) if distance_miles is not None else None,
                 # The vendor's blended rating across everything they sell. Kept
                 # under this name because min_rating and sort_by=rating filter on
@@ -571,7 +624,14 @@ def search_vendors(
 
     sort_keys = {
         "rating": lambda x: -(x["rating"] or 0),
-        "price": lambda x: x["service_price"],
+        # Cheapest event first, which is the total, not the rate: a $38-a-head
+        # caterer isn't cheaper than a $2,000 flat one at 200 guests. Rows whose
+        # total can't be worked out yet go last, by rate among themselves, rather
+        # than being ranked against totals they aren't comparable to.
+        "price": lambda x: (
+            x["estimated_total"] is None,
+            x["estimated_total"] if x["estimated_total"] is not None else (x["service_price"] or 0),
+        ),
         "distance": lambda x: x["distance_miles"] if x["distance_miles"] is not None else float("inf"),
     }
     nearby_vendors.sort(key=sort_keys.get(sort_by, sort_keys["distance"]))
