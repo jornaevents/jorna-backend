@@ -819,6 +819,20 @@ class SavedVendor(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class SavedPackage(Base):
+    """A package a client hearted in Explore (0090) — what Compare lays side by
+    side. Replaces SavedVendor for the web app: a vendor's packages differ too
+    much (a $38-a-head dinner and an $8,000 buffet) for "the vendor" to be the
+    thing compared."""
+    __tablename__ = "saved_packages"
+    __table_args__ = (UniqueConstraint("user_id", "service_id", name="uq_saved_packages_user_service"),)
+
+    id = Column(String(36), primary_key=True, default=uuid_str)
+    user_id = Column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    service_id = Column(String(36), ForeignKey("services.service_id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class Lead(Base):
     """An informal, off-platform prospect a vendor wants to track before it
     becomes a real Booking — no client account, no committed date/price yet.

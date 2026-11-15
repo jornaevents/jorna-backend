@@ -36,7 +36,7 @@ from app.db.database import Base, engine, get_db
 from app.db import models  # noqa: F401 -- registers tables with Base
 from app.models.schemas import VendorCategory
 from app.dependencies import get_current_user
-from app.routers import admin, bundles, calendar, bookings, change_requests, chatbot, checkin, contract_documents, contracts, conversations, countersign, email_verification, events, feed, guest_bookings, guests, inquiries, registry, saved_vendors, taxonomy, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
+from app.routers import admin, bundles, calendar, bookings, change_requests, chatbot, checkin, contract_documents, contracts, conversations, countersign, email_verification, events, feed, guest_bookings, guests, inquiries, registry, saved_packages, saved_vendors, taxonomy, messages, moderation, negotiations, notifications, users, vendors, services, payments, reviews
 from app.services.auth_service import (
     AuthError,
     register_user,
@@ -481,6 +481,7 @@ app.include_router(contract_documents.router)
 app.include_router(countersign.router)
 app.include_router(taxonomy.router)
 app.include_router(saved_vendors.router)
+app.include_router(saved_packages.router)
 app.include_router(registry.router)
 
 app.add_middleware(
