@@ -5,7 +5,7 @@ thread with the vendor. The guards are in inquiry_service; the per-IP limit
 is here.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -30,6 +30,13 @@ class InquiryRequest(BaseModel):
     event_date_iso: Optional[str] = Field(default=None, max_length=50)
     event_type: Optional[str] = Field(default=None, max_length=50)
     event_location: Optional[str] = Field(default=None, max_length=255)
+    # Where, in parts (#52): "city" needs city and state; "venue" also a
+    # street and ZIP. Without a kind, event_location is taken as written.
+    location_kind: Optional[Literal["city", "venue"]] = None
+    location_street: Optional[str] = Field(default=None, max_length=150)
+    location_city: Optional[str] = Field(default=None, max_length=80)
+    location_state: Optional[str] = Field(default=None, max_length=2)
+    location_zip: Optional[str] = Field(default=None, max_length=10)
     # One of the vendor's packages, or null for "not sure yet".
     service_id: Optional[str] = Field(default=None, max_length=36)
     guest_count: Optional[int] = None

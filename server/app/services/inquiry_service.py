@@ -9,7 +9,9 @@ The guards:
   account;
 - a filled-in honeypot field (the hidden "website" input) gets the normal
   reply but nothing is saved or sent;
-- a package and an event date are required (#47);
+- a package and an event date are required (#47), and so are what the
+  event is and where, plus a guest count when the package is priced per
+  person (2026-11-16, #52);
 - at most DAILY_CAP inquiries per vendor per 24 hours, and the thread limits
   every first question to a vendor has (conversation_service);
 - the confirmation repeats what they sent, safe now that the address is
@@ -23,7 +25,9 @@ from html import escape
 from sqlalchemy.orm import Session
 
 from app.config import CLIENT_WEB_APP_URL, WEB_APP_URL
-from app.db.models import Lead, Service, User, Vendor
+from app.db.models import GroupMessage, Lead, Service, User, Vendor
+from app.services.booking_service import _normalize_unit
+from app.services.plan_readiness import _ZIP, US_STATE_CODES
 from app.services.contract_service import ContractError, _check_lead
 from app.services.conversation_service import ConversationError, open_enquiry
 from app.services.email_service import send_email
@@ -101,15 +105,70 @@ def _package(vendor_id: str, service_id: str | None, db: Session) -> Service:
     return service
 
 
-def _thread_message(details: str, note: str | None) -> str:
-    """The inquiry as the first (or next) message in their thread."""
-    return "\n\n".join(p for p in (details, note) if p)
+def _thread_message(checked: dict, service: Service, note: str | None) -> str:
+    """The inquiry as the first (or next) message in their thread: what they
+    asked about, then the rest as a list, then their note. The app draws it
+    from the message's meta; this text is what older apps and previews show."""
+    rows = [
+        ("Event", checked["event_type"]),
+        ("Date", _date_label(checked["event_date_iso"])),
+        ("Where", checked["event_location"]),
+        ("Guests", f"About {checked['guest_count']:,}" if checked["guest_count"] else None),
+    ]
+    lines = [f"Inquiry: {service.name}"] + [f"• {label}: {value}" for label, value in rows if value]
+    return "\n\n".join(p for p in ("\n".join(lines), note) if p)
+
+
+def _location(
+    event_location: str | None, kind: str | None, street: str | None, city: str | None,
+    state: str | None, zip_code: str | None,
+) -> str:
+    """Where the event is, required (#52). The form sends it in parts — a
+    city and state, or a venue's full address — and it's kept as the one line
+    the lead and the contract already use. An older page's single line is
+    still accepted."""
+    if kind is None:
+        line = (event_location or "").strip()
+        if not line:
+            raise InquiryError(422, "Add where the event is")
+        return line
+    city = (city or "").strip()
+    st = (state or "").strip().upper()
+    if not city or st not in US_STATE_CODES:
+        raise InquiryError(422, "Add the event's city and state")
+    if kind == "city":
+        return f"{city}, {st}"
+    if kind != "venue":
+        raise InquiryError(422, "Choose a city or a venue")
+    street = (street or "").strip()
+    zip_code = (zip_code or "").strip()
+    if not street:
+        raise InquiryError(422, "Add the venue's street address")
+    if not _ZIP.match(zip_code):
+        raise InquiryError(422, "Add the venue's ZIP code")
+    return f"{street}, {city}, {st} {zip_code}"
+
+
+def _inquiry_meta(lead: Lead, checked: dict, service: Service, note: str | None) -> dict:
+    """What the chat card shows, and the lead it opens."""
+    return {
+        "lead_id": lead.lead_id,
+        "service_id": service.service_id,
+        "service_name": service.name,
+        "event_type": checked["event_type"],
+        "event_date_iso": checked["event_date_iso"],
+        "event_location": checked["event_location"],
+        "guest_count": checked["guest_count"],
+        "note": note,
+    }
 
 
 def send_inquiry(
     *, vendor_id: str, caller: User, phone: str | None, event_date_iso: str | None,
     event_type: str | None, guest_count: int | None, note: str | None, website: str | None,
     db: Session, event_location: str | None = None, service_id: str | None = None,
+    location_kind: str | None = None, location_street: str | None = None, location_city: str | None = None,
+    location_state: str | None = None, location_zip: str | None = None,
 ) -> dict:
     vendor, vendor_user = _open_vendor(vendor_id, db)
     vendor_name = _vendor_name(vendor_user)
@@ -125,6 +184,11 @@ def send_inquiry(
     name = f"{caller.f_name or ''} {caller.l_name or ''}".strip() or caller.email
     if not (event_date_iso or "").strip():
         raise InquiryError(422, "Add your event date")
+    if not (event_type or "").strip():
+        raise InquiryError(422, "Add what the event is")
+    event_location = _location(
+        event_location, location_kind, location_street, location_city, location_state, location_zip,
+    )
     try:
         checked = _check_lead({
             "email": caller.email, "phone": phone or caller.phone, "event_date_iso": event_date_iso,
@@ -134,6 +198,8 @@ def send_inquiry(
         raise InquiryError(e.status_code, e.detail)
     note = (note or "").strip() or None
     service = _package(vendor_id, service_id, db)
+    if _normalize_unit(service.price_unit) == "person" and not checked["guest_count"]:
+        raise InquiryError(422, f"Add a guest count — {service.name} is priced per guest")
 
     now = _utcnow()
     day_ago = now - timedelta(days=1)
@@ -153,7 +219,7 @@ def send_inquiry(
     details = _details_line(checked, service)
     try:
         thread = open_enquiry(
-            vendor_id=vendor_id, content=_thread_message(details, note),
+            vendor_id=vendor_id, content=_thread_message(checked, service, note),
             caller_user_id=caller.user_id, db=db,
             # The package rides along as the message's reference card.
             service_id=service.service_id,
@@ -162,10 +228,18 @@ def send_inquiry(
         raise InquiryError(e.status_code, e.detail)
 
     lead = _lead_for(vendor.vendor_id, caller, thread["conversation_id"], checked, service, name, note, now, db)
+    # The card needs the lead, and the lead needs the thread: so the message
+    # is posted first and told which lead it is afterwards.
+    message = thread["message"]
+    row = db.query(GroupMessage).filter(GroupMessage.message_id == message["message_id"]).first()
+    if row is not None:
+        row.meta = {**(row.meta or {}), "inquiry": _inquiry_meta(lead, checked, service, note)}
+        db.commit()
+        message = {**message, "meta": row.meta}
     _email_vendor(lead, vendor_user, thread["conversation_id"])
     if not asked_before:
         _email_confirmation(caller.email, vendor_name, details, note, thread["conversation_id"])
-    return {**reply, "conversation_id": thread["conversation_id"], "message": thread["message"]}
+    return {**reply, "conversation_id": thread["conversation_id"], "message": message}
 
 
 def _lead_for(
