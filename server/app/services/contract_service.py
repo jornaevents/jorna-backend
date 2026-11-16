@@ -756,6 +756,11 @@ def apply_update(booking: Booking, vendor: Vendor, update_data: dict, db: Sessio
     for field in ("guest_name", "guest_email", "guest_phone"):
         if field in update_data:
             setattr(booking, field, (update_data[field] or "").strip() or None)
+    if not booking.guest_email and booking.user_id is not None:
+        # Clearing the email box can't leave an account holder without one:
+        # their account's email is where their copy and replies go.
+        account = db.query(User).filter(User.user_id == booking.user_id).first()
+        booking.guest_email = account.email if account is not None else None
     if "location" in update_data:
         booking.location = (update_data["location"] or "").strip() or "TBD"
     if "terms_clauses" in update_data:

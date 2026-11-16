@@ -55,6 +55,14 @@ def _by_token(contract_token: str, db: Session) -> Booking:
         # The vendor hasn't sent it yet — as far as the link goes, it
         # doesn't exist.
         raise GuestBookingError(404, "Booking not found")
+    if not booking.guest_email and booking.user_id is not None:
+        # An account holder's contract goes to their account's email. A
+        # contract saved with the email blanked (the vendor's editor could)
+        # otherwise asked a signed-in client to "add your email" before they
+        # could send changes or sign.
+        account = db.query(User).filter(User.user_id == booking.user_id).first()
+        if account is not None and account.email:
+            booking.guest_email = account.email
     return booking
 
 
