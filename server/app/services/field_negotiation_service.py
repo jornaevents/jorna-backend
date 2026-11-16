@@ -732,10 +732,34 @@ def send(
     })
     db.commit()
     db.refresh(booking)
+    _post_to_chat(booking, vendor, side, record, db)
     emailed = _tell(booking, vendor, side, record, db)
     # Whether the client was actually emailed, so the vendor app says "We
     # emailed them" only when it's true (web #155). Null on a client's send.
     return {**state(booking, side, db), "email_sent": emailed}
+
+
+def _post_to_chat(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: Session) -> None:
+    """Each send puts the updated contract in the pair's thread, as a
+    contract card that opens the latest version for whoever taps it
+    (DECISIONS #48: contracts live in the chat). A link-only client has no
+    thread; best effort like post_contract_message itself."""
+    from app.services.conversation_service import post_contract_message
+    from app.services.guest_booking_service import _client_label
+
+    if booking.user_id is None:
+        return
+    n = len(record)
+    what = f"{n} change{'s' if n != 1 else ''}" if side == "client" else f"{n} field{'s' if n != 1 else ''}"
+    if side == "client":
+        sender, content = booking.user_id, f"{_client_label(booking)} sent {what} on the contract."
+    else:
+        who = _vendor_name(db.query(User).filter(User.user_id == vendor.user_id).first(), vendor) or "Your vendor"
+        sender, content = vendor.user_id, f"{who} answered {what} — here's the updated contract."
+    post_contract_message(
+        booking_id=booking.booking_id, sender_user_id=sender, content=content,
+        meta={"contract_status": booking.contract_status, "negotiation_round": booking.negotiation_round}, db=db,
+    )
 
 
 def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: Session) -> bool | None:
@@ -748,7 +772,10 @@ def _tell(booking: Booking, vendor: Vendor, side: str, record: list[dict], db: S
     if side == "client":
         _tell_vendor(
             booking, f"{_client_label(booking)} answered your contract",
-            f"Round {booking.negotiation_round}: {what} to review. It's your turn.",
+            f"Round {booking.negotiation_round}: {what} to review. It's your turn — "
+            f"the updated contract is in your messages on Jorna."
+            if booking.user_id is not None
+            else f"Round {booking.negotiation_round}: {what} to review. It's your turn.",
             "contract_negotiation_turn", db,
         )
         return None

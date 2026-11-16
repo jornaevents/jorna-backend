@@ -566,3 +566,50 @@ def test_the_timeline_names_what_each_answer_was():
     )
     db.close()
     assert e.detail["answers"] == [{"key": "event.guests", "label": "Guest count", "action": "change", "value": 180}]
+
+
+def _contract_cards(c):
+    from app.db.models import GroupMessage
+
+    db = TestingSessionLocal()
+    b = db.query(Booking).filter(Booking.booking_id == c["booking_id"]).first()
+    rows = [
+        (m.sender_id, m.content, (m.meta or {}).get("negotiation_round"))
+        for m in db.query(GroupMessage).filter(GroupMessage.kind == "contract").order_by(GroupMessage.created_at)
+        if (m.meta or {}).get("booking_id") == c["booking_id"]
+    ]
+    client_id, vendor_user_id = b.user_id, db.query(Vendor).filter(Vendor.vendor_id == b.vendor_id).one().user_id
+    db.close()
+    return rows, client_id, vendor_user_id
+
+
+def test_each_send_puts_the_updated_contract_in_the_chat():
+    v = _setup_vendor()
+    c = _contract(v)
+    before, _, _ = _contract_cards(c)
+
+    assert _client_send(c, 1, [{"key": "line:lights.quantity", "action": "change", "value": 3}]).status_code == 200
+    assert _vendor_send(c, v, 2, [{"key": "line:lights.quantity", "action": "counter", "value": 4}]).status_code == 200
+
+    cards, client_id, vendor_user_id = _contract_cards(c)
+    new = cards[len(before):]
+    assert [(s, r) for s, _, r in new] == [(client_id, 2), (vendor_user_id, 3)]
+    assert "sent 1 change on the contract" in new[0][1]
+    assert "updated contract" in new[1][1]
+
+
+def test_an_account_client_sends_changes_without_typing_an_email():
+    """A contract whose email was blanked still reaches the client's account
+    email — they were asked to "add your email" before they could send."""
+    v = _setup_vendor()
+    c = _contract(v)
+    db = TestingSessionLocal()
+    b = db.query(Booking).filter(Booking.booking_id == c["booking_id"]).one()
+    b.guest_email = None
+    db.commit()
+    db.close()
+
+    assert client.get(f"/guest-bookings/{c['contract_token']}").json()["guest_email"].startswith("chat_client_")
+    r = _client_send(c, 1, [{"key": "line:lights.quantity", "action": "change", "value": 3}])
+    assert r.status_code == 200, r.text
+    assert _booking(c).guest_email.startswith("chat_client_")
