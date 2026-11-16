@@ -820,6 +820,17 @@ def before_signing(booking: Booking, *, as_is: bool, db: Session) -> None:
     })
 
 
+def waits_on_vendor(booking: Booking, db: Session) -> bool:
+    """The client's own changes are with the vendor, unanswered. Signing
+    waits for the answer (2026-11-16): signing "as it is" over them used to
+    be allowed, and read as the client agreeing to what they'd just asked to
+    change."""
+    return is_fields(booking) and db.query(NegotiationField).filter(
+        NegotiationField.booking_id == booking.booking_id,
+        NegotiationField.state == WAITING["vendor"],
+    ).first() is not None
+
+
 def has_waiting(booking: Booking, db: Session) -> bool:
     return is_fields(booking) and db.query(NegotiationField).filter(
         NegotiationField.booking_id == booking.booking_id,

@@ -64,6 +64,7 @@ def _setup_vendor():
 
 def _create(v, **overrides):
     body = {
+        "location": "Grand Hall, Edison, NJ",
         "service_id": v["service_id"], "date_iso": "2027-09-01",
         "time_start": "10:00", "time_end": "14:00", "amount_cents": 100_000,
         "deposit_percent": 25,
@@ -118,6 +119,7 @@ def test_deposit_percent_must_be_between_0_and_100():
     resp = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": v["service_id"], "date_iso": "2027-09-01", "time_start": "10:00",
             "time_end": "14:00", "amount_cents": 100_000, "deposit_percent": 150,
         },
@@ -132,6 +134,7 @@ def test_conflicting_date_and_time_is_refused():
     resp = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": v["service_id"], "date_iso": "2027-10-10",
             "time_start": "19:00", "time_end": "23:00", "amount_cents": 50_000,
         },

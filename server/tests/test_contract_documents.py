@@ -74,6 +74,7 @@ def test_layout_rejects_unknown_or_repeated_blocks():
     bad = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": v["service_id"], "date_iso": "2027-11-13", "time_start": "19:00", "time_end": "23:00",
             "amount_cents": 100_000, "document_layout": [{"type": "items"}, {"type": "items"}],
         },

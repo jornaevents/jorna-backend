@@ -272,6 +272,24 @@ def test_signing_waits_for_nothing_open_unless_signed_as_it_is():
     assert b.client_signed_at is not None
 
 
+def test_no_signing_as_it_is_while_the_clients_changes_wait_on_the_vendor():
+    """2026-11-16: once the client has sent changes, they wait for the
+    vendor's answer — signing "as it is" over their own ask isn't offered."""
+    v = _setup_vendor()
+    c = _contract(v)
+    _client_send(c, 1, [{"key": "discount", "action": "change", "value": 10_000}])
+    view = client.get(f"/guest-bookings/{c['contract_token']}").json()
+    assert view["sign_blockers"] == ["waiting_on_vendor"]
+    rev = client.get(f"/guest-bookings/{c['contract_token']}/negotiation").json()["revision"]
+    r = client.post(
+        f"/guest-bookings/{c['contract_token']}/sign",
+        json={"signer_name": "Meera Iyer", "revision": rev, "as_is": True},
+    )
+    assert r.status_code == 409
+    assert "with your vendor" in r.json()["detail"]
+    assert _booking(c).client_signed_at is None
+
+
 def test_the_client_can_add_one_of_the_vendors_packages():
     v = _setup_vendor()
     c = _contract(v)

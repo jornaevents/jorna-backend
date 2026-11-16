@@ -24,6 +24,7 @@ def _days(n: int) -> str:
 def _schedule_contract(v, date_iso, schedule, **extra):
     total = sum(i["amount_cents"] for i in schedule)
     return client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "date_iso": date_iso, "time_start": "18:00", "time_end": "22:00",
         "line_items": [{"kind": "package", "service_id": v["service_id"], "unit_price_cents": total}],
         "payment_schedule": schedule, **extra,

@@ -96,6 +96,7 @@ def test_the_clients_signature_waits_on_the_vendor_and_holds_the_date(outbox):
     mine = client.get(f"/contracts/{c['booking_id']}", headers=v["headers"]).json()
     assert mine["contract_status"] == "awaiting_vendor"
     clash = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "service_id": v["service_id"], "date_iso": "2027-11-20", "time_start": "19:00",
         "time_end": "23:00", "amount_cents": 100_000,
     }, headers=v["headers"])
