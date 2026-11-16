@@ -1258,3 +1258,16 @@ lived only in that browser's local backup.
   Otherwise every autosave would have added a revision and a timeline line. Nobody has read a
   draft, so there's no earlier wording to keep.
 - Sent contracts are unchanged: every edit is still checked strictly and versioned.
+
+## 50. Availability is bookings only (2026-11-16)
+
+`GET /vendors/{id}/availability` reports a vendor busy only for bookings that commit them
+(`commits_vendor_date`). Weekly hours (`vendor_availability`) and Google Calendar busy blocks no
+longer count, and Google isn't asked: the web app dropped both from the vendor side, and the
+product owner chose to ignore the data rather than keep honouring settings vendors can no longer
+see or change. The response keeps its shape for the iOS app, with `baseline_hours_map: {}`,
+`google_busy_times: []` and `google_calendar_connected: false`.
+
+Left in place, unused by availability: the hours table and its `/vendors/me/availability`
+endpoints, the Google OAuth flow, the busy-cache sweeps, and write-back of approved bookings to a
+vendor's already-connected Google Calendar. Removing those is a separate cleanup.

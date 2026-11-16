@@ -19,7 +19,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import GOOGLE_CALENDAR_WEBHOOK_URL, SECRET_KEY
-from app.db.models import Bundle, Service, Vendor, VendorAvailability, Booking
+from app.db.models import Bundle, Service, Vendor, Booking
 from app.utils.calendar import (
     get_google_auth_flow,
     create_google_calendar_service,
@@ -465,22 +465,19 @@ def get_vendor_availability(
     end_date: str,
     db: Session,
 ) -> dict:
-    """Compute vendor availability from baseline hours, internal bookings,
-    and Google Calendar busy blocks.
+    """When a vendor is busy: their Jorna bookings, and nothing else.
+
+    Weekly hours and Google Calendar busy blocks used to count here too. Both
+    were dropped from the vendor app on 2026-11-16, and the data is ignored
+    rather than just hidden: a vendor is free on any day without a booking
+    that commits them. The response keeps its shape (iOS reads it), with
+    baseline_hours_map and google_busy_times always empty.
     """
     vendor = db.query(Vendor).filter(Vendor.vendor_id == vendor_id).first()
     if not vendor:
         raise CalendarError(404, "Vendor not found")
 
-    # 1. Baseline working hours
-    base_hours = (
-        db.query(VendorAvailability)
-        .filter(VendorAvailability.vendor_id == vendor_id)
-        .all()
-    )
-    day_to_hours = {av.day_of_week: (av.start_time, av.end_time) for av in base_hours}
-
-    # 2. Internal Desiconnect bookings — the ones that actually commit the
+    # Internal Desiconnect bookings — the ones that actually commit the
     #    vendor. This took every booking regardless of status, so a request the
     #    vendor had declined, or one that was refunded, went on marking them
     #    busy and hiding them from search. A pending request is a lead and
@@ -521,68 +518,13 @@ def get_vendor_availability(
                 continue
         internal_busy.append((bk_start, bk_end))
 
-    # 3. Google Calendar busy blocks — read from the cache watch_calendar's
-    #    push channel and the periodic re-sync sweep keep warm, rather than
-    #    a live API call on every request the way this used to work. Falls
-    #    back to a live fetch, scoped to just this request, when there's no
-    #    cache yet or the request reaches past the cached window.
-    google_busy: list[tuple[datetime, datetime]] = []
-    google_calendar_connected = bool(vendor.google_access_token)
-    google_calendar_error: str | None = None
-
-    if vendor.google_access_token:
-        req_start = datetime.fromisoformat(
-            start_date if "T" in start_date else f"{start_date}T00:00:00+00:00"
-        )
-        req_end = datetime.fromisoformat(
-            end_date if "T" in end_date else f"{end_date}T23:59:59+00:00"
-        )
-        synced_at = vendor.google_busy_synced_at
-        cache_covers = synced_at is not None and req_end <= synced_at.replace(
-            tzinfo=timezone.utc
-        ) + timedelta(days=BUSY_CACHE_DAYS_AHEAD)
-
-        if cache_covers:
-            for item in vendor.google_busy_cache or []:
-                try:
-                    gb_start = datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
-                    gb_end = datetime.fromisoformat(item["end"].replace("Z", "+00:00"))
-                except (KeyError, ValueError):
-                    continue
-                if gb_end >= req_start and gb_start <= req_end:
-                    google_busy.append((gb_start, gb_end))
-        else:
-            try:
-                service, creds = create_google_calendar_service(
-                    vendor.google_access_token, vendor.google_refresh_token
-                )
-                # Ensure full RFC3339 format — Google rejects bare dates like "2026-05-03"
-                rfc_start = start_date if "T" in start_date else f"{start_date}T00:00:00Z"
-                rfc_end = end_date if "T" in end_date else f"{end_date}T23:59:59Z"
-                g_busy = get_freebusy_schedule(service, rfc_start, rfc_end)
-                for busy in g_busy:
-                    gb_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
-                    gb_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
-                    google_busy.append((gb_start, gb_end))
-
-                # Persist refreshed token if it changed
-                if creds.token and creds.token != vendor.google_access_token:
-                    vendor.google_access_token = creds.token
-                    db.commit()
-                    logger.info("Persisted refreshed Google access token for vendor %s", vendor_id)
-            except Exception as exc:
-                logger.warning("Google Calendar fetch failed for vendor %s: %s", vendor_id, exc)
-                google_calendar_error = f"Google Calendar error: {exc}"
-
     return {
         "vendor_id": vendor_id,
-        "baseline_hours_map": day_to_hours,
+        "baseline_hours_map": {},
         "internal_busy_times": [
             {"start": s.isoformat(), "end": e.isoformat()} for s, e in internal_busy
         ],
-        "google_busy_times": [
-            {"start": s.isoformat(), "end": e.isoformat()} for s, e in google_busy
-        ],
-        "google_calendar_connected": google_calendar_connected,
-        "google_calendar_error": google_calendar_error,
+        "google_busy_times": [],
+        "google_calendar_connected": False,
+        "google_calendar_error": None,
     }
