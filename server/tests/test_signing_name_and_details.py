@@ -114,7 +114,7 @@ def _fill(token, **body):
 
 
 def test_the_client_can_fill_in_a_blank_venue_and_guest_count():
-    _, _, token = _contract()
+    _, _, token = _contract(location="")
     r = _fill(token, location="Pines Manor", guest_count=180)
     assert r.status_code == 200, r.text
     assert r.json()["location"] == "Pines Manor"
@@ -187,3 +187,31 @@ def test_the_certificate_names_the_new_email():
     assert pdf_service._event_line({"kind": "details_updated", "detail": {"fields": ["email", "phone"], "email_to": "asha.m@example.com"}}) == (
         "Client changed their email to asha.m@example.com, and their phone"
     )
+
+
+# ── What has to be there before the client can sign (2026-11-16) ────
+
+def test_no_signing_until_the_venue_is_filled_in(outbox):
+    _, _, token = _contract(location="")
+    assert client.get(f"/guest-bookings/{token}").json()["sign_blockers"] == ["location"]
+    r = _sign_as(token, outbox, "Asha Mehta")
+    assert r.status_code == 409
+    assert "where the event is" in r.json()["detail"]
+
+    assert _fill(token, location="Pines Manor").status_code == 200
+    assert client.get(f"/guest-bookings/{token}").json()["sign_blockers"] == []
+    assert _sign_as(token, outbox, "Asha Mehta").status_code == 200
+
+
+def test_no_signing_without_a_price(outbox):
+    from app.db.models import Booking
+
+    _, c, token = _contract()
+    db = TestingSessionLocal()
+    db.query(Booking).filter(Booking.booking_id == c["booking_id"]).update({"amount_cents": 0})
+    db.commit()
+    db.close()
+    assert "price" in client.get(f"/guest-bookings/{token}").json()["sign_blockers"]
+    r = _sign_as(token, outbox, "Asha Mehta")
+    assert r.status_code == 409
+    assert "price" in r.json()["detail"]

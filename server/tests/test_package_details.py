@@ -124,6 +124,7 @@ def test_a_hidden_package_can_be_contracted_but_not_booked():
     contract = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": hidden["service_id"], "date_iso": "2027-12-11",
             "time_start": "18:00", "time_end": "22:00", "amount_cents": 120_000,
         },
@@ -139,6 +140,7 @@ def test_archived_packages_cant_start_a_contract():
     resp = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": archived["service_id"], "date_iso": "2027-12-12",
             "time_start": "18:00", "time_end": "22:00", "amount_cents": 1,
         },
@@ -155,6 +157,7 @@ def test_deleting_a_package_with_bookings_archives_it_instead():
     contract = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": used["service_id"], "date_iso": "2027-12-13",
             "time_start": "18:00", "time_end": "22:00", "amount_cents": 50_000,
         },

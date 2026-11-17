@@ -177,11 +177,40 @@ def _guest_dict(booking: Booking, service: Service | None, vendor: Vendor | None
         # accepted, declined, revised… Null on a contract with none, or once
         # signed. GET …/proposals has the detail.
         "proposal_status": _proposal_status(booking),
+        # Why Sign is held back, if it is: see sign_blockers.
+        "sign_blockers": _sign_blockers(booking) if booking.client_signed_at is None else [],
         # What the signing page asks for before it signs (DECISIONS #27):
         # the consent words to show, and whether a code is required.
         "esign_consent": esign_consent.view(),
         "signing_code_required": config.SIGNING_REQUIRE_CODE,
     }
+
+
+def sign_blockers(booking: Booking, db: Session) -> list[str]:
+    """Why the client can't sign yet, as codes the app words itself
+    (2026-11-16): "location" and "price" while the vendor hasn't filled them
+    in — a draft may be sent with the place still "TBD" or no price — and
+    "waiting_on_vendor" while the client's own changes are unanswered, on
+    either negotiation flow. Empty when nothing stands in the way."""
+    from app.services.field_negotiation_service import waits_on_vendor
+    from app.services.proposal_service import latest_status
+
+    out: list[str] = []
+    location = (booking.location or "").strip()
+    if not location or location.upper() == "TBD":
+        out.append("location")
+    if not booking.amount_cents or booking.amount_cents <= 0:
+        out.append("price")
+    if waits_on_vendor(booking, db) or latest_status(db, booking) == "open":
+        out.append("waiting_on_vendor")
+    return out
+
+
+def _sign_blockers(booking: Booking) -> list[str]:
+    from sqlalchemy.orm import object_session
+
+    db = object_session(booking)
+    return sign_blockers(booking, db) if db is not None else []
 
 
 def _proposal_status(booking: Booking) -> str | None:
@@ -350,6 +379,15 @@ def sign_contract(
     if not booking.guest_email:
         raise GuestBookingError(400, "Add your email first so we can send you a copy of this agreement")
     _require_open_offer(booking)
+    blockers = sign_blockers(booking, db)
+    if "waiting_on_vendor" in blockers:
+        raise GuestBookingError(409, "Your changes are with your vendor — you can sign once they answer")
+    if "price" in blockers:
+        raise GuestBookingError(409, "Your vendor still needs to add the price before you can sign")
+    # A blank venue is the client's to fill in (fill_details), so this one
+    # asks them rather than sending them back to the vendor.
+    if "location" in blockers:
+        raise GuestBookingError(409, "Add where the event is before you sign")
     # Older clients don't send a revision; the builder-era page always does.
     if revision is not None and booking.revision is not None and revision != booking.revision:
         raise GuestBookingError(

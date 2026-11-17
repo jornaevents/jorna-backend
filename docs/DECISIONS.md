@@ -1271,3 +1271,18 @@ see or change. The response keeps its shape for the iOS app, with `baseline_hour
 Left in place, unused by availability: the hours table and its `/vendors/me/availability`
 endpoints, the Google OAuth flow, the busy-cache sweeps, and write-back of approved bookings to a
 vendor's already-connected Google Calendar. Removing those is a separate cleanup.
+
+## 51. What has to be settled before the client signs (2026-11-16)
+
+`sign_contract` refuses, and the client's contract view lists as `sign_blockers`:
+
+- **`waiting_on_vendor`**: the client's own changes are unanswered, on either flow (a field
+  waiting on the vendor, or an open proposal). This reverses part of #23 and #26: signing used to
+  withdraw an open proposal, and signing "as it is" dropped the client's open asks. Once the
+  client has sent changes, the answer is the vendor's to give first. Signing "as it is" still
+  works when the open changes are the vendor's (taking them as they stand).
+- **`location`**: the place is blank or "TBD". The client can fill a blank venue in themselves
+  (`fill_details`), so the refusal asks them to.
+- **`price`**: `amount_cents` is zero or missing.
+
+Vendors can still send drafts without these. The client app words the codes itself.
