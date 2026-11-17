@@ -19,6 +19,7 @@ def _package(v, **line):
 
 def _draft(v, **body):
     payload = {
+        "location": "Grand Hall, Edison, NJ",
         "draft": True,
         "date_iso": "",
         "time_start": "",
@@ -76,6 +77,7 @@ def test_a_draft_keeps_unfinished_lines_and_payments():
 def test_a_draft_still_needs_one_of_the_vendors_packages():
     v = _setup_vendor()
     resp = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "draft": True, "date_iso": "", "time_start": "", "time_end": "",
         "line_items": [{"kind": "custom", "name": "Travel", "unit_price_cents": 5_000, "quantity": 1}],
         "conversation_id": new_chat(v["headers"]),

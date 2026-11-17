@@ -34,6 +34,7 @@ def _at(d: date) -> datetime:
 def _signed_contract(v, *, date_iso: str, schedule: list[dict], move_to: str | None = None) -> dict:
     total = sum(i["amount_cents"] for i in schedule)
     resp = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "date_iso": date_iso, "time_start": "19:00", "time_end": "23:00",
         "line_items": [{"kind": "package", "service_id": v["service_id"], "unit_price_cents": total}],
         "payment_schedule": schedule, "guest_email": "priya@example.com", "guest_name": "Priya Mehta",
@@ -135,6 +136,7 @@ def test_voided_or_unsigned_contracts_owe_nothing(outbox):
     db.close()
 
     unsigned = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "date_iso": "2027-11-17", "time_start": "19:00", "time_end": "23:00",
         "line_items": [{"kind": "package", "service_id": v["service_id"], "unit_price_cents": 100_000}],
         "payment_schedule": [{"label": "Balance", "amount_cents": 100_000, "due_type": "date", "due_date": "2027-09-01"}],

@@ -202,16 +202,19 @@ def test_a_new_proposal_replaces_the_open_one_and_can_be_withdrawn():
     assert client.post(f"/guest-bookings/{token}/proposals/{first}/withdraw").status_code == 400
 
 
-def test_signing_withdraws_an_open_proposal():
+def test_no_signing_while_the_clients_proposal_is_open():
+    """2026-11-16: signing used to withdraw an open proposal and sign the
+    vendor's version. Now it waits for the vendor's answer."""
     v = _setup_vendor()
     c = _contract(v)
     _propose(c, v)
+    view = client.get(f"/guest-bookings/{c['contract_token']}").json()
+    assert view["sign_blockers"] == ["waiting_on_vendor"]
     r = client.post(f"/guest-bookings/{c['contract_token']}/sign", json={"signer_name": "Meera Shah", "revision": 1})
-    assert r.status_code == 200
+    assert r.status_code == 409
+    assert "with your vendor" in r.json()["detail"]
     statuses = [p["status"] for p in client.get(f"/guest-bookings/{c['contract_token']}/proposals").json()["proposals"]]
-    assert statuses == ["withdrawn"]
-    # What was signed is the vendor's version, not the proposal.
-    assert r.json()["amount_cents"] == 160_000
+    assert statuses == ["open"]
 
 
 # ── Answering ────────────────────────────────────────────────────────

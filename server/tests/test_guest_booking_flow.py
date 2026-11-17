@@ -74,6 +74,7 @@ def _setup_vendor():
 
 def _create_contract(v, **overrides):
     body = {
+        "location": "Grand Hall, Edison, NJ",
         "service_id": v["service_id"],
         "date_iso": "2027-11-13",
         "time_start": "19:00",
@@ -97,7 +98,7 @@ def test_a_sent_contract_belongs_to_the_client_on_the_chat():
     draft can wait for one."""
     v = _setup_vendor()
     chat = new_chat(v["headers"])
-    contract = _create_contract(v, conversation_id=chat)
+    contract = _create_contract(v, conversation_id=chat, location="")
     assert contract["deposit_amount_cents"] == 70_000
     assert contract["location"] == "TBD"
     assert contract["signed_at"] is None
@@ -112,6 +113,7 @@ def test_a_sent_contract_belongs_to_the_client_on_the_chat():
     db.close()
 
     nobody = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "service_id": v["service_id"], "date_iso": "2027-11-20", "time_start": "19:00", "time_end": "23:00",
         "amount_cents": 140_000, "conversation_id": None,
     }, headers=v["headers"])
@@ -122,6 +124,7 @@ def test_a_sent_contract_belongs_to_the_client_on_the_chat():
     assert sent.status_code == 400 and "client's chat" in sent.json()["detail"]
 
     stranger_chat = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "service_id": v["service_id"], "date_iso": "2027-11-22", "time_start": "19:00", "time_end": "23:00",
         "amount_cents": 140_000, "conversation_id": str(uuid.uuid4()),
     }, headers=v["headers"])
@@ -134,6 +137,7 @@ def test_vendor_cannot_create_a_contract_for_someone_elses_service():
     resp = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": other["service_id"], "date_iso": "2027-11-13",
             "time_start": "19:00", "time_end": "23:00", "amount_cents": 140_000,
         },
@@ -144,7 +148,7 @@ def test_vendor_cannot_create_a_contract_for_someone_elses_service():
 
 def test_public_link_full_flow_read_fill_sign():
     v = _setup_vendor()
-    contract = _create_contract(v)
+    contract = _create_contract(v, location="")
     token = contract["contract_token"]
 
     read = client.get(f"/guest-bookings/{token}")

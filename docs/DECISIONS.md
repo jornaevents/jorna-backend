@@ -1259,6 +1259,34 @@ lived only in that browser's local backup.
   draft, so there's no earlier wording to keep.
 - Sent contracts are unchanged: every edit is still checked strictly and versioned.
 
+## 50. Availability is bookings only (2026-11-16)
+
+`GET /vendors/{id}/availability` reports a vendor busy only for bookings that commit them
+(`commits_vendor_date`). Weekly hours (`vendor_availability`) and Google Calendar busy blocks no
+longer count, and Google isn't asked: the web app dropped both from the vendor side, and the
+product owner chose to ignore the data rather than keep honouring settings vendors can no longer
+see or change. The response keeps its shape for the iOS app, with `baseline_hours_map: {}`,
+`google_busy_times: []` and `google_calendar_connected: false`.
+
+Left in place, unused by availability: the hours table and its `/vendors/me/availability`
+endpoints, the Google OAuth flow, the busy-cache sweeps, and write-back of approved bookings to a
+vendor's already-connected Google Calendar. Removing those is a separate cleanup.
+
+## 51. What has to be settled before the client signs (2026-11-16)
+
+`sign_contract` refuses, and the client's contract view lists as `sign_blockers`:
+
+- **`waiting_on_vendor`**: the client's own changes are unanswered, on either flow (a field
+  waiting on the vendor, or an open proposal). This reverses part of #23 and #26: signing used to
+  withdraw an open proposal, and signing "as it is" dropped the client's open asks. Once the
+  client has sent changes, the answer is the vendor's to give first. Signing "as it is" still
+  works when the open changes are the vendor's (taking them as they stand).
+- **`location`**: the place is blank or "TBD". The client can fill a blank venue in themselves
+  (`fill_details`), so the refusal asks them to.
+- **`price`**: `amount_cents` is zero or missing.
+
+Vendors can still send drafts without these. The client app words the codes itself.
+
 ## 52. An inquiry says what and where; its chat message knows its lead (2026-11-16)
 
 `POST /vendors/{id}/inquiries` now requires `event_type` and a location, and a `guest_count` when

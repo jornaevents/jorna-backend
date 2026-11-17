@@ -33,6 +33,7 @@ SCHEDULE = [
 
 def _proposal(v, **overrides):
     body = {
+        "location": "Grand Hall, Edison, NJ",
         "date_iso": "2027-11-13",
         "time_start": "19:00",
         "time_end": "23:00",
@@ -90,6 +91,7 @@ def test_a_document_that_doesnt_add_up_is_refused():
     base = {"date_iso": "2027-11-14", "time_start": "19:00", "time_end": "23:00"}
 
     short = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         **base,
         "line_items": [{"kind": "package", "service_id": v["service_id"], "unit_price_cents": 100_000}],
         "payment_schedule": [{"label": "Deposit", "amount_cents": 20_000}],
@@ -98,11 +100,13 @@ def test_a_document_that_doesnt_add_up_is_refused():
     assert "add up to $200.00 but the total is $1,000.00" in short.json()["detail"]
 
     theirs = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         **base, "line_items": [{"kind": "package", "service_id": other["service_id"]}],
     }, headers=v["headers"])
     assert theirs.status_code == 400
 
     no_package = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         **base, "line_items": [{"kind": "custom", "name": "Travel", "unit_price_cents": 5_000}],
     }, headers=v["headers"])
     assert no_package.status_code == 400
@@ -218,6 +222,7 @@ def test_changing_the_total_needs_a_matching_schedule():
 def test_the_old_one_package_form_still_works_as_a_one_line_contract():
     v = _setup_vendor()
     resp = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "service_id": v["service_id"], "date_iso": "2027-11-15", "time_start": "19:00",
         "time_end": "23:00", "amount_cents": 120_000, "deposit_percent": 25,
     }, headers=v["headers"])
@@ -287,6 +292,7 @@ def test_sending_goes_to_the_chat_and_the_email_points_there(monkeypatch):
     v = _with_addon(_setup_vendor())
 
     no_client = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "date_iso": "2027-11-16", "time_start": "19:00", "time_end": "23:00",
         "line_items": [{"kind": "package", "service_id": v["service_id"]}], "conversation_id": None,
     }, headers=v["headers"])

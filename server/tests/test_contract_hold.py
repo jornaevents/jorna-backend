@@ -51,7 +51,7 @@ def test_a_new_contract_is_sent_and_holds_its_date_for_seven_days():
 
     clash = client.post(
         "/contracts",
-        json={"service_id": v["service_id"], "date_iso": "2027-10-01",
+        json={"location": "Grand Hall, Edison, NJ", "service_id": v["service_id"], "date_iso": "2027-10-01",
               "time_start": "19:00", "time_end": "23:00", "amount_cents": 100_000},
         headers=v["headers"],
     )
@@ -205,7 +205,7 @@ def test_voiding_records_when():
 def _offer(v, date_iso, **extra):
     return client.post(
         "/contracts",
-        json={"service_id": v["service_id"], "date_iso": date_iso,
+        json={"location": "Grand Hall, Edison, NJ", "service_id": v["service_id"], "date_iso": date_iso,
               "time_start": "19:00", "time_end": "23:00", "amount_cents": 100_000, **extra},
         headers=v["headers"],
     )

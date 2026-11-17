@@ -67,6 +67,7 @@ def _setup_guest_contract(*, deposit_percent=50):
     db.close()
 
     contract_body = {
+        "location": "Grand Hall, Edison, NJ",
         "service_id": result["service_id"], "date_iso": "2027-08-01",
         "time_start": "10:00", "time_end": "14:00", "amount_cents": 100_000,
     }
@@ -142,6 +143,7 @@ def test_guest_cannot_mark_deposit_paid_before_signing():
     resp = client.post(
         "/contracts",
         json={
+            "location": "Grand Hall, Edison, NJ",
             "service_id": service_id, "date_iso": "2027-08-01", "time_start": "10:00",
             "time_end": "14:00", "amount_cents": 100_000, "deposit_percent": 30,
         },

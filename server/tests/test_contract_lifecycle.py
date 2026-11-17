@@ -45,13 +45,13 @@ def test_rejects_a_past_date_or_an_end_before_the_start():
         "service_id": v["service_id"], "time_start": "19:00", "time_end": "23:00",
         "amount_cents": 100_000,
     }
-    past = client.post("/contracts", json={**base, "date_iso": "2020-01-01"}, headers=v["headers"])
+    past = client.post("/contracts", json={"location": "Grand Hall, Edison, NJ", **base, "date_iso": "2020-01-01"}, headers=v["headers"])
     assert past.status_code == 400
     assert "past" in past.json()["detail"]
 
     backwards = client.post(
         "/contracts",
-        json={**base, "date_iso": "2027-11-13", "date_end": "2027-11-12"},
+        json={"location": "Grand Hall, Edison, NJ", **base, "date_iso": "2027-11-13", "date_end": "2027-11-12"},
         headers=v["headers"],
     )
     assert backwards.status_code == 400

@@ -224,6 +224,7 @@ def test_a_booking_from_before_contracts_is_one_full_amount_row():
 def test_unsigned_voided_and_other_vendors_bookings_stay_out():
     v = _setup_vendor()
     unsigned = client.post("/contracts", json={
+        "location": "Grand Hall, Edison, NJ",
         "date_iso": "2027-10-10", "time_start": "19:00", "time_end": "23:00",
         "line_items": [{"kind": "package", "service_id": v["service_id"], "unit_price_cents": 100_000}],
         "guest_email": "x@example.com", "guest_name": "X",

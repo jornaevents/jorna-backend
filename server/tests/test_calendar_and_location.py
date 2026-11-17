@@ -150,12 +150,14 @@ def test_calendar_availability_aggregation(mocker):
     assert response.status_code == 200
     data = response.json()
 
-    assert "0" in data["baseline_hours_map"]
-    assert data["baseline_hours_map"]["0"] == ["09:00", "17:00"]
+    # Only the approved booking counts. Weekly hours and Google busy blocks
+    # are ignored (2026-11-16), and Google isn't even asked.
+    assert data["baseline_hours_map"] == {}
     assert len(data["internal_busy_times"]) == 1
     assert data["internal_busy_times"][0]["start"] == "2026-03-02T10:00:00+00:00"
-    assert len(data["google_busy_times"]) == 1
-    assert data["google_busy_times"][0]["start"] == "2026-03-02T13:00:00+00:00"
+    assert data["google_busy_times"] == []
+    assert data["google_calendar_connected"] is False
+    mock_google_api.assert_not_called()
 
 
 def test_calendar_availability_vendor_not_found():

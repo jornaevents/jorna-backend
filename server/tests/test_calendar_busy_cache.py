@@ -187,8 +187,12 @@ class TestSweeps:
         assert n == len(refreshed_ids)
 
 
-class TestAvailabilityReadsTheCache:
-    def test_within_the_cached_window_no_live_call_is_made(self, mocker):
+class TestAvailabilityIgnoresGoogle:
+    """Google busy blocks no longer count toward availability (2026-11-16):
+    neither the cache nor a live fetch is read, whatever the vendor has
+    connected."""
+
+    def test_a_cached_busy_block_is_not_reported(self, mocker):
         db, vendor = _vendor(
             synced=True,
             cache=[{"start": "2026-06-01T18:00:00+00:00", "end": "2026-06-01T22:00:00+00:00"}],
@@ -200,33 +204,16 @@ class TestAvailabilityReadsTheCache:
         )
 
         live.assert_not_called()
-        assert result["google_busy_times"] == [
-            {"start": "2026-06-01T18:00:00+00:00", "end": "2026-06-01T22:00:00+00:00"}
-        ]
+        assert result["google_busy_times"] == []
+        assert result["google_calendar_connected"] is False
 
-    def test_a_request_past_the_cached_window_falls_back_to_a_live_fetch(self, mocker):
-        db, vendor = _vendor(synced=True, cache=[])
-        # Force the cache to look stale-for-this-request by asking past the
-        # window it could possibly cover — the cache has nothing for this
-        # date at all, so only a live fetch could produce a result.
-        far = (datetime.now(timezone.utc) + timedelta(days=cs.BUSY_CACHE_DAYS_AHEAD + 30)).date()
-        _mock_freebusy(mocker, [{"start": f"{far}T18:00:00Z", "end": f"{far}T22:00:00Z"}])
-
-        result = cs.get_vendor_availability(
-            vendor_id=vendor.vendor_id,
-            start_date=str(far),
-            end_date=str(far),
-            db=db,
-        )
-
-        assert len(result["google_busy_times"]) == 1
-
-    def test_never_synced_falls_back_to_a_live_fetch(self, mocker):
+    def test_never_synced_makes_no_live_fetch(self, mocker):
         db, vendor = _vendor(synced=False)
-        _mock_freebusy(mocker, [{"start": "2026-06-01T18:00:00Z", "end": "2026-06-01T22:00:00Z"}])
+        live = mocker.patch("app.services.calendar_service.create_google_calendar_service")
 
         result = cs.get_vendor_availability(
             vendor_id=vendor.vendor_id, start_date="2026-06-01", end_date="2026-06-02", db=db
         )
 
-        assert len(result["google_busy_times"]) == 1
+        live.assert_not_called()
+        assert result["google_busy_times"] == []
