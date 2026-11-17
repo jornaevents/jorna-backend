@@ -119,6 +119,7 @@ def _package_id(vendor_id: str) -> str | None:
 def _send(vendor_id: str, who: dict | None, **overrides):
     body = {
         "phone": "(732) 555-0100", "event_date_iso": _future(), "event_type": "Sangeet",
+        "location_kind": "city", "location_city": "Edison", "location_state": "NJ",
         "guest_count": 180, "note": "Looking for someone for our sangeet in Edison.",
         "service_id": _package_id(vendor_id),
     }
@@ -162,7 +163,11 @@ def test_an_inquiry_opens_the_thread_and_lands_in_leads_as_needing_the_vendor(em
 
     [message] = _thread_messages(body["conversation_id"])
     assert message.sender_id == c["user_id"]
-    assert message.content.startswith("Sangeet · ") and "about 180 guests" in message.content
+    # A list, so older apps show it as one too; the app draws it from meta.
+    assert message.content.startswith("Inquiry: Sangeet coverage\n• Event: Sangeet")
+    assert "• Where: Edison, NJ" in message.content and "• Guests: About 180" in message.content
+    assert message.meta["inquiry"]["lead_id"] == lead.lead_id
+    assert message.meta["inquiry"]["event_location"] == "Edison, NJ"
     assert message.content.endswith("Looking for someone for our sangeet in Edison.")
 
     pipe = client.get("/leads/pipeline", headers=v["headers"]).json()
@@ -227,7 +232,7 @@ def test_asking_again_reuses_the_thread_and_the_lead_and_confirms_once_a_day(ema
     db.query(Lead).filter(Lead.vendor_id == v["vendor_id"]).update({Lead.status: "contacted"})
     db.commit(); db.close()
 
-    second = _send(v["vendor_id"], c, guest_count=220, note="One more thing", event_type=None).json()["conversation_id"]
+    second = _send(v["vendor_id"], c, guest_count=220, note="One more thing").json()["conversation_id"]
 
     assert first == second
     assert len(_thread_messages(first)) == 2
@@ -404,11 +409,15 @@ def test_the_rest_can_be_left_out(emails):
     package = _package_id(v["vendor_id"])
     resp = client.post(
         f"/vendors/{v['vendor_id']}/inquiries",
-        json={"event_date_iso": _future(), "service_id": package}, headers=c["headers"],
+        json={
+            "event_date_iso": _future(), "service_id": package, "event_type": "Sangeet",
+            "location_kind": "city", "location_city": "Edison", "location_state": "nj",
+        },
+        headers=c["headers"],
     )
     assert resp.status_code == 201, resp.text
     [lead] = _leads(v["vendor_id"])
-    assert (lead.guest_count, lead.event_type, lead.event_location, lead.note) == (None, None, None, None)
+    assert (lead.guest_count, lead.event_type, lead.event_location, lead.note) == (None, "Sangeet", "Edison, NJ", None)
     # The account's phone when none is typed.
     assert lead.phone == "(201) 555-0199"
     [message] = _thread_messages(resp.json()["conversation_id"])
@@ -420,6 +429,12 @@ def test_the_rest_can_be_left_out(emails):
     ("service_id", "", "Pick the package you're asking about"),
     ("event_date_iso", None, "Add your event date"),
     ("event_date_iso", "  ", "Add your event date"),
+    # 2026-11-16 (#52): what the event is, and where.
+    ("event_type", None, "Add what the event is"),
+    ("event_type", " ", "Add what the event is"),
+    ("location_kind", None, "Add where the event is"),
+    ("location_city", "", "Add the event's city and state"),
+    ("location_state", "ZZ", "Add the event's city and state"),
 ])
 def test_a_package_and_a_date_are_required(emails, field, value, message):
     v = _vendor()
@@ -428,3 +443,41 @@ def test_a_package_and_a_date_are_required(emails, field, value, message):
     assert resp.json()["detail"] == message
     assert _leads(v["vendor_id"]) == [] and emails.call_count == 0
 
+
+
+# ── Where, and guests for a per-guest package (#52) ──────────────────
+
+def test_a_venue_is_a_full_address(emails):
+    v = _vendor()
+    venue = {
+        "location_kind": "venue", "location_street": "12 Maple Ave", "location_city": "Evanston",
+        "location_state": "IL", "location_zip": "60201",
+    }
+    r = _send(v["vendor_id"], _client(), **{**venue, "location_zip": "602"})
+    assert r.status_code == 422 and r.json()["detail"] == "Add the venue's ZIP code"
+    r = _send(v["vendor_id"], _client(), **{**venue, "location_street": " "})
+    assert r.status_code == 422 and r.json()["detail"] == "Add the venue's street address"
+
+    assert _send(v["vendor_id"], _client(), **venue).status_code == 201
+    [lead] = _leads(v["vendor_id"])
+    assert lead.event_location == "12 Maple Ave, Evanston, IL 60201"
+
+
+def test_an_older_page_can_still_send_one_line(emails):
+    v = _vendor()
+    r = _send(v["vendor_id"], _client(), location_kind=None, event_location="Pines Manor, Edison")
+    assert r.status_code == 201, r.text
+    [lead] = _leads(v["vendor_id"])
+    assert lead.event_location == "Pines Manor, Edison"
+
+
+def test_a_per_guest_package_needs_a_guest_count(emails):
+    v = _vendor()
+    db = TestingSessionLocal()
+    db.query(Service).filter(Service.vendor_id == v["vendor_id"]).update({"price_unit": "person"})
+    db.commit()
+    db.close()
+    r = _send(v["vendor_id"], _client(), guest_count=None)
+    assert r.status_code == 422
+    assert "priced per guest" in r.json()["detail"]
+    assert _send(v["vendor_id"], _client(), guest_count=150).status_code == 201

@@ -1286,3 +1286,19 @@ vendor's already-connected Google Calendar. Removing those is a separate cleanup
 - **`price`**: `amount_cents` is zero or missing.
 
 Vendors can still send drafts without these. The client app words the codes itself.
+
+## 52. An inquiry says what and where; its chat message knows its lead (2026-11-16)
+
+`POST /vendors/{id}/inquiries` now requires `event_type` and a location, and a `guest_count` when
+the package is priced per person. The location comes in parts: `location_kind` `"city"` (city and
+state) or `"venue"` (street, city, state, ZIP). It's stored as the one `event_location` line the
+lead and the contract already use ("Edison, NJ" / "12 Maple Ave, Evanston, IL 60201"), so there's
+no migration. A request without `location_kind` still sends `event_location` as one line, which
+must be non-empty. Phone stays accepted but the web form no longer asks for it.
+
+The thread message's text is a bulleted list (package, event, date, where, guests, then the note)
+for apps that show text only. Its `meta.inquiry` carries `lead_id` and the same fields, so the web
+app draws a card with **View lead**. The lead is made after the message (it needs the thread), so
+the meta is added once the lead exists.
+
+**iOS:** an inquiry from an iOS build that omits the event type or location is now refused (422).
