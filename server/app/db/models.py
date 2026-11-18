@@ -886,6 +886,10 @@ class Lead(Base):
     # When the vendor last emailed this lead their inquiry form link (0092,
     # DECISIONS #56): at most once a day, since the address is typed in.
     inquiry_link_sent_at = Column(DateTime, nullable=True)
+    # When the event starts and ends, "HH:MM", if the inquiry form said (0094,
+    # DECISIONS #58). Optional on the form.
+    time_start = Column(String(5), nullable=True)
+    time_end = Column(String(5), nullable=True)
 
 
 class Bundle(Base):

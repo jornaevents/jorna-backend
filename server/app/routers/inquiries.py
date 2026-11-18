@@ -40,6 +40,9 @@ class InquiryRequest(BaseModel):
     # One of the vendor's packages, or null for "not sure yet".
     service_id: Optional[str] = Field(default=None, max_length=36)
     guest_count: Optional[int] = None
+    # When it starts and ends, "HH:MM" (#58). Optional, together or not at all.
+    time_start: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    time_end: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     note: Optional[str] = Field(default=None, max_length=2000)
     # The honeypot: hidden on the form, so only a bot fills it in.
     website: Optional[str] = None

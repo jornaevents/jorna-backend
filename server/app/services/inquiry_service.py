@@ -80,12 +80,25 @@ def _date_label(iso: str | None) -> str | None:
     return f"{day:%b} {day.day}, {day.year}"
 
 
+def _clock(hhmm: str) -> str:
+    """"16:30" → "4:30 PM"."""
+    h, m = (int(x) for x in hhmm.split(":"))
+    return f"{h % 12 or 12}:{m:02d} {'PM' if h >= 12 else 'AM'}"
+
+
+def _times_label(start: str | None, end: str | None) -> str | None:
+    if start and end:
+        return f"{_clock(start)} – {_clock(end)}"
+    return None
+
+
 def _details_line(checked: dict, service: Service) -> str:
     """"Sangeet · Mar 12, 2027 · Edison, NJ · about 180 guests · Sangeet
     coverage" — what they filled in."""
     parts = [
         checked["event_type"],
         _date_label(checked["event_date_iso"]),
+        _times_label(checked.get("time_start"), checked.get("time_end")),
         checked["event_location"],
         f"about {checked['guest_count']:,} guests" if checked["guest_count"] else None,
         service.name,
@@ -113,6 +126,7 @@ def _thread_message(checked: dict, service: Service, note: str | None) -> str:
     rows = [
         ("Event", checked["event_type"]),
         ("Date", _date_label(checked["event_date_iso"])),
+        ("Time", _times_label(checked.get("time_start"), checked.get("time_end"))),
         ("Where", checked["event_location"]),
         ("Guests", f"About {checked['guest_count']:,}" if checked["guest_count"] else None),
     ]
@@ -160,6 +174,8 @@ def _inquiry_meta(lead: Lead, checked: dict, service: Service, note: str | None)
         "event_date_iso": checked["event_date_iso"],
         "event_location": checked["event_location"],
         "guest_count": checked["guest_count"],
+        "time_start": checked.get("time_start"),
+        "time_end": checked.get("time_end"),
         "note": note,
     }
 
@@ -170,6 +186,7 @@ def send_inquiry(
     db: Session, event_location: str | None = None, service_id: str | None = None,
     location_kind: str | None = None, location_street: str | None = None, location_city: str | None = None,
     location_state: str | None = None, location_zip: str | None = None,
+    time_start: str | None = None, time_end: str | None = None,
 ) -> dict:
     vendor, vendor_user = _open_vendor(vendor_id, db)
     vendor_name = _vendor_name(vendor_user)
@@ -198,6 +215,10 @@ def send_inquiry(
     except ContractError as e:
         raise InquiryError(e.status_code, e.detail)
     note = (note or "").strip() or None
+    # Both or neither: half a time range is a contract that can't be signed.
+    if bool(time_start) != bool(time_end):
+        raise InquiryError(422, "Add both a start and an end time, or leave both out")
+    checked["time_start"], checked["time_end"] = time_start or None, time_end or None
     service = _package(vendor_id, service_id, db)
     if _normalize_unit(service.price_unit) == "person" and not checked["guest_count"]:
         raise InquiryError(422, f"Add a guest count — {service.name} is priced per guest")
@@ -272,7 +293,7 @@ def _lead_for(
             lead.conversation_id = conversation_id
             lead.user_id = caller.user_id
     if lead:
-        for field in ("phone", "event_date_iso", "event_type", "event_location", "guest_count"):
+        for field in ("phone", "event_date_iso", "event_type", "event_location", "guest_count", "time_start", "time_end"):
             if checked[field] is not None:
                 setattr(lead, field, checked[field])
         lead.service_id = service.service_id
@@ -288,6 +309,7 @@ def _lead_for(
             event_date_iso=checked["event_date_iso"], event_type=checked["event_type"],
             guest_count=checked["guest_count"], event_location=checked["event_location"],
             service_id=service.service_id, note=note, status="new", source="inquiry_form",
+            time_start=checked["time_start"], time_end=checked["time_end"],
             user_id=caller.user_id, conversation_id=conversation_id, created_at=now, updated_at=now,
         )
         db.add(lead)
@@ -308,6 +330,7 @@ def _email_vendor(lead: Lead, vendor_user: User | None, conversation_id: str) ->
         ("Date", _date_label(lead.event_date_iso)),
         ("Where", lead.event_location),
         ("Guests", f"About {lead.guest_count:,}" if lead.guest_count else None),
+        ("Time", _times_label(lead.time_start, lead.time_end)),
         ("Package", lead.service.name if lead.service else None),
     ]
     details = "".join(

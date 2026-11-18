@@ -1378,3 +1378,10 @@ stored. A ceiling of 500 a person a day keeps a page bug from filling the table;
 dropped quietly. What the backend already knows (inquiry requests sent, inquiries that followed)
 is counted from its own rows in `GET /admin/usage-summary`, not reported twice.
 
+## 58. The inquiry can say when (2026-11-18)
+
+Contracts start from the client's inquiry (#54), but the form had no times, so the start and end
+only ever came from chat. `time_start` and `time_end` ("HH:MM") are now optional on the form and
+kept on the lead (0094). Both or neither: half a range is a contract that can't be signed, so
+it's refused. A second inquiry with times updates the lead, like its other fields.
+

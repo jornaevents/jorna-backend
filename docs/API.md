@@ -184,6 +184,10 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   the lead already has a chat (ask there); 429 within 24 hours (`leads.inquiry_link_sent_at`,
   0092); 502 when the email fails (not counted). The client's inquiry then attaches to that lead
   by email instead of making a second one.
+- **Times on the inquiry (DECISIONS #58).** `POST /vendors/{id}/inquiries` takes optional
+  `time_start` and `time_end` ("HH:MM", 24-hour), both or neither (422 otherwise). They're kept on
+  the lead (`leads.time_start`/`time_end`, 0094, also on `GET /leads`), in `meta.inquiry`, as a
+  "• Time: 4:00 PM – 10:30 PM" line in the message and in the vendor's email.
   It also emails the client "{vendor} asked for your event details" with a link to the chat
   (best effort: the card is posted either way).
 - Vendor booking payloads now carry `created_at` (null before 0066),
