@@ -1368,3 +1368,13 @@ way to point them at it. `POST /leads/{id}/inquiry-link` emails that lead the ve
   matches the client's, case-insensitive, and takes that one: it gains the chat, the account and
   the form's answers. Any other client's inquiry makes its own lead as before.
 
+## 57. Usage is counted, never content (2026-11-18)
+
+Version 2 of Contract Builder from Chat holds the AI back until we know vendors use the chat
+panel. `usage_events` (0093) counts named actions the web app reports: the panel opened, Use
+clicked and on what kind, the inquiry form sent, the inquiry link shared. Each name has an allowed
+list of fields, each a short fixed value or a small number, so nothing a person typed can be
+stored. A ceiling of 500 a person a day keeps a page bug from filling the table; past it events are
+dropped quietly. What the backend already knows (inquiry requests sent, inquiries that followed)
+is counted from its own rows in `GET /admin/usage-summary`, not reported twice.
+
