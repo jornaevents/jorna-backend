@@ -169,6 +169,15 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   `closed` — the label that vendor sees on the chat (DECISIONS #42). Null
   for the vendor (their app works out its own), for plan chats, and when
   nothing's been requested.
+- **Inquiry first (DECISIONS #54).** `GET /conversations` rows and
+  `GET /conversations/{id}` carry `has_inquiry`: the thread has a lead the
+  client sent through the inquiry form (`source` = `inquiry_form`); a lead the
+  vendor added doesn't count. `POST /conversations/{id}/inquiry-request`
+  (the thread's vendor only) posts a message with `kind` `inquiry_request`
+  and `meta.vendor_id`, asking the client to fill in the form; its `content`
+  says so with a link to the client's chat. 201 with the message; 403 for
+  anyone but the thread's vendor, 400 on a thread with no client, 409 once
+  `has_inquiry` is true, 429 within 24 hours of the last one.
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`.
 

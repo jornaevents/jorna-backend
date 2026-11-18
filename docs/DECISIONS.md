@@ -1321,3 +1321,23 @@ existing account ignores `side`. It says which side someone meant to join, never
 When a new Google identity uses the shared sign-in page, which doesn't know the side, the web app
 looks it up with `/auth/google/lookup` (creates nothing), asks "Planning an event, or a vendor?",
 then calls `/auth/google/register` with the answer.
+
+## 54. Every contract starts from the client's inquiry (2026-11-18)
+
+A chat with a vendor starts one of two ways: the client asks a question, or sends the inquiry form.
+Both reuse the client's one thread with that vendor (`open_enquiry`), so an inquiry sent from a
+question chat lands in that chat. A contract should be built from the form's answers (date, event,
+where, guests, package), so the vendor's Send contract waits for one.
+
+- **`has_inquiry`** on a thread: it has a lead with `source` `inquiry_form`. A lead the vendor typed
+  in or added from the thread doesn't count; it's the vendor's notes, not the client's answers. When
+  the client then sends the form, `inquiry_service._lead_for` updates that same open lead, which
+  then counts. Any lead status counts: a won or lost inquiry still left its details.
+- **`POST /conversations/{id}/inquiry-request`** is the vendor's Send inquiry form: a message of kind
+  `inquiry_request` that the client app draws as a card opening the form. Only the thread's vendor,
+  only with a client on the thread, never once `has_inquiry` is true, and at most once in 24 hours
+  so it can't become a nag. It skips the flood count, which is for typed messages.
+- Its `content` is a full sentence with a link to the client's chat, so an app that doesn't know the
+  kind (iOS today) still shows something to act on.
+- No migration: `kind` is a free string (`String(16)`) and the request is just a message.
+

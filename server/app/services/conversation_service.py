@@ -18,9 +18,10 @@ from sqlalchemy.orm import Session
 
 from app.services.message_labels import client_labels
 from app.services.names import vendor_user_display_name
+from app.config import CLIENT_WEB_APP_URL
 from app.db.models import (
     Booking, Bundle, Conversation, ConversationMember,
-    GroupMessage, GroupMessageRead, Service, User, UserBlock, Vendor,
+    GroupMessage, GroupMessageRead, Lead, Service, User, UserBlock, Vendor,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,12 @@ logger = logging.getLogger(__name__)
 SUBJECT_BUNDLE = "bundle"
 SUBJECT_BOOKING = "booking"
 SUBJECT_ENQUIRY = "enquiry"
+
+# The lead source inquiry_service writes for the client's inquiry form.
+INQUIRY_FORM_SOURCE = "inquiry_form"
+# A vendor asking the client for that form (DECISIONS #54), and how often.
+KIND_INQUIRY_REQUEST = "inquiry_request"
+INQUIRY_REQUEST_EVERY = timedelta(hours=24)
 
 # ── Limits ────────────────────────────────────────────────────────────
 #
@@ -144,6 +151,7 @@ def _conversation_dict(
     unread_count: int = 0,
     db: Session | None = None,
     label: dict | None = None,
+    has_inquiry: bool = False,
 ) -> dict:
     return {
         "conversation_id": conv.conversation_id,
@@ -166,6 +174,10 @@ def _conversation_dict(
         # set only for the client in a chat with one vendor, who sees the same
         # label that vendor does (message_labels). Null otherwise.
         "label": label,
+        # The client has sent this vendor the inquiry form from this thread
+        # (a lead with source "inquiry_form" on it): what a contract is built
+        # from, so the vendor's Send contract waits for it (DECISIONS #54).
+        "has_inquiry": has_inquiry,
         "last_message": {
             "content": last_message.content,
             "sender_id": last_message.sender_id,
@@ -517,6 +529,60 @@ def _booking_ref(booking: Booking) -> dict:
     return {"booking_id": booking.booking_id, "bundle_id": booking.bundle_id}
 
 
+def request_inquiry(*, conversation_id: str, caller_user_id: str, db: Session) -> dict:
+    """The vendor on a thread asks the client for their event details: a card
+    in the chat that opens the inquiry form (DECISIONS #54). Until the client
+    sends it, there's nothing to build a contract from.
+
+    Only the thread's vendor, only on a thread with a client, and not once the
+    client has sent an inquiry. At most once a day, so it can't become a
+    nag. The text says what to do and links to the chat, for a client app
+    that doesn't draw the card (iOS).
+    """
+    _assert_is_member(conversation_id, caller_user_id, db)
+    conv = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
+    if not conv:
+        raise ConversationError(404, "Conversation not found")
+    vendor = (
+        db.query(Vendor).filter(Vendor.vendor_id == conv.vendor_id).first()
+        if conv.vendor_id else None
+    )
+    if vendor is None or vendor.user_id != caller_user_id:
+        raise ConversationError(403, "Only the vendor in this chat can ask for an inquiry")
+    if not conv.client_user_id:
+        raise ConversationError(400, "This chat has no client to ask")
+    client = db.query(User).filter(User.user_id == conv.client_user_id).first()
+    client_name = ((client.f_name or "").strip() if client else "") or "The client"
+    if conversation_id in _with_inquiry([conversation_id], db):
+        raise ConversationError(409, f"{client_name} has already sent their event details")
+    since = datetime.now(timezone.utc) - INQUIRY_REQUEST_EVERY
+    asked = db.query(GroupMessage.message_id).filter(
+        GroupMessage.conversation_id == conversation_id,
+        GroupMessage.kind == KIND_INQUIRY_REQUEST,
+        GroupMessage.created_at >= since,
+    ).first()
+    if asked:
+        raise ConversationError(429, f"You asked {client_name} today. You can ask again tomorrow.")
+
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first()
+    vendor_name = vendor_user_display_name(vendor_user, "Your vendor")
+    link = f"{CLIENT_WEB_APP_URL.rstrip('/')}/conversation/?id={conversation_id}"
+    content = (
+        f"{vendor_name} asked for your event details. "
+        f"Fill in the inquiry form so they can send you a contract: {link}"
+    )
+    return send_group_message(
+        conversation_id=conversation_id,
+        content=content,
+        caller_user_id=caller_user_id,
+        db=db,
+        kind=KIND_INQUIRY_REQUEST,
+        meta={"vendor_id": vendor.vendor_id},
+        # Limited above, once a day; the flood count is for typed messages.
+        skip_limits=True,
+    )
+
+
 def post_offer_message(
     *, booking_id: str, sender_user_id: str, content: str, meta: dict, db: Session
 ) -> None:
@@ -716,11 +782,26 @@ def _live_conversations(caller_user_id: str, db: Session) -> list[Conversation]:
     return [c for c in conversations if _subject_is_live(c, live_bundles, live_bookings)]
 
 
+def _with_inquiry(conversation_ids: list[str], db: Session) -> set[str]:
+    """Of these threads, the ones with a lead the client sent through the
+    inquiry form. A lead the vendor typed in ("manual", or added from a
+    thread) doesn't count: it's the vendor's notes, not the client's answers.
+    Any status: a won or lost inquiry still left its details."""
+    if not conversation_ids:
+        return set()
+    rows = db.query(Lead.conversation_id).filter(
+        Lead.conversation_id.in_(conversation_ids),
+        Lead.source == INQUIRY_FORM_SOURCE,
+    ).distinct().all()
+    return {cid for (cid,) in rows}
+
+
 def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
     """Return every conversation the caller is in, newest activity first."""
     conversations = _live_conversations(caller_user_id, db)
     unread = _unread_by_conversation([c.conversation_id for c in conversations], caller_user_id, db)
     labels = client_labels(conversations, caller_user_id, db)
+    inquired = _with_inquiry([c.conversation_id for c in conversations], db)
 
     result = []
     for conv in conversations:
@@ -741,6 +822,7 @@ def list_conversations(*, caller_user_id: str, db: Session) -> list[dict]:
             unread_count=unread.get(conv.conversation_id, 0),
             db=db,
             label=labels.get(conv.conversation_id),
+            has_inquiry=conv.conversation_id in inquired,
         ))
 
     # Ordered by what happened last, not by when the chat was made. Created-at
@@ -777,6 +859,7 @@ def get_conversation(*, conversation_id: str, caller_user_id: str, db: Session) 
         unread_count=unread.get(conversation_id, 0),
         db=db,
         label=client_labels([conv], caller_user_id, db).get(conversation_id),
+        has_inquiry=conversation_id in _with_inquiry([conversation_id], db),
     )
 
 
