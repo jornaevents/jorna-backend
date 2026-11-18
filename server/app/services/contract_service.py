@@ -1493,6 +1493,45 @@ def claim_open_leads(booking: Booking, db: Session) -> None:
             lead.updated_at = now
 
 
+# What an edit may change on a draft: the create fields an update also takes.
+# service_id rides on the package line; draft, hold_days, email_client and
+# conversation_id are about sending, handled by send_contract.
+_DRAFT_UPDATE_FIELDS = (
+    "date_iso", "date_end", "time_start", "time_end", "amount_cents", "deposit_percent",
+    "cancellation_window_hours", "overtime_rate_cents", "addon_rate_cents", "contract_terms",
+    "guest_name", "guest_email", "guest_phone", "location", "guest_count", "line_items",
+    "discount_cents", "payment_schedule", "terms_clauses", "document_title", "document_layout",
+    "allow_held_clash",
+)
+
+
+def _convert_again(lead: Lead, caller_user_id: str, contract_fields: dict, db: Session) -> dict:
+    """A lead that's already been turned into a contract, converted again: a
+    second tab, a retry after a dropped response, or Send contract opened
+    twice from the chat. While that contract is still a draft it's the same
+    contract, so this brings it up to date with what was sent (and sends it,
+    when asked) instead of failing (audit bug 2). Once it's gone out, the
+    vendor edits or resends it from Contracts.
+    """
+    booking = db.query(Booking).filter(Booking.booking_id == lead.converted_booking_id).first()
+    if booking is None or booking.contract_status != "draft":
+        raise ContractError(409, "This lead already has a contract. Open it from Contracts to edit or resend it.")
+    update_data = {
+        k: contract_fields[k] for k in _DRAFT_UPDATE_FIELDS if contract_fields.get(k) is not None
+    }
+    contract = update_contract(
+        booking_id=booking.booking_id, caller_user_id=caller_user_id, update_data=update_data, db=db,
+    )
+    if contract_fields.get("draft"):
+        return contract
+    return send_contract(
+        booking_id=booking.booking_id, caller_user_id=caller_user_id, db=db,
+        hold_days=contract_fields.get("hold_days"),
+        email_client=bool(contract_fields.get("email_client")),
+        allow_held_clash=bool(contract_fields.get("allow_held_clash")),
+    )
+
+
 def convert_lead(*, lead_id: str, caller_user_id: str, db: Session, **contract_fields) -> dict:
     """Turn a lead into a real contract/booking — create_contract's
     arguments, minus the vendor. The lead row is kept afterward (not
@@ -1500,7 +1539,7 @@ def convert_lead(*, lead_id: str, caller_user_id: str, db: Session, **contract_f
     converted_booking_id."""
     lead = _own_lead(lead_id=lead_id, caller_user_id=caller_user_id, db=db)
     if lead.converted_booking_id:
-        raise ContractError(400, "This lead has already been converted")
+        return _convert_again(lead, caller_user_id, contract_fields, db)
 
     # The lead fills whatever the vendor left blank on the form; anything
     # they typed there is the newer, deliberate answer. Filled in before

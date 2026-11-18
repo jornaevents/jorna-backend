@@ -260,6 +260,10 @@ signing link**. `email_client` is ignored.
   400 otherwise), else the lead's account (`leads.user_id`), else the marketplace request's.
   Sending without one is 400 "Send contracts from your client's chat on Jorna — start it from
   Messages or their lead". A draft can be saved without one.
+- **Converting a lead again** (DECISIONS #55): while the contract it was converted to is still a
+  draft, `POST /leads/{lead_id}/convert` updates that draft with the body's fields and returns it
+  (201, same `booking_id`), sending it too unless `draft` is true. Once it has gone out it's 409
+  "This lead already has a contract. Open it from Contracts to edit or resend it." (was 400).
 - The contract's `user_id` is that client, so it's in their bookings (`GET /bookings/{id}` gives
   them `contract_token`), and they open it in their app.
 - `email_sent` is `true`/`false` for whether the provider took the email. The timeline records
