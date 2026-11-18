@@ -620,3 +620,14 @@ through Jorna. Every write returns the whole registry, the shape `GET` returns.
   the fund and its gifts.
 - `POST /registry/funds/{fund_id}/gifts` `{from_name, amount_cents, thanked?}`.
 - `PATCH /registry/gifts/{gift_id}` `{from_name?, amount_cents?, thanked?}` · `DELETE`.
+
+## Usage events (DECISIONS #57)
+
+- `POST /usage-events` `{name, props}` (signed in) counts one use of a feature. Names and their
+  allowed fields: `mention_panel_opened {count}`, `mention_used {kind}`, `inquiry_form_sent
+  {from: messages|editor}`, `inquiry_link_shared {how: email|copy}`. Any other name, field or
+  value is 422; free text can't be stored. Over 500 a person a day, `{recorded: false}`.
+- `GET /admin/usage-summary?days=30` (admin) returns counts by name, `mention_used` by kind, how
+  many people, and `inquiry_requests: {threads_asked, threads_answered}`: threads with an
+  `inquiry_request` in the window, and of those, how many then got a client inquiry.
+

@@ -1265,3 +1265,23 @@ class GuestInvite(Base):
     status = Column(String(20), nullable=False, default="no_reply")
     attending_count = Column(Integer, nullable=True)
     responded_at = Column(DateTime, nullable=True)
+
+
+class UsageEvent(Base):
+    """One counted action (0093, DECISIONS #57): which feature, by whom, when,
+    and a few short fields. Never message text — this measures use, not
+    content."""
+
+    __tablename__ = "usage_events"
+
+    id = Column(String(36), primary_key=True, default=uuid_str)
+    name = Column(String(40), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    props = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_usage_events_name_created", "name", "created_at"),
+        Index("ix_usage_events_user_created", "user_id", "created_at"),
+    )
+
