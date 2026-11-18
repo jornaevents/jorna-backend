@@ -116,3 +116,30 @@ def test_only_the_vendor_in_the_chat_can_ask():
     conv = _ask_question(v, c)
     assert _request(conv, c).status_code == 403
     assert _request(conv, other).status_code == 403
+
+
+def test_the_client_is_emailed_with_a_link_to_the_chat(monkeypatch):
+    import app.services.email_service as es
+
+    sent = []
+    monkeypatch.setattr(es, "send_email", lambda **kw: sent.append(kw) or {"success": True})
+    v, c = _vendor(), _client()
+    conv = _ask_question(v, c)
+    assert _request(conv, v).status_code == 201
+
+    [mail] = sent
+    assert mail["to"] == c["email"]
+    assert mail["subject"] == "Arjun Kapoor asked for your event details"
+    assert f"/conversation/?id={conv}" in mail["html"]
+
+
+def test_a_failed_email_still_posts_the_card(monkeypatch):
+    import app.services.email_service as es
+
+    def boom(**kw):
+        raise RuntimeError("mail down")
+
+    monkeypatch.setattr(es, "send_email", boom)
+    v, c = _vendor(), _client()
+    conv = _ask_question(v, c)
+    assert _request(conv, v).status_code == 201

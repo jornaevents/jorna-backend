@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.services.message_labels import client_labels
 from app.services.names import vendor_user_display_name
+from html import escape
+
 from app.config import CLIENT_WEB_APP_URL
 from app.db.models import (
     Booking, Bundle, Conversation, ConversationMember,
@@ -571,7 +573,7 @@ def request_inquiry(*, conversation_id: str, caller_user_id: str, db: Session) -
         f"{vendor_name} asked for your event details. "
         f"Fill in the inquiry form so they can send you a contract: {link}"
     )
-    return send_group_message(
+    message = send_group_message(
         conversation_id=conversation_id,
         content=content,
         caller_user_id=caller_user_id,
@@ -581,6 +583,30 @@ def request_inquiry(*, conversation_id: str, caller_user_id: str, db: Session) -
         # Limited above, once a day; the flood count is for typed messages.
         skip_limits=True,
     )
+    _email_inquiry_request(client, vendor_name, link)
+    return message
+
+
+def _email_inquiry_request(client: User | None, vendor_name: str, link: str) -> None:
+    """The request by email too: a chat message and a push are easy to miss,
+    and until the client answers there's no contract to send. Best effort,
+    like the contract email: the card is in the chat either way."""
+    if not client or not client.email:
+        return
+    from app.services.email_service import send_email
+
+    name = escape(vendor_name)
+    try:
+        send_email(
+            to=client.email,
+            subject=f"{vendor_name} asked for your event details",
+            html=(
+                f"<p>{name} asked for your event details so they can send you a contract.</p>"
+                f'<p><a href="{escape(link)}">Fill in the inquiry form in your messages on Jorna</a>.</p>'
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Inquiry request email failed for %s: %s", client.user_id, exc)
 
 
 def post_offer_message(

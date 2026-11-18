@@ -1340,6 +1340,8 @@ where, guests, package), so the vendor's Send contract waits for one.
 - Its `content` is a full sentence with a link to the client's chat, so an app that doesn't know the
   kind (iOS today) still shows something to act on.
 - No migration: `kind` is a free string (`String(16)`) and the request is just a message.
+- The request is emailed to the client too (2026-11-18): a chat message and a push are easy to miss,
+  and there's no contract until they answer. Best effort, like the contract email.
 
 ## 55. Converting a lead twice updates its draft (2026-11-18)
 
