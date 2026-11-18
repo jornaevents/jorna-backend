@@ -178,6 +178,8 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   says so with a link to the client's chat. 201 with the message; 403 for
   anyone but the thread's vendor, 400 on a thread with no client, 409 once
   `has_inquiry` is true, 429 within 24 hours of the last one.
+  It also emails the client "{vendor} asked for your event details" with a link to the chat
+  (best effort: the card is posted either way).
 - Vendor booking payloads now carry `created_at` (null before 0066),
   `sent_at` and `vendor_archived_at`.
 
