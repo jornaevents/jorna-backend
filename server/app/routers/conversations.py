@@ -3,7 +3,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -22,6 +24,7 @@ from app.services.conversation_service import (
     _assert_is_member,
 )
 from app.services.pipeline_service import PipelineError, lead_from_conversation
+from app.services.detail_proposal_service import answer as answer_detail, propose as propose_detail
 from app.services.ws_manager import manager
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -174,6 +177,51 @@ async def request_inquiry_route(
         )
     except ConversationError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+    await manager.broadcast(conversation_id, message)
+    return message
+
+
+class DetailProposalRequest(BaseModel):
+    field: Literal["date", "times", "guests", "addon"]
+    value: str | int = Field(...)
+
+
+@router.post("/{conversation_id}/details", summary="Propose an event detail in this chat", status_code=201)
+async def propose_detail_route(
+    conversation_id: str,
+    body: DetailProposalRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A date, the times ("HH:MM-HH:MM"), a guest count, or an add-on id
+    (DECISIONS #59). Either side of a client–vendor thread; the other answers."""
+    try:
+        message = await run_in_threadpool(
+            propose_detail, conversation_id=conversation_id, caller_user_id=current_user.user_id,
+            field=body.field, value=body.value, db=db,
+        )
+    except ConversationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    await manager.broadcast(conversation_id, message)
+    return message
+
+
+@router.post("/{conversation_id}/details/{message_id}/{answer}", summary="Agree to or decline a proposed detail")
+async def answer_detail_route(
+    conversation_id: str,
+    message_id: str,
+    answer: Literal["agree", "decline"],
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        message = await run_in_threadpool(
+            answer_detail, conversation_id=conversation_id, message_id=message_id,
+            caller_user_id=current_user.user_id, agree=answer == "agree", db=db,
+        )
+    except ConversationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    # The same message, answered: open sockets replace the card in place.
     await manager.broadcast(conversation_id, message)
     return message
 

@@ -1385,3 +1385,13 @@ only ever came from chat. `time_start` and `time_end` ("HH:MM") are now optional
 kept on the lead (0094). Both or neither: half a range is a contract that can't be signed, so
 it's refused. A second inquiry with times updates the lead, like its other fields.
 
+## 59. A detail agreed in chat is exact (2026-11-18)
+
+The "Mentioned in chat" panel can only show what was said; it can't know what was agreed. A
+`detail_proposal` message is the agreement itself: one side proposes a date, the times, a guest
+count or one of the vendor's add-ons, and the other taps Agree or Decline. Values are checked as
+the contract checks them, so an agreed one always fits it. Either side can propose (the vendor
+proposing "4 pm start" is as common as the client asking). Only the other side answers, once;
+a newer proposal for the same field replaces the open one, so the latest is always the one to
+answer. It's a message, not a table: the thread is the record, and no migration is needed.
+
