@@ -1336,6 +1336,8 @@ def _lead_dict(lead: Lead) -> dict:
         "event_type": lead.event_type,
         "guest_count": lead.guest_count,
         "event_location": lead.event_location,
+        "time_start": lead.time_start,
+        "time_end": lead.time_end,
         "service_id": lead.service_id,
         "service_name": lead.service.name if lead.service else None,
         "note": lead.note,
