@@ -178,6 +178,14 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   says so with a link to the client's chat. 201 with the message; 403 for
   anyone but the thread's vendor, 400 on a thread with no client, 409 once
   `has_inquiry` is true, 429 within 24 hours of the last one.
+- **Propose a detail (DECISIONS #59).** `POST /conversations/{id}/details` `{field, value}`: `field`
+  is `date` ("YYYY-MM-DD", not past), `times` ("HH:MM-HH:MM"), `guests` (1–100,000) or `addon` (an
+  add-on id from the vendor's packages). Either side of a client–vendor thread (403 otherwise);
+  422 for a value the contract couldn't take. 201 with a message of kind `detail_proposal`,
+  `meta: {field, value, label, status: "open", proposed_by, addon?}`; an open proposal for the
+  same field becomes `replaced`. `POST /conversations/{id}/details/{message_id}/agree|decline`:
+  the other side only (403 for the proposer), while open (409 after); returns the message with
+  `status` `agreed`/`declined`, `answered_by`, `answered_at`, broadcast so open chats update it.
 - **Inquiry link for a lead (DECISIONS #56).** `POST /leads/{lead_id}/inquiry-link` emails a lead the
   vendor typed in the link to their inquiry form (`{CLIENT_WEB_APP_URL}/inquire/?vendor=…`), with
   the vendor as reply-to. 200 `{sent, link, sent_to}`; 400 with no email or a closed lead; 409 when
