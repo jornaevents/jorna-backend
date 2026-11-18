@@ -39,6 +39,13 @@ alone. For which router owns which resource, see `docs/MODULE_MAP.md`.
   expires_in_minutes}` (`sent_to` masked). Wrong / expired / too many tries
   are `400` with a readable `detail`; a failed send is `502`. `GET /me`
   carries `email_verified`; changing the email in `PATCH /me` clears it.
+- **What the account is (0091, DECISIONS #53).** `POST /auth/register` and
+  `POST /auth/google/register` take an optional `side`, `"client"` or
+  `"vendor"` (anything else is 422), stored as `users.signup_side`; Google
+  stores it only when that call creates the account. `GET /me` and
+  `PATCH /me` return `is_vendor` (the account has a vendor profile) and
+  `signup_side` (`null` for older accounts and iOS). `is_vendor: false`
+  with `signup_side: "vendor"` is a vendor who hasn't finished onboarding.
 - `POST /auth/logout` invalidates all access tokens; pass `refresh_token` in
   the body to log out only that device, or omit it to invalidate every
   refresh token for the user (all devices).

@@ -1302,3 +1302,22 @@ app draws a card with **View lead**. The lead is made after the message (it need
 the meta is added once the lead exists.
 
 **iOS:** an inquiry from an iOS build that omits the event type or location is now refused (422).
+
+## 53. /me says what the account is (2026-11-18)
+
+An account is a vendor when it has a vendors row, as before. The web apps used to find that out
+with a second request (`GET /vendors/me`) after the page had drawn, and showed the client app while
+they waited. That was the flash of the wrong app vendors and clients saw around signing in. `GET /me`
+now carries `is_vendor`, so an app knows what the account is as soon as it knows who's signed in.
+
+A vendor sign-up makes a plain user; the vendors row only appears at onboarding's first step. Someone
+who signed up as a vendor and left before that looked exactly like a client, and signing in again
+sent them to the client app. `users.signup_side` (0091) records which sign-up made the account:
+`"vendor"`, `"client"`, or NULL for accounts made before it existed and for iOS, which doesn't send
+it yet. It's set once, when the account is created, and never changes: a Google sign-in to an
+existing account ignores `side`. It says which side someone meant to join, never what they are:
+`is_vendor` decides that.
+
+When a new Google identity uses the shared sign-in page, which doesn't know the side, the web app
+looks it up with `/auth/google/lookup` (creates nothing), asks "Planning an event, or a vendor?",
+then calls `/auth/google/register` with the answer.

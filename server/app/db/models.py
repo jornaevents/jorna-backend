@@ -55,6 +55,12 @@ class User(Base):
     # (0084, DECISIONS #44). Cleared when the email changes. NULL for older
     # password accounts until they enter a code.
     email_verified_at = Column(DateTime, nullable=True)
+    # Which sign-up made this account: "vendor" (the vendor sign-up) or
+    # "client" (the client sign-up), so a vendor who quit onboarding before
+    # their profile existed is still sent back to it (0091). NULL for accounts
+    # made before it was recorded, and from clients that don't send it (iOS).
+    # Whether the account IS a vendor is still a vendors row, never this.
+    signup_side = Column(String(10), nullable=True)
 
     # The card kept for this client, and the Stripe Customer it belongs to.
     # Collected once when a plan is sent and charged when a vendor accepts —
