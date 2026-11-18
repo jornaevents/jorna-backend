@@ -14,6 +14,7 @@ from app.services.conversation_service import (
     get_conversation,
     open_booking_thread,
     open_enquiry,
+    request_inquiry,
     send_group_message,
     get_group_messages,
     get_unread_count,
@@ -150,6 +151,31 @@ def lead_from_conversation_route(
     except PipelineError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return JSONResponse(lead, status_code=201 if created else 200)
+
+
+@router.post(
+    "/{conversation_id}/inquiry-request",
+    summary="Ask the client in this chat to fill in the inquiry form",
+    status_code=201,
+)
+async def request_inquiry_route(
+    conversation_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The vendor's "Send inquiry form" (DECISIONS #54): posts a card asking
+    the client for their event details, and pushes it to open sockets."""
+    try:
+        message = await run_in_threadpool(
+            request_inquiry,
+            conversation_id=conversation_id,
+            caller_user_id=current_user.user_id,
+            db=db,
+        )
+    except ConversationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    await manager.broadcast(conversation_id, message)
+    return message
 
 
 @router.post("/{conversation_id}/messages", summary="Send a message to a group conversation", status_code=201)
