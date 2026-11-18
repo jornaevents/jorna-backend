@@ -1353,3 +1353,18 @@ what was sent (the fields an update takes; `service_id` rides on the package lin
 then sends it unless the request asked for a draft. Once it has gone out, a second conversion is a
 409 that sends the vendor to Contracts, where it's edited or resent. Nothing new is ever created.
 
+## 56. A lead the vendor typed in can be sent the inquiry form (2026-11-18)
+
+Clients join Jorna by making an account to send a vendor's inquiry form; that stays the only way.
+A vendor who meets a client by phone or in person types them in as a lead, and until now had no
+way to point them at it. `POST /leads/{id}/inquiry-link` emails that lead the vendor's
+`/inquire/?vendor=` link, with the vendor as reply-to.
+
+- **Once a day per lead** (`leads.inquiry_link_sent_at`, 0092). The address is whatever the vendor
+  typed, so it's limited like the in-chat request. A failed send isn't counted.
+- **Not for a lead with a chat**: the vendor asks there with Send inquiry form (#54).
+- **One client, one lead.** When the inquiry arrives and its thread has no open lead,
+  `_lead_for` looks for an open lead the vendor typed in with no chat and no account whose email
+  matches the client's, case-insensitive, and takes that one: it gains the chat, the account and
+  the form's answers. Any other client's inquiry makes its own lead as before.
+

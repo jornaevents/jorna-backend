@@ -178,6 +178,12 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   says so with a link to the client's chat. 201 with the message; 403 for
   anyone but the thread's vendor, 400 on a thread with no client, 409 once
   `has_inquiry` is true, 429 within 24 hours of the last one.
+- **Inquiry link for a lead (DECISIONS #56).** `POST /leads/{lead_id}/inquiry-link` emails a lead the
+  vendor typed in the link to their inquiry form (`{CLIENT_WEB_APP_URL}/inquire/?vendor=…`), with
+  the vendor as reply-to. 200 `{sent, link, sent_to}`; 400 with no email or a closed lead; 409 when
+  the lead already has a chat (ask there); 429 within 24 hours (`leads.inquiry_link_sent_at`,
+  0092); 502 when the email fails (not counted). The client's inquiry then attaches to that lead
+  by email instead of making a second one.
   It also emails the client "{vendor} asked for your event details" with a link to the chat
   (best effort: the card is posted either way).
 - Vendor booking payloads now carry `created_at` (null before 0066),

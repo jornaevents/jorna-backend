@@ -11,6 +11,7 @@ import logging
 import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
+from html import escape
 
 from sqlalchemy.orm import Session
 
@@ -1431,6 +1432,50 @@ def _own_lead(*, lead_id: str, caller_user_id: str, db: Session) -> Lead:
         raise ContractError(404, "Lead not found")
     _own_vendor(vendor_id=lead.vendor_id, caller_user_id=caller_user_id, db=db)
     return lead
+
+
+INQUIRY_LINK_EVERY = timedelta(hours=24)
+
+
+def send_inquiry_link(*, lead_id: str, caller_user_id: str, db: Session) -> dict:
+    """Email a lead the vendor typed in (met by phone, in person) the link to
+    the vendor's inquiry form (DECISIONS #56). That's the way onto Jorna:
+    the client makes an account to send it, and the inquiry lands on this
+    lead (inquiry_service._lead_for matches it by email), so it isn't counted
+    twice. Not for a lead with a chat already: the vendor asks there."""
+    lead = _own_lead(lead_id=lead_id, caller_user_id=caller_user_id, db=db)
+    if lead.converted_booking_id or lead.status in ("won", "lost"):
+        raise ContractError(400, "This lead is closed")
+    if lead.conversation_id:
+        raise ContractError(409, "You have a chat with this client. Send the inquiry form from Messages.")
+    if not (lead.email or "").strip():
+        raise ContractError(400, "Add their email to send them your inquiry link")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if lead.inquiry_link_sent_at and now - lead.inquiry_link_sent_at < INQUIRY_LINK_EVERY:
+        raise ContractError(429, "You sent them your inquiry link today. You can send it again tomorrow.")
+
+    vendor = db.query(Vendor).filter(Vendor.vendor_id == lead.vendor_id).first()
+    vendor_user = db.query(User).filter(User.user_id == vendor.user_id).first() if vendor else None
+    vendor_name = vendor_display_name(vendor, vendor_user, "Your vendor")
+    link = f"{CLIENT_WEB_APP_URL.rstrip('/')}/inquire/?vendor={lead.vendor_id}"
+    first = (lead.name or "").split(" ")[0]
+    result = send_email(
+        to=lead.email.strip(),
+        subject=f"{vendor_name} sent you their inquiry form",
+        html=(
+            f"<p>{'Hi ' + escape(first) + ', ' if first else ''}{escape(vendor_name)} would like your event details "
+            "so they can send you a contract.</p>"
+            f'<p><a href="{escape(link)}">Fill in their inquiry form on Jorna</a>. '
+            "You'll make a free account to send it, and your chat with them starts there.</p>"
+        ),
+        reply_to=vendor_user.email if vendor_user and vendor_user.email else None,
+    )
+    if not result.get("success"):
+        raise ContractError(502, "Couldn't send the email. Try again, or copy the link and send it yourself.")
+    lead.inquiry_link_sent_at = now
+    lead.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"sent": True, "link": link, "sent_to": lead.email.strip()}
 
 
 def update_lead(*, lead_id: str, caller_user_id: str, update_data: dict, db: Session) -> dict:

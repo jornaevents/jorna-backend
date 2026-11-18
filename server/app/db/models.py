@@ -883,6 +883,9 @@ class Lead(Base):
     event_location = Column(String(255), nullable=True)
     service_id = Column(String(36), ForeignKey("services.service_id", ondelete="SET NULL"), nullable=True)
     service = relationship("Service", lazy="joined")
+    # When the vendor last emailed this lead their inquiry form link (0092,
+    # DECISIONS #56): at most once a day, since the address is typed in.
+    inquiry_link_sent_at = Column(DateTime, nullable=True)
 
 
 class Bundle(Base):
