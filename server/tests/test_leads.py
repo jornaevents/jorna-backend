@@ -142,4 +142,52 @@ def test_convert_a_lead_into_a_real_contract():
         },
         headers=v["headers"],
     )
-    assert again.status_code == 400, again.text
+    # It's gone out: edited or resent from Contracts, not converted again.
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"] == "This lead already has a contract. Open it from Contracts to edit or resend it."
+
+
+def _lead(v: dict) -> str:
+    created = client.post("/leads", json={"name": "Reddy Family", "email": "reddy@example.com"}, headers=v["headers"])
+    lead_id = created.json()["lead_id"]
+    _created["leads"].append(lead_id)
+    return lead_id
+
+
+def _terms(v: dict, **extra) -> dict:
+    return {
+        "service_id": v["service_id"], "date_iso": "2027-04-03",
+        "time_start": "18:00", "time_end": "22:00", "amount_cents": 220_000, **extra,
+    }
+
+
+def test_converting_a_lead_again_while_its_draft_is_open_updates_that_draft():
+    """A second tab, or a retry after a dropped response (audit bug 2): the
+    same draft, brought up to date — never a second contract or an error."""
+    v = _setup_vendor()
+    lead_id = _lead(v)
+
+    first = client.post(f"/leads/{lead_id}/convert", json=_terms(v, draft=True), headers=v["headers"])
+    assert first.status_code == 201, first.text
+    booking_id = first.json()["booking_id"]
+    _created["bookings"].append(booking_id)
+    assert first.json()["contract_status"] == "draft"
+
+    again = client.post(
+        f"/leads/{lead_id}/convert",
+        json=_terms(v, draft=True, location="12 Maple Ave, Edison, NJ 08817", guest_count=180),
+        headers=v["headers"],
+    )
+    assert again.status_code == 201, again.text
+    assert again.json()["booking_id"] == booking_id
+    assert again.json()["contract_status"] == "draft"
+    assert again.json()["location"] == "12 Maple Ave, Edison, NJ 08817"
+    assert again.json()["guest_count"] == 180
+
+    db = TestingSessionLocal()
+    try:
+        assert db.query(Booking).filter(Booking.booking_id == booking_id).count() == 1
+        vendor_id = db.query(Lead).filter(Lead.lead_id == lead_id).first().vendor_id
+        assert db.query(Booking).filter(Booking.vendor_id == vendor_id).count() == 1
+    finally:
+        db.close()

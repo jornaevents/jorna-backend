@@ -1341,3 +1341,13 @@ where, guests, package), so the vendor's Send contract waits for one.
   kind (iOS today) still shows something to act on.
 - No migration: `kind` is a free string (`String(16)`) and the request is just a message.
 
+## 55. Converting a lead twice updates its draft (2026-11-18)
+
+Audit bug 2: a lead converted again failed with "This lead has already been converted". The editor
+converts a lead on its first autosave, so a second tab, a retry after a dropped response, or Send
+contract opened twice from the chat each made the vendor's own save fail. While the contract the
+lead was converted to is still a draft, it's the same contract: `convert_lead` now updates it with
+what was sent (the fields an update takes; `service_id` rides on the package line) and returns it,
+then sends it unless the request asked for a draft. Once it has gone out, a second conversion is a
+409 that sends the vendor to Contracts, where it's edited or resent. Nothing new is ever created.
+

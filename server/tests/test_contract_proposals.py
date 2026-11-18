@@ -347,3 +347,39 @@ def test_a_lead_converts_into_a_contract_in_its_clients_chat(monkeypatch):
     db.query(Lead).filter(Lead.lead_id == lead["lead_id"]).delete()
     db.commit()
     db.close()
+
+
+def test_sending_from_a_second_conversion_sends_the_open_draft(monkeypatch):
+    """Send contract opened twice from the chat: the second tab's Send sends
+    the draft the first one saved (audit bug 2), not a second contract."""
+    import app.services.contract_service as cs
+
+    monkeypatch.setattr(cs, "send_email", lambda **kw: {"success": True})
+    v = _with_addon(_setup_vendor())
+    lead = client.post("/leads", json={"name": "Rohan Das", "email": "rohan@example.com"}, headers=v["headers"]).json()
+    chat = new_chat(v["headers"])
+    db = TestingSessionLocal()
+    conv = db.query(Conversation).filter(Conversation.conversation_id == chat).one()
+    db.query(Lead).filter(Lead.lead_id == lead["lead_id"]).update({Lead.user_id: conv.client_user_id})
+    db.commit()
+    db.close()
+    body = {
+        "date_iso": "2027-11-18", "time_start": "19:00", "time_end": "23:00",
+        "line_items": [{"kind": "package", "service_id": v["service_id"]}],
+    }
+
+    draft = client.post(f"/leads/{lead['lead_id']}/convert", json={**body, "draft": True}, headers=v["headers"])
+    assert draft.status_code == 201, draft.text
+    _created["bookings"].append(draft.json()["booking_id"])
+    assert draft.json()["contract_status"] == "draft"
+
+    sent = client.post(f"/leads/{lead['lead_id']}/convert", json={**body, "time_end": "23:30"}, headers=v["headers"])
+    assert sent.status_code == 201, sent.text
+    assert sent.json()["booking_id"] == draft.json()["booking_id"]
+    assert sent.json()["contract_status"] == "sent"
+    assert sent.json()["time_end"] == "23:30"
+
+    db = TestingSessionLocal()
+    db.query(Lead).filter(Lead.lead_id == lead["lead_id"]).delete()
+    db.commit()
+    db.close()
