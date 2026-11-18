@@ -43,7 +43,8 @@ class UserError(Exception):
         super().__init__(detail)
 
 
-def _user_dict(user: User) -> dict:
+def _user_dict(user: User, db: Session) -> dict:
+    is_vendor = db.query(Vendor.vendor_id).filter(Vendor.user_id == user.user_id).first() is not None
     return {
         "user_id": user.user_id,
         "email": user.email,
@@ -64,6 +65,14 @@ def _user_dict(user: User) -> dict:
         "email_verified": user.email_verified_at is not None,
         "open_to_price_negotiation": user.open_to_price_negotiation,
         "flexible_on_location": user.flexible_on_location,
+        # What the account is, with the account, so an app can pick its
+        # screens the moment it knows who's signed in rather than after a
+        # second request (GET /vendors/me). A vendor is a vendors row.
+        "is_vendor": is_vendor,
+        # Which sign-up made it ("client", "vendor", or None for older
+        # accounts and iOS): with is_vendor false, "vendor" means onboarding
+        # isn't finished.
+        "signup_side": user.signup_side,
     }
 
 
@@ -72,7 +81,7 @@ def get_user(*, user_id: str, db: Session) -> dict:
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise UserError(404, "User not found")
-    return _user_dict(user)
+    return _user_dict(user, db)
 
 
 def _contract_still_ahead(booking: Booking) -> bool:
@@ -330,4 +339,4 @@ def update_user(*, user_id: str, update_data: dict, db: Session) -> dict:
         setattr(user, field, value)
     db.commit()
     db.refresh(user)
-    return _user_dict(user)
+    return _user_dict(user, db)

@@ -256,7 +256,9 @@ def google_sign_in_or_create(*, access_token: str, db: Session) -> dict:
     }
 
 
-def google_register(*, access_token: str, accept_terms: bool = False, db: Session) -> dict:
+def google_register(
+    *, access_token: str, accept_terms: bool = False, side: Optional[str] = None, db: Session
+) -> dict:
     """Sign in with Google, creating the account on first use. Returns a JWT pair.
 
     This is what lets "Continue with Google" be the whole sign-up: everything a
@@ -273,6 +275,9 @@ def google_register(*, access_token: str, accept_terms: bool = False, db: Sessio
 
     Idempotent — a repeated call (double tap, retry after a dropped response)
     returns a session for the account it already made instead of failing.
+
+    ``side`` ("client" or "vendor") is stored as ``signup_side`` on a new
+    account only; signing in to an existing one never changes it.
     """
     existing = google_sign_in_or_create(access_token=access_token, db=db)
     if not existing.get("is_new_user"):
@@ -304,6 +309,7 @@ def google_register(*, access_token: str, accept_terms: bool = False, db: Sessio
         pfp_url=meta.get("avatar_url") or meta.get("picture") or None,
         # The sign-up form's terms box, ticked before "Continue with Google".
         terms_accepted_at=_terms_time(accept_terms),
+        signup_side=side,
         email_verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(user)
@@ -348,6 +354,7 @@ def register_user(
     supabase_user_id: Optional[str] = None,
     supabase_access_token: Optional[str] = None,
     accept_terms: bool = False,
+    side: Optional[str] = None,
 ) -> dict:
     """Create a new user account. Returns ``{user_id, email}``.
 
@@ -400,6 +407,7 @@ def register_user(
         supabase_user_id=supabase_user_id,
         pfp_url=google_picture,
         terms_accepted_at=_terms_time(accept_terms),
+        signup_side=side,
         # Linked to Google, whose token carried this same address.
         email_verified_at=datetime.now(timezone.utc).replace(tzinfo=None) if supabase_user_id else None,
     )

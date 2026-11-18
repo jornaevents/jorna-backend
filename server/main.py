@@ -9,7 +9,7 @@ import logging
 import re
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,10 @@ class RegisterRequest(BaseModel):
     # The "I agree to the Terms and Privacy Policy" box. Optional so the iOS
     # app, which doesn't show it yet, can still register; recorded when true.
     accept_terms: bool = False
+    # Which sign-up this is: the vendor form sends "vendor", the client form
+    # "client". Recorded on the account (users.signup_side, 0091) so an
+    # unfinished vendor is sent back to onboarding. Optional for iOS.
+    side: Optional[Literal["client", "vendor"]] = None
 
     @field_validator("password")
     @classmethod
@@ -135,8 +139,10 @@ class GoogleLookupRequest(BaseModel):
 
 
 class GoogleRegisterRequest(GoogleLookupRequest):
-    # As RegisterRequest.accept_terms; recorded only when this call makes the account.
+    # As RegisterRequest.accept_terms and .side; recorded only when this call
+    # makes the account.
     accept_terms: bool = False
+    side: Optional[Literal["client", "vendor"]] = None
 
 
 class ProfileCompleteRequest(BaseModel):
@@ -654,6 +660,7 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             supabase_user_id=body.supabase_user_id,
             supabase_access_token=body.supabase_access_token,
             accept_terms=body.accept_terms,
+            side=body.side,
         )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
@@ -697,7 +704,9 @@ def auth_google_register(request: Request, body: GoogleRegisterRequest, db: Sess
     the form entirely.
     """
     try:
-        return google_register(access_token=body.access_token, accept_terms=body.accept_terms, db=db)
+        return google_register(
+            access_token=body.access_token, accept_terms=body.accept_terms, side=body.side, db=db
+        )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
