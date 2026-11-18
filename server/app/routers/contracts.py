@@ -32,6 +32,7 @@ from app.services.contract_service import (
     update_lead,
     delete_lead,
     convert_lead,
+    send_inquiry_link,
 )
 from app.services.pipeline_service import PipelineError, list_pipeline, set_booking_archived
 
@@ -660,6 +661,19 @@ def delete_lead_route(
 ):
     try:
         return delete_lead(lead_id=lead_id, caller_user_id=current_user.user_id, db=db)
+    except (ContractError, DocumentError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/leads/{lead_id}/inquiry-link", summary="Email a lead your inquiry form link")
+def send_inquiry_link_route(
+    lead_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A lead the vendor typed in, with no chat yet (DECISIONS #56). Once a day."""
+    try:
+        return send_inquiry_link(lead_id=lead_id, caller_user_id=current_user.user_id, db=db)
     except (ContractError, DocumentError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

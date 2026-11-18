@@ -22,6 +22,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import CLIENT_WEB_APP_URL, WEB_APP_URL
@@ -255,6 +256,21 @@ def _lead_for(
         Lead.converted_booking_id.is_(None),
         Lead.status.notin_(("won", "lost")),
     ).first()
+    if lead is None:
+        # A lead the vendor typed in for this client, with no chat yet —
+        # often the one they emailed their inquiry link to (DECISIONS #56).
+        # Matched by the address it was sent to, so one client is one lead.
+        lead = db.query(Lead).filter(
+            Lead.vendor_id == vendor_id,
+            Lead.conversation_id.is_(None),
+            Lead.user_id.is_(None),
+            func.lower(Lead.email) == (caller.email or "").lower(),
+            Lead.converted_booking_id.is_(None),
+            Lead.status.notin_(("won", "lost")),
+        ).first()
+        if lead:
+            lead.conversation_id = conversation_id
+            lead.user_id = caller.user_id
     if lead:
         for field in ("phone", "event_date_iso", "event_type", "event_location", "guest_count"):
             if checked[field] is not None:
