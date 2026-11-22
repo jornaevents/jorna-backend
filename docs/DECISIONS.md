@@ -1402,7 +1402,7 @@ or item — the contract's units). The unit is optional; left out, it's the unit
 the chat is about, so "$2,400" in a chat about a per-event package means per event without
 anyone picking it. The package is the one on the client's latest inquiry, else the one on the
 thread's lead, else the vendor's only active package; with none of those the unit is "event"
-and the proposal names no package. A package unit the contract doesn't have ("performer") also
-falls back to "event". The package goes on the card (`meta.package`) so the contract editor
+and the proposal names no package. A package priced per performer counts as per item, as the
+contract editor already treats it. The package goes on the card (`meta.package`) so the contract editor
 knows which line the agreed price is for. One open price at a time, like any other field.
 

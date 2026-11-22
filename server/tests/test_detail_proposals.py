@@ -173,3 +173,10 @@ def test_a_given_unit_wins_and_no_package_means_per_event():
     assert msg["meta"]["label"] == "$3,000 per event"
     msg = _propose(c, conv, "price", 40, unit="person").json()
     assert msg["meta"]["unit"] == "person" and msg["meta"]["label"] == "$40 per person"
+
+
+def test_a_per_performer_package_is_priced_per_item():
+    v, c = _vendor(), _client()
+    dhol = _add_package(v["vendor_id"], "Dhol players", "performer")
+    conv = _send(v["vendor_id"], c, service_id=dhol).json()["conversation_id"]
+    assert _propose(v, conv, "price", 300).json()["meta"]["unit"] == "item"

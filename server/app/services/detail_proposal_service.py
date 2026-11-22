@@ -90,8 +90,10 @@ def _price(value, unit: str | None, package: Service | None) -> tuple[str, str, 
     if not 0 < amount <= MAX_PRICE:
         raise ConversationError(422, "The price must be more than $0")
     # Unit left out: the package's own, as the contract would price it.
+    # A package's "performer" is counted like an item, as the contract editor does.
     if unit is None:
-        unit = package.price_unit if package and package.price_unit in UNITS else "event"
+        own = package.price_unit if package else None
+        unit = own if own in UNITS else ("item" if own else "event")
     elif unit not in UNITS:
         raise ConversationError(422, f"The unit is one of: {', '.join(UNITS)}")
     cents = round(amount * 100)
