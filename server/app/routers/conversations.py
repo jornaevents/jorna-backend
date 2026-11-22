@@ -182,8 +182,11 @@ async def request_inquiry_route(
 
 
 class DetailProposalRequest(BaseModel):
-    field: Literal["date", "times", "guests", "addon"]
-    value: str | int = Field(...)
+    field: Literal["date", "times", "guests", "addon", "price"]
+    value: str | int | float = Field(...)
+    # Price only: event, person, hour, day or item. Left out, it's the unit
+    # of the package the chat is about (DECISIONS #60).
+    unit: str | None = None
 
 
 @router.post("/{conversation_id}/details", summary="Propose an event detail in this chat", status_code=201)
@@ -193,12 +196,13 @@ async def propose_detail_route(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """A date, the times ("HH:MM-HH:MM"), a guest count, or an add-on id
-    (DECISIONS #59). Either side of a client–vendor thread; the other answers."""
+    """A date, the times ("HH:MM-HH:MM"), a guest count, an add-on id, or a
+    price with an optional unit (DECISIONS #59, #60). Either side of a
+    client–vendor thread; the other answers."""
     try:
         message = await run_in_threadpool(
             propose_detail, conversation_id=conversation_id, caller_user_id=current_user.user_id,
-            field=body.field, value=body.value, db=db,
+            field=body.field, value=body.value, unit=body.unit, db=db,
         )
     except ConversationError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)

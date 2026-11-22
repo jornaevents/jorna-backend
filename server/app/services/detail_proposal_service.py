@@ -1,6 +1,6 @@
 """Propose a detail in chat (DECISIONS #59): either side of a client–vendor
 thread proposes one event detail — a date, the times, a guest count, or one
-of the vendor's add-ons — and the other agrees or declines. An agreed value
+of the vendor's add-ons, or a price — and the other agrees or declines. An agreed value
 is exact, so the contract can take it as said: what makes chat-to-contract
 reliable without a model reading the messages.
 
@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.config import CLIENT_WEB_APP_URL
-from app.db.models import Conversation, GroupMessage, Service, User, Vendor
+from app.db.models import Conversation, GroupMessage, Lead, Service, User, Vendor
+from app.services.contract_document import UNITS
 from app.services.conversation_service import (
     ConversationError,
     _assert_is_member,
@@ -27,10 +28,12 @@ from app.services.conversation_service import (
 from app.services.names import vendor_user_display_name
 
 KIND = "detail_proposal"
-FIELDS = ("date", "times", "guests", "addon")
+FIELDS = ("date", "times", "guests", "addon", "price")
 OPEN, AGREED, DECLINED, REPLACED = "open", "agreed", "declined", "replaced"
 
 _TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_AMOUNT = re.compile(r"^\d{1,8}(\.\d{1,2})?$")
+MAX_PRICE = 10_000_000
 
 
 def _now() -> datetime:
@@ -55,9 +58,62 @@ def _thread(conversation_id: str, caller_user_id: str, db: Session) -> tuple[Con
     return conv, vendor
 
 
-def _checked(field: str, value, vendor: Vendor, db: Session) -> tuple[str, str, dict]:
+def _package(conv: Conversation, vendor: Vendor, db: Session) -> Service | None:
+    """The package this chat is about: the one on the client's latest inquiry,
+    else the one on the thread's lead, else the vendor's only package. None
+    when it can't be told."""
+    active = {
+        s.service_id: s for s in db.query(Service).filter(
+            Service.vendor_id == vendor.vendor_id, Service.status != "archived",
+        ).all()
+    }
+    inquiries = db.query(GroupMessage).filter(
+        GroupMessage.conversation_id == conv.conversation_id, GroupMessage.meta.isnot(None),
+    ).order_by(GroupMessage.created_at.desc()).all()
+    for m in inquiries:
+        inquiry = (m.meta or {}).get("inquiry") if isinstance(m.meta, dict) else None
+        if inquiry and inquiry.get("service_id") in active:
+            return active[inquiry["service_id"]]
+    lead = db.query(Lead).filter(
+        Lead.conversation_id == conv.conversation_id, Lead.service_id.isnot(None),
+    ).order_by(Lead.updated_at.desc()).first()
+    if lead and lead.service_id in active:
+        return active[lead.service_id]
+    return next(iter(active.values())) if len(active) == 1 else None
+
+
+def _price(value, unit: str | None, package: Service | None) -> tuple[str, str, dict]:
+    text = str(value if value is not None else "").strip().lstrip("$").replace(",", "")
+    if not _AMOUNT.match(text):
+        raise ConversationError(422, "Give the price in dollars, like 2400 or 2400.50")
+    amount = float(text)
+    if not 0 < amount <= MAX_PRICE:
+        raise ConversationError(422, "The price must be more than $0")
+    # Unit left out: the package's own, as the contract would price it.
+    # A package's "performer" is counted like an item, as the contract editor does.
+    if unit is None:
+        own = package.price_unit if package else None
+        unit = own if own in UNITS else ("item" if own else "event")
+    elif unit not in UNITS:
+        raise ConversationError(422, f"The unit is one of: {', '.join(UNITS)}")
+    cents = round(amount * 100)
+    stored = f"{cents // 100}" if cents % 100 == 0 else f"{cents // 100}.{cents % 100:02d}"
+    shown = f"${cents // 100:,}" if cents % 100 == 0 else f"${cents / 100:,.2f}"
+    label = f"{shown} per {unit}"
+    extra: dict = {"unit": unit}
+    if package is not None:
+        extra["package"] = {"service_id": package.service_id, "name": package.name}
+        label = f"{label} for {package.name}"
+    return stored, label, extra
+
+
+def _checked(field: str, value, vendor: Vendor, db: Session, *, conv: Conversation, unit: str | None = None) -> tuple[str, str, dict]:
     """The value as stored, its label, and anything extra the card needs.
     Checked as the contract checks them, so an agreed value always fits."""
+    if unit is not None and field != "price":
+        raise ConversationError(422, "Only a price takes a unit")
+    if field == "price":
+        return _price(value, unit, _package(conv, vendor, db))
     if field == "date":
         text = str(value or "")
         try:
@@ -95,12 +151,12 @@ def _checked(field: str, value, vendor: Vendor, db: Session) -> tuple[str, str, 
     raise ConversationError(422, f"Details are one of: {', '.join(FIELDS)}")
 
 
-_NOUN = {"date": "a date", "times": "the times", "guests": "a guest count", "addon": "an add-on"}
+_NOUN = {"date": "a date", "times": "the times", "guests": "a guest count", "addon": "an add-on", "price": "a price"}
 
 
-def propose(*, conversation_id: str, caller_user_id: str, field: str, value, db: Session) -> dict:
+def propose(*, conversation_id: str, caller_user_id: str, field: str, value, db: Session, unit: str | None = None) -> dict:
     conv, vendor = _thread(conversation_id, caller_user_id, db)
-    stored, label, extra = _checked(field, value, vendor, db)
+    stored, label, extra = _checked(field, value, vendor, db, conv=conv, unit=unit)
 
     # One open proposal per field: the newer one takes its place.
     for old in db.query(GroupMessage).filter(

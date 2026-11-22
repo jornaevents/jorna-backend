@@ -9,6 +9,7 @@ from tests.test_api import TestingSessionLocal, client
 from tests.test_public_inquiries import (  # noqa: F401 (fixtures)
     _client,
     _isolate,
+    _send,
     _vendor,
 )
 
@@ -21,8 +22,9 @@ def _chat(v: dict, c: dict) -> str:
     return resp.json()["conversation_id"]
 
 
-def _propose(who: dict, conv: str, field: str, value):
-    return client.post(f"/conversations/{conv}/details", json={"field": field, "value": value}, headers=who["headers"])
+def _propose(who: dict, conv: str, field: str, value, **extra):
+    body = {"field": field, "value": value, **extra}
+    return client.post(f"/conversations/{conv}/details", json=body, headers=who["headers"])
 
 
 def _answer(who: dict, conv: str, message_id: str, how: str):
@@ -94,7 +96,11 @@ def test_values_are_checked_as_the_contract_checks_them():
     assert _propose(c, conv, "date", "next friday").status_code == 422
     assert _propose(c, conv, "times", "4pm-10pm").status_code == 422
     assert _propose(c, conv, "guests", 0).status_code == 422
-    assert _propose(c, conv, "price", 100).status_code == 422
+    assert _propose(c, conv, "price", 0).status_code == 422
+    assert _propose(c, conv, "price", "lots").status_code == 422
+    assert _propose(c, conv, "price", "2400", unit="week").status_code == 422
+    assert _propose(c, conv, "guests", 100, unit="hour").status_code == 422
+    assert _propose(c, conv, "venue", "x").status_code == 422
     assert _propose(c, conv, "addon", "nope").status_code == 422
 
 
@@ -118,3 +124,59 @@ def test_only_the_two_sides_of_the_thread():
     v, c, stranger = _vendor(), _client(), _client()
     conv = _chat(v, c)
     assert _propose(stranger, conv, "guests", 100).status_code == 403
+
+
+def _add_package(vendor_id: str, name: str, unit: str) -> str:
+    db = TestingSessionLocal()
+    try:
+        row = Service(
+            name=name, price=150.0, price_unit=unit, vendor_id=vendor_id, experience="e",
+            category="photography", negotiable=False, status="active",
+        )
+        db.add(row)
+        db.commit()
+        return row.service_id
+    finally:
+        db.close()
+
+
+def test_a_price_takes_the_unit_of_the_vendors_only_package():
+    v, c = _vendor(), _client()
+    conv = _chat(v, c)
+    msg = _propose(v, conv, "price", "$2,400").json()
+    assert msg["meta"]["value"] == "2400" and msg["meta"]["unit"] == "event"
+    assert msg["meta"]["package"]["name"] == "Sangeet coverage"
+    assert msg["meta"]["label"] == "$2,400 per event for Sangeet coverage"
+    assert msg["content"].startswith("Arjun Kapoor proposed a price: $2,400 per event for Sangeet coverage.")
+    assert _answer(c, conv, msg["message_id"], "agree").json()["meta"]["status"] == "agreed"
+
+
+def test_a_price_takes_the_unit_of_the_package_on_the_inquiry():
+    v, c = _vendor(), _client()
+    hourly = _add_package(v["vendor_id"], "Dhol hourly", "hour")
+    resp = _send(v["vendor_id"], c, service_id=hourly)
+    assert resp.status_code in (200, 201), resp.text
+    conv = resp.json()["conversation_id"]
+    msg = _propose(c, conv, "price", "175.5").json()
+    assert msg["meta"]["value"] == "175.50" and msg["meta"]["unit"] == "hour"
+    assert msg["meta"]["package"] == {"service_id": hourly, "name": "Dhol hourly"}
+    assert msg["meta"]["label"] == "$175.50 per hour for Dhol hourly"
+
+
+def test_a_given_unit_wins_and_no_package_means_per_event():
+    v, c = _vendor(), _client()
+    _add_package(v["vendor_id"], "Dhol hourly", "hour")
+    conv = _chat(v, c)
+    # Two packages and no inquiry: no package to tell from.
+    msg = _propose(c, conv, "price", 3000).json()
+    assert msg["meta"]["unit"] == "event" and "package" not in msg["meta"]
+    assert msg["meta"]["label"] == "$3,000 per event"
+    msg = _propose(c, conv, "price", 40, unit="person").json()
+    assert msg["meta"]["unit"] == "person" and msg["meta"]["label"] == "$40 per person"
+
+
+def test_a_per_performer_package_is_priced_per_item():
+    v, c = _vendor(), _client()
+    dhol = _add_package(v["vendor_id"], "Dhol players", "performer")
+    conv = _send(v["vendor_id"], c, service_id=dhol).json()["conversation_id"]
+    assert _propose(v, conv, "price", 300).json()["meta"]["unit"] == "item"
