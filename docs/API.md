@@ -179,8 +179,11 @@ Booking items also carry `client_note`, `time_start`, `time_end` and
   anyone but the thread's vendor, 400 on a thread with no client, 409 once
   `has_inquiry` is true, 429 within 24 hours of the last one.
 - **Propose a detail (DECISIONS #59).** `POST /conversations/{id}/details` `{field, value}`: `field`
-  is `date` ("YYYY-MM-DD", not past), `times` ("HH:MM-HH:MM"), `guests` (1–100,000) or `addon` (an
-  add-on id from the vendor's packages). Either side of a client–vendor thread (403 otherwise);
+  is `date` ("YYYY-MM-DD", not past), `times` ("HH:MM-HH:MM"), `guests` (1–100,000), `addon` (an
+  add-on id from the vendor's packages) or `price` (dollars, "2400" or "2400.50", with an optional
+  `unit`: event/person/hour/day/item, defaulting to the unit of the package the chat is about —
+  DECISIONS #60; `meta` then adds `unit` and, when a package was found, `package: {service_id, name}`).
+  `unit` on any other field is a 422. Either side of a client–vendor thread (403 otherwise);
   422 for a value the contract couldn't take. 201 with a message of kind `detail_proposal`,
   `meta: {field, value, label, status: "open", proposed_by, addon?}`; an open proposal for the
   same field becomes `replaced`. `POST /conversations/{id}/details/{message_id}/agree|decline`:
