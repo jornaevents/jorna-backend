@@ -12,21 +12,25 @@ are paid off-platform via a Venmo handle/Zelle contact on their profile
 instead. A chatbot ("bundle builder") can assemble a full vendor bundle for a
 client conversationally.
 
-This repo (`knag9753/Desiconnect`) is the **FastAPI + SQLAlchemy** backend,
-deployed on **Railway** against **Postgres**. It is the schema/business-logic
-source of truth for two sibling client repos, each with its own `CLAUDE.md`:
+This repo (`jornaevents/jorna-backend`, formerly `knag9753/Desiconnect` —
+old URLs redirect, and local checkouts are still often named `Desiconnect`)
+is the **FastAPI + SQLAlchemy** backend, deployed on **Railway** against
+**Postgres**. It is the schema/business-logic source of truth for the web
+client, which has its own `CLAUDE.md`:
 
-- `knag9753/front_end_desiconnect` (`…/GitHub/front_end_desiconnect`) — native
-  iOS SwiftUI client.
-- `jornaevents-commits/jorna-website` (`…/GitHub/jorna-website`) — both
-  Next.js web apps: `apps/client` (jornaevents.com/client, hosts) and
-  `apps/vendor` (jornaevents.com, vendors + the contract signing page).
-  The vendor app was its own repo, `jorna-vendor`, until 2026-09-28; that
-  repo is archived. Transferred from `dabkeyanik/jorna-website` in 2026-08
-  (old URLs still redirect).
+- `jornaevents/jorna-website` (formerly `jornaevents-commits/jorna-website`)
+  — both Next.js web apps in one deploy on jornaevents.com: `apps/vendor`
+  (the root and `/app` — vendors, the marketing pages and the contract
+  signing page) and `apps/client` (`/client` — hosts).
+  `book.jornaevents.com` only redirects to `/client` (since 2026-10-29). The
+  vendor app was its own repo, `jorna-vendor`, until 2026-09-28; that repo
+  is archived.
+
+The native iOS client (`jornaevents/jorna-ios`) is **paused** — it isn't
+kept in step with this API, so don't plan or update for it unless asked.
 
 A booking/pricing/escrow change almost always touches this repo plus one or
-both clients. If a client repo's docs describe backend behavior differently
+both web apps. If a client repo's docs describe backend behavior differently
 than this repo's code, **this repo's code wins** — those are client-side
 descriptions of a contract they don't own.
 
@@ -47,7 +51,12 @@ descriptions of a contract they don't own.
    handoff summary of unfinished work from a prior session.
 6. Only then read source. Source is the ultimate ground truth — if a doc and
    the code disagree, trust the code and fix the doc.
-7. [docs/TESTING.md](docs/TESTING.md) for how to run/extend the test suite.
+7. [docs/TESTING.md](docs/TESTING.md) for how to run/extend the test suite,
+   and [docs/STAGING.md](docs/STAGING.md) for the staging environment.
+   `docs/JORNA_DEVOPS_OVERVIEW.md` is a cross-repo snapshot, not ground
+   truth. The `*.md` files at the repo root (`AUTH_FLOW`, `BOOKING_FLOW`,
+   `CHATBOT_*`, `VENDOR_CATEGORIES`) are old write-ups — check the code
+   before trusting them.
 
 ## Critical rules
 
@@ -83,7 +92,6 @@ descriptions of a contract they don't own.
   Sentry's SDK when `SENTRY_DSN` is set, tagging events with `environment`
   and a `release` (Railway's commit SHA) automatically. No-op locally unless
   you set `SENTRY_DSN`.
-- Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
 ## Diagnosing a failed Railway deploy
 
@@ -96,8 +104,12 @@ environment it's the opposite: that environment's own `Postgres` service
 
 **Deploys run from CI, not from Railway's GitHub trigger** (since
 2026-09-28). On a push to `main`, once `Lint + test` and `Migration chain
-(Postgres)` pass, `Deploy to staging` and then `Deploy to production` (which
-waits for approval in the `production` GitHub environment) each call
+(Postgres)` pass, `Deploy to staging` runs, then `Website staging checks`
+(jorna-website's real-stack contract E2E against the staging site, started
+via `.github/scripts/staging-e2e.sh`), then `Deploy to production` (which
+waits for approval in the `production` GitHub environment — approve only
+the newest waiting run; an older one would roll production back). Both
+deploy jobs call
 `.github/scripts/deploy-railway.sh`, which asks Railway to deploy that exact
 SHA from the GitHub source to one environment and waits for SUCCESS (the job
 fails if the deploy does). Each job reads `RAILWAY_TOKEN` — a Railway
@@ -173,26 +185,27 @@ venv/bin/alembic upgrade head                 # apply migrations (server/alembic
 CI (`.github/workflows/ci.yml`, job `Backend CI`) runs two jobs on every PR
 into `main`: `Lint + test` (ruff + pytest, sqlite-backed) and
 `Migration chain (Postgres)` (applies the full Alembic chain to a clean
-Postgres 16 container). On a push to `main`, `Deploy to staging` and then
-`Deploy to production` (after approval) deploy the commit once both pass —
+Postgres 16 container). On a push to `main`, `Deploy to staging`,
+`Website staging checks` and then `Deploy to production` (after approval)
+run once both pass —
 see "Diagnosing a failed Railway deploy" above and docs/STAGING.md.
 
 ## Issue & work tracking
 
-Work across all three repos is tracked in one place: the org's GitHub
-Project, ["Jorna Dev Board"](https://github.com/orgs/jornaevents/projects/1)
-(Status: Backlog → Todo → In Progress → In Review → Done, linked to all
-three repos). Open issues with `.github/ISSUE_TEMPLATE/bug_report.md` or
-`feature_request.md` — both have a "cross-repo impact" section, since a
-backend change here usually needs a matching client-side issue/PR in
-`jorna-ios` and/or `jorna-website`.
+Work is tracked in one place: the org's GitHub Project,
+["Jorna Dev Board"](https://github.com/orgs/jornaevents/projects/1)
+(Status: Backlog → Todo → In Progress → In Review → Done). Open issues with
+`.github/ISSUE_TEMPLATE/bug_report.md` or `feature_request.md` — both have a
+"cross-repo impact" section, since a backend change here usually needs a
+matching issue/PR in `jorna-website`. A PR closes its issue on the board
+only if its description says `Closes #N`.
 
 This repo isn't on the board's native auto-add workflow — GitHub Free caps
-that at one source repo per project, and `jorna-website` has it. Instead
-`.github/workflows/add-to-board.yml` adds each new or reopened issue, using
-the `ADD_TO_BOARD_TOKEN` secret. If an issue still isn't on the board (the
-secret is missing or expired), add it by hand: `gh project item-add 1
---owner jornaevents --url <issue-url>`. When doing real dev work here, keep the board current as you go
+that at one source repo per project, and `jorna-website` has it.
+`.github/workflows/add-to-board.yml` exists, but the `ADD_TO_BOARD_TOKEN`
+secret it needs isn't set, so **add each issue by hand**: `gh project
+item-add 1 --owner jornaevents --url <issue-url>`, or the issue's
+"Projects" sidebar. When doing real dev work here, keep the board current as you go
 (create/find the issue, add it, move its status) rather than leaving that
 to whoever opened the issue.
 
