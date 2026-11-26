@@ -6,7 +6,7 @@ actually knows about.
 starting point with no such check — that's how the 2026-08-30 incident
 happened: alembic_version was stamped to a revision that existed nowhere in
 git, and the next deploy upgraded from it without complaint. Railway's
-preDeployCommand runs this script first (see railway.toml); a nonzero exit
+Pre-deploy Command runs this script first (docs/STAGING.md); a nonzero exit
 here stops the deploy before it can touch a database in a state git doesn't
 recognize.
 """
